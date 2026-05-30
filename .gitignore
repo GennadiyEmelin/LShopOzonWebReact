@@ -1,0 +1,35 @@
+# Local IDE/workspace files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Build output
+bin/
+obj/
+dist/
+publish/
+
+# Frontend dependencies/build output
+node_modules/
+client/node_modules/
+client/dist/
+
+# Backend build output
+server/bin/
+server/obj/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.zip
+*.bak
+
+# OS files
+Thumbs.db
+.DS_Store
