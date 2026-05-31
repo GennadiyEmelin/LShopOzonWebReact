@@ -405,6 +405,52 @@ app.MapGet("/api/admin/system-health", async (AppDbContext db) =>
         Environment.Version.ToString()));
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
+app.MapGet("/api/admin/ozon-status", async (
+    OzonApiClient ozonApi,
+    Microsoft.Extensions.Options.IOptions<OzonOptions> options,
+    CancellationToken cancellationToken) =>
+{
+    var value = options.Value;
+    var configured = !string.IsNullOrWhiteSpace(value.ClientId)
+        && !string.IsNullOrWhiteSpace(value.ApiKey);
+
+    if (!configured)
+    {
+        return Results.Ok(new OzonIntegrationStatusResponse(
+            false,
+            false,
+            "Ozon ClientId или ApiKey не заданы в .env",
+            value.BaseUrl,
+            AppPublicText.MaskSecret(value.ClientId),
+            AppPublicText.MaskSecret(value.ApiKey),
+            DateTimeOffset.UtcNow));
+    }
+
+    try
+    {
+        var result = await ozonApi.GetProductListAsync(1, cancellationToken);
+        return Results.Ok(new OzonIntegrationStatusResponse(
+            true,
+            true,
+            $"Ozon API отвечает. Найдено товаров: {result.Total}",
+            value.BaseUrl,
+            AppPublicText.MaskSecret(value.ClientId),
+            AppPublicText.MaskSecret(value.ApiKey),
+            DateTimeOffset.UtcNow));
+    }
+    catch (Exception exception)
+    {
+        return Results.Ok(new OzonIntegrationStatusResponse(
+            true,
+            false,
+            AppPublicText.GetPublicOzonError(exception),
+            value.BaseUrl,
+            AppPublicText.MaskSecret(value.ClientId),
+            AppPublicText.MaskSecret(value.ApiKey),
+            DateTimeOffset.UtcNow));
+    }
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
 app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -1558,6 +1604,14 @@ record SystemHealthResponse(
     string Uptime,
     string MachineName,
     string DotnetVersion);
+record OzonIntegrationStatusResponse(
+    bool Configured,
+    bool Success,
+    string Message,
+    string BaseUrl,
+    string ClientIdMasked,
+    string ApiKeyMasked,
+    DateTimeOffset CheckedAt);
 
 static class AuditLogWriter
 {
@@ -1585,6 +1639,35 @@ static class AuditLogWriter
             EntityId = entityId,
             Details = details,
         });
+    }
+}
+
+static class AppPublicText
+{
+    public static string MaskSecret(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "не задан";
+        }
+
+        if (value.Length <= 6)
+        {
+            return new string('*', value.Length);
+        }
+
+        return $"{value[..3]}...{value[^3..]}";
+    }
+
+    public static string GetPublicOzonError(Exception exception)
+    {
+        var message = exception.Message;
+        if (message.Length > 220)
+        {
+            message = $"{message[..220]}...";
+        }
+
+        return $"Ozon API не отвечает: {message}";
     }
 }
 

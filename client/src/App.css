@@ -1126,6 +1126,17 @@
   text-decoration: none;
 }
 
+.settings-card-action {
+  margin-top: 10px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #2563eb;
+  background: #ffffff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .audit-filter {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) auto;

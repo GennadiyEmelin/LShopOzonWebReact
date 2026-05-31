@@ -41,6 +41,16 @@ type SystemHealth = {
   dotnetVersion: string
 }
 
+type OzonIntegrationStatus = {
+  configured: boolean
+  success: boolean
+  message: string
+  baseUrl: string
+  clientIdMasked: string
+  apiKeyMasked: string
+  checkedAt: string
+}
+
 type OzonProduct = {
   productId: number
   offerId: string
@@ -227,6 +237,8 @@ function App() {
   const [auditStatus, setAuditStatus] = useState('')
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null)
   const [systemHealthStatus, setSystemHealthStatus] = useState('')
+  const [ozonIntegration, setOzonIntegration] = useState<OzonIntegrationStatus | null>(null)
+  const [ozonIntegrationStatus, setOzonIntegrationStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('production')
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
@@ -394,6 +406,7 @@ function App() {
     loadUsers()
     loadAuditLogs()
     loadSystemHealth()
+    loadOzonIntegrationStatus()
     const intervalId = window.setInterval(() => {
       loadUsers()
       loadAuditLogs()
@@ -648,6 +661,24 @@ function App() {
     const data: SystemHealth = await response.json()
     setSystemHealth(data)
     setSystemHealthStatus(data.databaseOk ? 'Система работает' : 'База данных недоступна')
+  }
+
+  async function loadOzonIntegrationStatus() {
+    setOzonIntegrationStatus('Проверяем Ozon API...')
+    const response = await fetch('/api/admin/ozon-status', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setOzonIntegrationStatus('Не удалось проверить Ozon API')
+      return
+    }
+
+    const data: OzonIntegrationStatus = await response.json()
+    setOzonIntegration(data)
+    setOzonIntegrationStatus(data.message)
   }
 
   async function exportSupplyAnalytics() {
@@ -2872,6 +2903,26 @@ function App() {
                       ? `${systemHealth.machineName} | .NET ${systemHealth.dotnetVersion}`
                       : 'Статус загружается'}
                   </small>
+                </div>
+                <div>
+                  <span>Ozon API</span>
+                  <strong>
+                    {ozonIntegration
+                      ? ozonIntegration.success
+                        ? 'Подключен'
+                        : 'Нужна проверка'
+                      : 'Проверка...'}
+                  </strong>
+                  <small>{ozonIntegrationStatus || 'Ключи не показываются полностью.'}</small>
+                  {ozonIntegration && (
+                    <small>
+                      ClientId: {ozonIntegration.clientIdMasked} | ApiKey:{' '}
+                      {ozonIntegration.apiKeyMasked}
+                    </small>
+                  )}
+                  <button type="button" className="settings-card-action" onClick={loadOzonIntegrationStatus}>
+                    Проверить Ozon
+                  </button>
                 </div>
               </div>
 
