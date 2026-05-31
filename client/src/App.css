@@ -138,6 +138,49 @@
   margin-left: auto;
 }
 
+.notification-menu {
+  position: relative;
+}
+
+.notification-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  width: 260px;
+  border: 1px solid #d9dee7;
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(18, 24, 38, 0.16);
+}
+
+.notification-panel button,
+.notification-panel span {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #344054;
+  background: #f8fafc;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.notification-panel button {
+  cursor: pointer;
+}
+
 .session span {
   display: grid;
   gap: 2px;
@@ -377,7 +420,8 @@
 .supply-create-bar,
 .supply-help-row,
 .supply-actions,
-.supply-filter {
+.supply-filter,
+.toolbar-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -925,6 +969,22 @@
   flex: 1 1 190px;
 }
 
+.toolbar-search,
+.toolbar-select {
+  flex: 1 1 240px;
+  min-width: 220px;
+  border: 1px solid #cfd6e3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #121826;
+  background: #ffffff;
+  font: inherit;
+}
+
+.toolbar-select {
+  flex: 0 1 220px;
+}
+
 .reserve-replace .product-search-input {
   min-width: 220px;
   flex: 1 1 220px;
@@ -1455,9 +1515,25 @@
   }
 
   .session {
+    position: relative;
     justify-content: space-between;
     width: 100%;
     margin-left: 0;
+  }
+
+  .notification-menu {
+    flex: 1 1 100%;
+  }
+
+  .notification-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .notification-panel {
+    right: auto;
+    left: 0;
+    width: min(100%, 320px);
   }
 
   .session span {
@@ -1545,6 +1621,7 @@
   .supply-create-bar,
   .supply-help-row,
   .supply-actions,
+  .toolbar-row,
   .supply-filter,
   .supply-list,
   .all-supplies-list {
@@ -1606,6 +1683,13 @@
   .supply-filter button,
   .chat-form button,
   .header-action {
+    width: 100%;
+  }
+
+  .toolbar-search,
+  .toolbar-select {
+    flex-basis: 100%;
+    min-width: 0;
     width: 100%;
   }
 

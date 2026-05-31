@@ -33,6 +33,14 @@ type AuditLog = {
   createdAt: string
 }
 
+type SystemHealth = {
+  databaseOk: boolean
+  serverTime: string
+  uptime: string
+  machineName: string
+  dotnetVersion: string
+}
+
 type OzonProduct = {
   productId: number
   offerId: string
@@ -217,6 +225,8 @@ function App() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [auditSearch, setAuditSearch] = useState('')
   const [auditStatus, setAuditStatus] = useState('')
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null)
+  const [systemHealthStatus, setSystemHealthStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('production')
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
@@ -224,6 +234,7 @@ function App() {
   const [ozonProducts, setOzonProducts] = useState<OzonProduct[]>([])
   const [stockStatus, setStockStatus] = useState('')
   const [ozonStocks, setOzonStocks] = useState<OzonStock[]>([])
+  const [stockSearch, setStockSearch] = useState('')
   const [stockSortDirection, setStockSortDirection] = useState<'desc' | 'asc'>('desc')
   const [priceStatus, setPriceStatus] = useState('')
   const [editingPrices, setEditingPrices] = useState<Record<number, string>>({})
@@ -235,6 +246,7 @@ function App() {
   const [selectedProductionProductId, setSelectedProductionProductId] = useState<number | null>(null)
   const [productionFiles, setProductionFiles] = useState<ProductionFile[]>([])
   const [productionTasks, setProductionTasks] = useState<ProductionTask[]>([])
+  const [taskSearch, setTaskSearch] = useState('')
   const [productionStatus, setProductionStatus] = useState('')
   const [taskStatus, setTaskStatus] = useState('')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
@@ -245,6 +257,8 @@ function App() {
   const [actualQuantities, setActualQuantities] = useState<Record<string, string>>({})
   const [supplySubTab, setSupplySubTab] = useState<SupplySubTab>('create')
   const [supplies, setSupplies] = useState<Supply[]>([])
+  const [supplySearch, setSupplySearch] = useState('')
+  const [supplyStatusFilter, setSupplyStatusFilter] = useState<'all' | SupplyStatus>('all')
   const [supplyAnalytics, setSupplyAnalytics] = useState<SupplyAnalyticsItem[]>([])
   const [supplyStatus, setSupplyStatus] = useState('')
   const [supplyProductId, setSupplyProductId] = useState('')
@@ -275,6 +289,7 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatText, setChatText] = useState('')
   const [chatStatus, setChatStatus] = useState('')
+  const [showNotifications, setShowNotifications] = useState(false)
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
@@ -298,11 +313,15 @@ function App() {
           .some((value) => String(value).toLowerCase().includes(normalizedProductionSearch)),
       )
     : ozonProducts
-  const newProductionTasks = productionTasks.filter((task) => task.status === 'New' && !task.isArchived)
-  const inProgressProductionTasks = productionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
-  const deferredProductionTasks = productionTasks.filter((task) => task.status === 'Deferred' && !task.isArchived)
-  const completedProductionTasks = productionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
-  const archivedProductionTasks = productionTasks.filter((task) => task.isArchived)
+  const normalizedTaskSearch = taskSearch.trim().toLowerCase()
+  const filteredProductionTasks = normalizedTaskSearch
+    ? productionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
+    : productionTasks
+  const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
+  const inProgressProductionTasks = filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
+  const deferredProductionTasks = filteredProductionTasks.filter((task) => task.status === 'Deferred' && !task.isArchived)
+  const completedProductionTasks = filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
+  const archivedProductionTasks = filteredProductionTasks.filter((task) => task.isArchived)
   const selectedProductionProduct = ozonProducts.find(
     (item) => item.productId === selectedProductionProductId,
   )
@@ -313,11 +332,26 @@ function App() {
           : `product:${item.ozonProductId}` === analyticsProductKey,
       )
     : supplyAnalytics
-  const activeSupplies = supplies.filter((supply) => !supply.isArchived)
-  const archivedSupplies = supplies.filter((supply) => supply.isArchived)
+  const normalizedSupplySearch = supplySearch.trim().toLowerCase()
+  const searchedSupplies = normalizedSupplySearch
+    ? supplies.filter((supply) => matchesSupply(supply, normalizedSupplySearch))
+    : supplies
+  const activeSupplies = searchedSupplies.filter((supply) => !supply.isArchived)
+  const archivedSupplies = searchedSupplies.filter((supply) => supply.isArchived)
   const createdSupplies = activeSupplies.filter((supply) => supply.status === 'Created')
   const editableSupplies = activeSupplies.filter((supply) => supply.status !== 'Created')
-  const sortedOzonStocks = [...ozonStocks].sort((left, right) => {
+  const visibleAllSupplies = activeSupplies.filter((supply) =>
+    supplyStatusFilter === 'all' ? true : supply.status === supplyStatusFilter,
+  )
+  const normalizedStockSearch = stockSearch.trim().toLowerCase()
+  const filteredOzonStocks = normalizedStockSearch
+    ? ozonStocks.filter((stock) =>
+        [stock.name, stock.offerId, stock.sku, stock.productId, stock.price, stock.currencyCode]
+          .filter((value) => value !== undefined && value !== null)
+          .some((value) => String(value).toLowerCase().includes(normalizedStockSearch)),
+      )
+    : ozonStocks
+  const sortedOzonStocks = [...filteredOzonStocks].sort((left, right) => {
     const leftTotal = left.fboPresent + left.fbsPresent
     const rightTotal = right.fboPresent + right.fbsPresent
     return stockSortDirection === 'desc' ? rightTotal - leftTotal : leftTotal - rightTotal
@@ -330,6 +364,18 @@ function App() {
     .sort((left, right) => right.quantity - left.quantity)
   const selectedChatUser = chatUsers.find((item) => item.id === selectedChatUserId)
   const chatUnreadTotal = chatUsers.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
+  const notificationItems = [
+    ...(newProductionTasks.length > 0
+      ? [`Новые задачи: ${newProductionTasks.length}`]
+      : []),
+    ...(inProgressProductionTasks.length > 0
+      ? [`В работе: ${inProgressProductionTasks.length}`]
+      : []),
+    ...(chatUnreadTotal > 0
+      ? [`Новые сообщения: ${chatUnreadTotal}`]
+      : []),
+  ]
+  const notificationTotal = newProductionTasks.length + inProgressProductionTasks.length + chatUnreadTotal
 
   useEffect(() => {
     if (!token) {
@@ -347,9 +393,11 @@ function App() {
 
     loadUsers()
     loadAuditLogs()
+    loadSystemHealth()
     const intervalId = window.setInterval(() => {
       loadUsers()
       loadAuditLogs()
+      loadSystemHealth()
     }, 30000)
     return () => window.clearInterval(intervalId)
   }, [token, user?.role])
@@ -581,6 +629,44 @@ function App() {
     const link = document.createElement('a')
     link.href = url
     link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function loadSystemHealth() {
+    const response = await fetch('/api/admin/system-health', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSystemHealthStatus('Не удалось получить статус системы')
+      return
+    }
+
+    const data: SystemHealth = await response.json()
+    setSystemHealth(data)
+    setSystemHealthStatus(data.databaseOk ? 'Система работает' : 'База данных недоступна')
+  }
+
+  async function exportSupplyAnalytics() {
+    const response = await fetch('/api/supplies/analytics/export', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSupplyStatus('Не удалось скачать аналитику поставок')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `supplies-analytics-${new Date().toISOString().slice(0, 10)}.csv`
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -1612,6 +1698,38 @@ function App() {
         </nav>
 
         <div className="session">
+          <div className="notification-menu">
+            <button
+              type="button"
+              className="notification-button"
+              onClick={() => setShowNotifications((current) => !current)}
+            >
+              Уведомления
+              {notificationTotal > 0 && <span className="tab-badge">{notificationTotal}</span>}
+            </button>
+            {showNotifications && (
+              <div className="notification-panel">
+                {notificationItems.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    onClick={() => {
+                      setShowNotifications(false)
+                      if (item.includes('сообщ')) {
+                        setActiveTab('chats')
+                      } else {
+                        setActiveTab('production')
+                        setProductionSubTab(item.includes('В работе') ? 'inProgress' : 'tasks')
+                      }
+                    }}
+                  >
+                    {item}
+                  </button>
+                ))}
+                {notificationItems.length === 0 && <span>Новых уведомлений нет</span>}
+              </div>
+            )}
+          </div>
           <span>
             <small>В системе</small>
             <strong>{user?.displayName || user?.userName}</strong>
@@ -1680,6 +1798,17 @@ function App() {
                   Выполненные
                 </button>
               </div>
+
+              {productionSubTab !== 'products' && (
+                <div className="toolbar-row">
+                  <input
+                    className="toolbar-search"
+                    placeholder="Поиск по товару, артикулу, статусу или исполнителю"
+                    value={taskSearch}
+                    onChange={(event) => setTaskSearch(event.target.value)}
+                  />
+                </div>
+              )}
 
               {productionSubTab === 'products' && (
                 <>
@@ -2130,6 +2259,12 @@ function App() {
                 <button type="button" onClick={loadOzonStocks}>
                   Обновить остатки Ozon
                 </button>
+                <input
+                  className="toolbar-search"
+                  placeholder="Поиск по товару, артикулу или цене"
+                  value={stockSearch}
+                  onChange={(event) => setStockSearch(event.target.value)}
+                />
                 <span className="sort-actions stock-sort-actions">
                   <button type="button" onClick={() => setStockSortDirection('desc')}>
                     По убыванию
@@ -2213,6 +2348,29 @@ function App() {
                   >
                     Аналитика поставок
                   </button>
+                )}
+              </div>
+
+              <div className="toolbar-row">
+                <input
+                  className="toolbar-search"
+                  placeholder="Поиск по поставкам, товарам, артикулам"
+                  value={supplySearch}
+                  onChange={(event) => setSupplySearch(event.target.value)}
+                />
+                {supplySubTab === 'all' && (
+                  <select
+                    className="toolbar-select"
+                    value={supplyStatusFilter}
+                    onChange={(event) =>
+                      setSupplyStatusFilter(event.target.value as 'all' | SupplyStatus)
+                    }
+                  >
+                    <option value="all">Все статусы</option>
+                    <option value="Created">Создано</option>
+                    <option value="Sent">Отправлено</option>
+                    <option value="Accepted">Принято</option>
+                  </select>
                 )}
               </div>
 
@@ -2419,7 +2577,7 @@ function App() {
                 />
               )}
 
-              {supplySubTab === 'all' && <AllSuppliesTable supplies={activeSupplies} />}
+              {supplySubTab === 'all' && <AllSuppliesTable supplies={visibleAllSupplies} />}
 
               {supplySubTab === 'archive' && user?.role === 'Admin' && (
                 <SupplyTable
@@ -2485,6 +2643,9 @@ function App() {
                     </select>
                     <button type="button" onClick={loadSupplyAnalytics}>
                       Обновить
+                    </button>
+                    <button type="button" onClick={exportSupplyAnalytics}>
+                      Скачать CSV
                     </button>
                   </div>
 
@@ -2688,8 +2849,8 @@ function App() {
               <div className="settings-grid">
                 <div>
                   <span>База данных</span>
-                  <strong>PostgreSQL</strong>
-                  <small>Работает внутри Docker Compose.</small>
+                  <strong>{systemHealth?.databaseOk ? 'PostgreSQL OK' : 'Проверка...'}</strong>
+                  <small>{systemHealthStatus || 'Работает внутри Docker Compose.'}</small>
                 </div>
                 <div>
                   <span>Бэкапы</span>
@@ -2702,6 +2863,15 @@ function App() {
                   <a href="http://localhost:8082" target="_blank" rel="noreferrer">
                     Открыть Adminer
                   </a>
+                </div>
+                <div>
+                  <span>Сервер</span>
+                  <strong>{systemHealth ? formatDuration(systemHealth.uptime) : '-'}</strong>
+                  <small>
+                    {systemHealth
+                      ? `${systemHealth.machineName} | .NET ${systemHealth.dotnetVersion}`
+                      : 'Статус загружается'}
+                  </small>
                 </div>
               </div>
 
@@ -3092,6 +3262,51 @@ function getProductionTaskActualTotal(task: ProductionTask) {
 function getProductionTaskSummary(task: ProductionTask) {
   const items = getProductionTaskItems(task)
   return items.length === 1 ? items[0].productName : `${items.length} товаров в задаче`
+}
+
+function matchesProductionTask(task: ProductionTask, search: string) {
+  return [
+    task.offerId,
+    task.productName,
+    task.status,
+    task.assignedUserName,
+    task.requiredQuantity,
+    task.actualQuantity,
+    ...getProductionTaskItems(task).flatMap((item) => [
+      item.offerId,
+      item.productName,
+      item.requiredQuantity,
+      item.actualQuantity,
+    ]),
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .some((value) => String(value).toLowerCase().includes(search))
+}
+
+function matchesSupply(supply: Supply, search: string) {
+  return [
+    supply.id,
+    supply.status,
+    supply.createdAt,
+    supply.sentAt,
+    supply.acceptedAt,
+    ...supply.items.flatMap((item) => [
+      item.offerId,
+      item.productName,
+      item.quantity,
+      item.isReserve ? 'резервный' : 'постоянный',
+    ]),
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .some((value) => String(value).toLowerCase().includes(search))
+}
+
+function formatDuration(value: string) {
+  const [daysPart, timePart = daysPart] = value.includes('.') ? value.split('.') : ['0', value]
+  const [hours = '0', minutes = '0'] = timePart.split(':')
+  const days = Number(daysPart)
+  const prefix = days > 0 ? `${days} д. ` : ''
+  return `${prefix}${Number(hours)} ч. ${Number(minutes)} мин.`
 }
 
 function ProductionTaskArchiveTable({

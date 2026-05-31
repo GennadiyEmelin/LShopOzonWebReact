@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Diagnostics;
 using System.Text;
 using System.Xml.Linq;
 using System.IO.Compression;
@@ -389,6 +390,19 @@ app.MapGet("/api/admin/audit-logs/export", async (AppDbContext db) =>
         Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
         "text/csv; charset=utf-8",
         $"audit-log-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapGet("/api/admin/system-health", async (AppDbContext db) =>
+{
+    var process = Process.GetCurrentProcess();
+    var dbOk = await db.Database.CanConnectAsync();
+
+    return Results.Ok(new SystemHealthResponse(
+        dbOk,
+        DateTimeOffset.UtcNow,
+        (DateTimeOffset.UtcNow - process.StartTime.ToUniversalTime()).ToString(),
+        Environment.MachineName,
+        Environment.Version.ToString()));
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal) =>
@@ -1380,6 +1394,53 @@ app.MapGet("/api/supplies/analytics", async (AppDbContext db) =>
 })
     .RequireAuthorization();
 
+app.MapGet("/api/supplies/analytics/export", async (AppDbContext db) =>
+{
+    var items = await db.SupplyItems
+        .AsNoTracking()
+        .Include(item => item.Supply)
+        .ToListAsync();
+
+    var rows = items
+        .GroupBy(item => new
+        {
+            item.SupplyId,
+            item.OzonProductId,
+            item.OfferId,
+            item.ProductName,
+            item.IsReserve,
+            item.Supply.Status,
+            item.Supply.CreatedAt,
+            item.Supply.SentAt,
+            item.Supply.AcceptedAt
+        })
+        .OrderByDescending(group => group.Key.CreatedAt)
+        .ThenBy(group => group.Key.ProductName)
+        .ToList();
+
+    var builder = new StringBuilder();
+    builder.AppendLine("Дата создания;Дата отправки;Дата приемки;Статус;Товар;Артикул;Количество;Резервный;ID поставки");
+    foreach (var row in rows)
+    {
+        builder.AppendLine(string.Join(';', [
+            CsvExport.Cell(row.Key.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
+            CsvExport.Cell(row.Key.SentAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+            CsvExport.Cell(row.Key.AcceptedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+            CsvExport.Cell(row.Key.Status),
+            CsvExport.Cell(row.Key.ProductName),
+            CsvExport.Cell(row.Key.OfferId),
+            CsvExport.Cell(row.Sum(item => item.Quantity).ToString()),
+            CsvExport.Cell(row.Key.IsReserve ? "Да" : "Нет"),
+            CsvExport.Cell(row.Key.SupplyId.ToString())
+        ]));
+    }
+
+    return Results.File(
+        Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
+        "text/csv; charset=utf-8",
+        $"supplies-analytics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
 if (hasStaticClient)
 {
     app.MapFallbackToFile("index.html");
@@ -1491,6 +1552,12 @@ record AuditLogListItem(
     string EntityId,
     string Details,
     DateTimeOffset CreatedAt);
+record SystemHealthResponse(
+    bool DatabaseOk,
+    DateTimeOffset ServerTime,
+    string Uptime,
+    string MachineName,
+    string DotnetVersion);
 
 static class AuditLogWriter
 {
