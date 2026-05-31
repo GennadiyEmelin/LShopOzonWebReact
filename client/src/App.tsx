@@ -729,6 +729,27 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function exportTaskArchive() {
+    const response = await fetch('/api/production/tasks/archive/export', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setTaskStatus('Не удалось скачать архив задач')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `production-task-archive-${new Date().toISOString().slice(0, 10)}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
   async function exportSupplyAnalytics() {
     const response = await fetch('/api/supplies/analytics/export', {
       headers: {
@@ -1828,13 +1849,20 @@ function App() {
                   <h2>Производство</h2>
                   <p>{productionSubTab === 'tasks' ? taskStatus : productionStatus || 'Фото, данные и задачи'}</p>
                 </div>
-                <button
-                  type="button"
-                  className="header-action"
-                  onClick={() => setProductionSubTab('archive')}
-                >
-                  Архив задач
-                </button>
+                <span className="section-actions">
+                  {productionSubTab === 'archive' && user?.role === 'Admin' && (
+                    <button type="button" className="header-action" onClick={exportTaskArchive}>
+                      Скачать CSV
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="header-action"
+                    onClick={() => setProductionSubTab('archive')}
+                  >
+                    Архив задач
+                  </button>
+                </span>
               </div>
 
               <div className="inner-tabs">

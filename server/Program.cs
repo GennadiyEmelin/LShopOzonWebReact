@@ -895,6 +895,55 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db) =>
         .ToListAsync();
 }).RequireAuthorization();
 
+app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
+{
+    var tasks = await db.ProductionTasks
+        .AsNoTracking()
+        .Include(task => task.Items)
+        .Where(task => task.IsArchived)
+        .OrderByDescending(task => task.CompletedAt ?? task.CreatedAt)
+        .ToListAsync();
+
+    var builder = new StringBuilder();
+    builder.AppendLine("ID задачи;Создана;Взята в работу;Завершена;Архивирована;Исполнитель;Статус;Товар;Артикул;План;Факт");
+
+    foreach (var task in tasks)
+    {
+        var items = task.Items.Count == 0
+            ? [new ProductionTaskItem
+            {
+                OzonProductId = task.OzonProductId,
+                OfferId = task.OfferId,
+                ProductName = task.ProductName,
+                RequiredQuantity = task.RequiredQuantity,
+                ActualQuantity = task.ActualQuantity
+            }]
+            : task.Items.OrderBy(item => item.ProductName).ToList();
+
+        foreach (var item in items)
+        {
+            builder.AppendLine(string.Join(';', [
+                CsvExport.Cell(task.Id.ToString()),
+                CsvExport.Cell(task.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
+                CsvExport.Cell(task.StartedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                CsvExport.Cell(task.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                CsvExport.Cell(task.ArchivedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                CsvExport.Cell(task.AssignedUserName ?? string.Empty),
+                CsvExport.Cell(task.Status),
+                CsvExport.Cell(item.ProductName),
+                CsvExport.Cell(item.OfferId),
+                CsvExport.Cell(item.RequiredQuantity.ToString()),
+                CsvExport.Cell((item.ActualQuantity ?? 0).ToString())
+            ]));
+        }
+    }
+
+    return Results.File(
+        Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
+        "text/csv; charset=utf-8",
+        $"production-task-archive-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
 app.MapPost("/api/production/tasks", async (
     CreateProductionTaskRequest request,
     AppDbContext db,
