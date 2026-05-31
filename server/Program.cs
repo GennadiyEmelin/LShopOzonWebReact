@@ -405,6 +405,50 @@ app.MapGet("/api/admin/system-health", async (AppDbContext db) =>
         Environment.Version.ToString()));
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
+app.MapGet("/api/admin/backups", (IWebHostEnvironment environment) =>
+{
+    var backupDirectory = AppPaths.GetBackupDirectory(environment);
+    if (!Directory.Exists(backupDirectory))
+    {
+        return Results.Ok(Array.Empty<BackupFileResponse>());
+    }
+
+    var files = Directory
+        .EnumerateFiles(backupDirectory, "*.sql.gz", SearchOption.TopDirectoryOnly)
+        .Select(path =>
+        {
+            var info = new FileInfo(path);
+            return new BackupFileResponse(
+                info.Name,
+                info.Length,
+                info.LastWriteTimeUtc);
+        })
+        .OrderByDescending(file => file.CreatedAt)
+        .Take(30)
+        .ToList();
+
+    return Results.Ok(files);
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapGet("/api/admin/backups/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+{
+    if (fileName != Path.GetFileName(fileName)
+        || !fileName.EndsWith(".sql.gz", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest("Некорректное имя файла.");
+    }
+
+    var backupDirectory = AppPaths.GetBackupDirectory(environment);
+    var fullPath = Path.GetFullPath(Path.Combine(backupDirectory, fileName));
+    if (!fullPath.StartsWith(Path.GetFullPath(backupDirectory), StringComparison.OrdinalIgnoreCase)
+        || !System.IO.File.Exists(fullPath))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(fullPath, "application/gzip", fileName);
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
 app.MapGet("/api/admin/ozon-status", async (
     OzonApiClient ozonApi,
     Microsoft.Extensions.Options.IOptions<OzonOptions> options,
@@ -1604,6 +1648,7 @@ record SystemHealthResponse(
     string Uptime,
     string MachineName,
     string DotnetVersion);
+record BackupFileResponse(string FileName, long SizeBytes, DateTimeOffset CreatedAt);
 record OzonIntegrationStatusResponse(
     bool Configured,
     bool Success,
@@ -1668,6 +1713,21 @@ static class AppPublicText
         }
 
         return $"Ozon API не отвечает: {message}";
+    }
+}
+
+static class AppPaths
+{
+    public static string GetBackupDirectory(IWebHostEnvironment environment)
+    {
+        var contentRootBackups = Path.Combine(environment.ContentRootPath, "backups");
+        if (Directory.Exists(contentRootBackups))
+        {
+            return Path.GetFullPath(contentRootBackups);
+        }
+
+        var parent = Directory.GetParent(environment.ContentRootPath)?.FullName;
+        return Path.GetFullPath(Path.Combine(parent ?? environment.ContentRootPath, "backups"));
     }
 }
 

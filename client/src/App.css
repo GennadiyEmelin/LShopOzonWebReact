@@ -1137,6 +1137,70 @@
   cursor: pointer;
 }
 
+.backup-panel {
+  padding: 18px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.backup-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.backup-panel-head h3 {
+  margin: 0;
+  color: #121826;
+}
+
+.backup-panel-head p {
+  margin: 4px 0 0;
+  color: #677083;
+}
+
+.backup-list {
+  display: grid;
+  gap: 8px;
+}
+
+.backup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #d9dee7;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.backup-row strong,
+.backup-row small {
+  display: block;
+}
+
+.backup-row strong {
+  overflow-wrap: anywhere;
+  color: #121826;
+}
+
+.backup-row small {
+  margin-top: 4px;
+  color: #677083;
+}
+
+.backup-row button {
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #ffffff;
+  background: #2563eb;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .audit-filter {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) auto;
@@ -1633,6 +1697,7 @@
   .supply-help-row,
   .supply-actions,
   .toolbar-row,
+  .backup-panel,
   .supply-filter,
   .supply-list,
   .all-supplies-list {
@@ -1670,6 +1735,8 @@
   .supply-edit-tools,
   .supply-form-block,
   .supply-card-head,
+  .backup-panel-head,
+  .backup-row,
   .all-supply-card summary,
   .analytics-grid,
   .settings-grid,

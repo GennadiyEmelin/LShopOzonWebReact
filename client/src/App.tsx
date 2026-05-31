@@ -51,6 +51,12 @@ type OzonIntegrationStatus = {
   checkedAt: string
 }
 
+type BackupFile = {
+  fileName: string
+  sizeBytes: number
+  createdAt: string
+}
+
 type OzonProduct = {
   productId: number
   offerId: string
@@ -239,6 +245,8 @@ function App() {
   const [systemHealthStatus, setSystemHealthStatus] = useState('')
   const [ozonIntegration, setOzonIntegration] = useState<OzonIntegrationStatus | null>(null)
   const [ozonIntegrationStatus, setOzonIntegrationStatus] = useState('')
+  const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
+  const [backupStatus, setBackupStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('production')
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
@@ -407,10 +415,12 @@ function App() {
     loadAuditLogs()
     loadSystemHealth()
     loadOzonIntegrationStatus()
+    loadBackups()
     const intervalId = window.setInterval(() => {
       loadUsers()
       loadAuditLogs()
       loadSystemHealth()
+      loadBackups()
     }, 30000)
     return () => window.clearInterval(intervalId)
   }, [token, user?.role])
@@ -679,6 +689,44 @@ function App() {
     const data: OzonIntegrationStatus = await response.json()
     setOzonIntegration(data)
     setOzonIntegrationStatus(data.message)
+  }
+
+  async function loadBackups() {
+    const response = await fetch('/api/admin/backups', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setBackupStatus('Не удалось получить список бэкапов')
+      return
+    }
+
+    const data: BackupFile[] = await response.json()
+    setBackupFiles(data)
+    setBackupStatus(data.length ? `Бэкапов: ${data.length}` : 'Бэкапов пока нет')
+  }
+
+  async function downloadBackup(fileName: string) {
+    const response = await fetch(`/api/admin/backups/${encodeURIComponent(fileName)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setBackupStatus('Не удалось скачать бэкап')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   async function exportSupplyAnalytics() {
@@ -2885,8 +2933,11 @@ function App() {
                 </div>
                 <div>
                   <span>Бэкапы</span>
-                  <strong>Каждые 24 часа</strong>
-                  <small>Файлы складываются в папку backups рядом с проектом.</small>
+                  <strong>{backupFiles.length ? `${backupFiles.length} файлов` : 'Нет файлов'}</strong>
+                  <small>{backupStatus || 'Файлы складываются в папку backups рядом с проектом.'}</small>
+                  <button type="button" className="settings-card-action" onClick={loadBackups}>
+                    Обновить список
+                  </button>
                 </div>
                 <div>
                   <span>Просмотр БД</span>
@@ -2923,6 +2974,36 @@ function App() {
                   <button type="button" className="settings-card-action" onClick={loadOzonIntegrationStatus}>
                     Проверить Ozon
                   </button>
+                </div>
+              </div>
+
+              <div className="backup-panel">
+                <div className="backup-panel-head">
+                  <div>
+                    <h3>Бэкапы базы данных</h3>
+                    <p>{backupStatus || 'Последние сохраненные копии PostgreSQL'}</p>
+                  </div>
+                  <button type="button" className="header-action" onClick={loadBackups}>
+                    Обновить
+                  </button>
+                </div>
+                <div className="backup-list">
+                  {backupFiles.map((file) => (
+                    <div className="backup-row" key={file.fileName}>
+                      <span>
+                        <strong>{file.fileName}</strong>
+                        <small>
+                          {formatDateTime(file.createdAt)} | {formatFileSize(file.sizeBytes)}
+                        </small>
+                      </span>
+                      <button type="button" onClick={() => downloadBackup(file.fileName)}>
+                        Скачать
+                      </button>
+                    </div>
+                  ))}
+                  {backupFiles.length === 0 && (
+                    <div className="empty-state">Бэкапы появятся после первого запуска backup-контейнера.</div>
+                  )}
                 </div>
               </div>
 
@@ -3358,6 +3439,19 @@ function formatDuration(value: string) {
   const days = Number(daysPart)
   const prefix = days > 0 ? `${days} д. ` : ''
   return `${prefix}${Number(hours)} ч. ${Number(minutes)} мин.`
+}
+
+function formatFileSize(value: number) {
+  if (value < 1024) {
+    return `${value} Б`
+  }
+
+  const kb = value / 1024
+  if (kb < 1024) {
+    return `${kb.toFixed(1)} КБ`
+  }
+
+  return `${(kb / 1024).toFixed(1)} МБ`
 }
 
 function ProductionTaskArchiveTable({
