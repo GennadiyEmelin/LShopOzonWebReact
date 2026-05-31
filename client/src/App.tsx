@@ -172,6 +172,14 @@ type DraftTaskItem = {
   requiredQuantity: number
 }
 
+function createTempId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID()
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 const tabs = [
   { id: 'production', label: 'Производство' },
   { id: 'products', label: 'Товары' },
@@ -948,7 +956,7 @@ function App() {
     setDraftTaskItems((current) => [
       ...current,
       {
-        tempId: crypto.randomUUID(),
+        tempId: createTempId(),
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
@@ -1154,7 +1162,7 @@ function App() {
     setDraftSupplyItems((current) => [
       ...current,
       {
-        tempId: crypto.randomUUID(),
+        tempId: createTempId(),
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
@@ -1178,7 +1186,7 @@ function App() {
     setDraftSupplyItems((current) => [
       ...current,
       {
-        tempId: crypto.randomUUID(),
+        tempId: createTempId(),
         offerId: '',
         productName: reserveProductName.trim(),
         quantity,
@@ -1377,7 +1385,7 @@ function App() {
     setEditSupplyItems((current) => [
       ...current,
       {
-        tempId: crypto.randomUUID(),
+        tempId: createTempId(),
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
@@ -1400,7 +1408,7 @@ function App() {
     setEditSupplyItems((current) => [
       ...current,
       {
-        tempId: crypto.randomUUID(),
+        tempId: createTempId(),
         offerId: '',
         productName: editReserveProductName.trim(),
         quantity,
