@@ -753,7 +753,7 @@ function App() {
   }
 
   async function updateOzonPrice(item: OzonStock) {
-    const price = Number(editingPrices[item.productId])
+    const price = Number(editingPrices[item.productId]?.replace(',', '.'))
     if (!Number.isFinite(price) || price <= 0) {
       setPriceStatus('Введите корректную цену')
       return
@@ -777,11 +777,18 @@ function App() {
     })
 
     if (!response.ok) {
-      setPriceStatus('Не удалось изменить цену в Ozon')
+      const errorText = await response.text()
+      setPriceStatus(getApiErrorMessage(errorText, 'Не удалось изменить цену в Ozon'))
       return
     }
 
-    setPriceStatus(`Цена для ${item.offerId} успешно отправлена в Ozon`)
+    const result: { success?: boolean; message?: string } = await response.json()
+    if (result.success === false) {
+      setPriceStatus(result.message || 'Ozon не принял новую цену')
+      return
+    }
+
+    setPriceStatus(result.message || `Цена для ${item.offerId} успешно отправлена в Ozon`)
     setOzonStocks((current) =>
       current.map((stock) => (stock.productId === item.productId ? { ...stock, price } : stock)),
     )
@@ -2061,6 +2068,14 @@ function App() {
                 <button type="button" onClick={loadOzonStocks}>
                   Обновить остатки Ozon
                 </button>
+                <span className="sort-actions stock-sort-actions">
+                  <button type="button" onClick={() => setStockSortDirection('desc')}>
+                    По убыванию
+                  </button>
+                  <button type="button" onClick={() => setStockSortDirection('asc')}>
+                    По возрастанию
+                  </button>
+                </span>
               </div>
               <div className="data-table">
                 <div className="table-row stock-row table-head">
@@ -2069,14 +2084,7 @@ function App() {
                   <span>FBO</span>
                   <span>FBS</span>
                   <span>Цена</span>
-                  <span className="sort-actions">
-                    <button type="button" onClick={() => setStockSortDirection('desc')}>
-                      По убыванию
-                    </button>
-                    <button type="button" onClick={() => setStockSortDirection('asc')}>
-                      По возрастанию
-                    </button>
-                  </span>
+                  <span>Действие</span>
                 </div>
                 {sortedOzonStocks.map((item) => (
                   <StockRow
@@ -3473,7 +3481,7 @@ function StockRow({
 }) {
   return (
     <div className="table-row stock-row">
-      <span>
+      <span data-label="Товар">
         <strong>{item.name}</strong>
         {item.productUrl && (
           <a href={item.productUrl} target="_blank" rel="noreferrer">
@@ -3481,20 +3489,33 @@ function StockRow({
           </a>
         )}
       </span>
-      <span>{item.offerId}</span>
-      <span>{item.fboPresent}</span>
-      <span>{item.fbsPresent}</span>
-      <span>
+      <span data-label="Артикул">{item.offerId}</span>
+      <span data-label="FBO">{item.fboPresent}</span>
+      <span data-label="FBS">{item.fbsPresent}</span>
+      <span className="stock-price-cell" data-label="Цена">
         <input value={priceValue} onChange={(event) => onPriceChange(event.target.value)} />
         <small>{item.currencyCode}</small>
       </span>
-      <span>
+      <span className="stock-save-cell" data-label="Действие">
         <button type="button" onClick={onSave}>
           Сохранить
         </button>
       </span>
     </div>
   )
+}
+
+function getApiErrorMessage(errorText: string, fallback: string) {
+  if (!errorText.trim()) {
+    return fallback
+  }
+
+  try {
+    const data = JSON.parse(errorText) as { detail?: string; title?: string; message?: string }
+    return data.detail || data.message || data.title || fallback
+  } catch {
+    return errorText.length > 180 ? `${errorText.slice(0, 180)}...` : errorText
+  }
 }
 
 function formatMoney(value: number, currency: string) {

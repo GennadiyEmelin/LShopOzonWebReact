@@ -122,8 +122,8 @@ public class OzonApiClient(HttpClient httpClient, IOptions<OzonOptions> options)
                 request.ProductId,
                 request.OfferId,
                 request.Price.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
-                request.OldPrice?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "0",
-                request.MinPrice?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "0",
+                GetOptionalOzonPrice(request.OldPrice, request.Price),
+                GetOptionalOzonPrice(request.MinPrice, request.Price),
                 request.CurrencyCode)
         ]));
 
@@ -139,7 +139,13 @@ public class OzonApiClient(HttpClient httpClient, IOptions<OzonOptions> options)
         }
 
         var data = JsonSerializer.Deserialize<JsonElement>(content, JsonOptions);
-        return new OzonPriceUpdateResult(true, "Цена отправлена в Ozon", data);
+        var errors = GetOzonPriceImportErrors(data);
+        if (!string.IsNullOrWhiteSpace(errors))
+        {
+            return new OzonPriceUpdateResult(false, errors, data);
+        }
+
+        return new OzonPriceUpdateResult(true, "Цена успешно обновлена в Ozon", data);
     }
 
     public async Task<OzonAnalyticsResult> GetAnalyticsAsync(DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken)
@@ -369,6 +375,61 @@ public class OzonApiClient(HttpClient httpClient, IOptions<OzonOptions> options)
         {
             throw new InvalidOperationException("Ozon API credentials are not configured.");
         }
+    }
+
+    private static string GetOptionalOzonPrice(decimal? value, decimal price)
+    {
+        if (value is null || value <= 0 || value <= price)
+        {
+            return "0";
+        }
+
+        return value.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string GetOzonPriceImportErrors(JsonElement data)
+    {
+        var messages = new List<string>();
+
+        if (!data.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        foreach (var item in result.EnumerateArray())
+        {
+            if (item.TryGetProperty("updated", out var updated)
+                && updated.ValueKind is JsonValueKind.False)
+            {
+                messages.Add("Ozon не обновил цену товара.");
+            }
+
+            if (!item.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var error in errors.EnumerateArray())
+            {
+                var message = error.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+                var code = error.TryGetProperty("code", out var codeElement)
+                    ? codeElement.GetString()
+                    : null;
+
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    messages.Add(message);
+                }
+                else if (!string.IsNullOrWhiteSpace(code))
+                {
+                    messages.Add(code);
+                }
+            }
+        }
+
+        return string.Join(" ", messages.Distinct());
     }
 }
 
