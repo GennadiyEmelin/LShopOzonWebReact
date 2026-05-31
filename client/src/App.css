@@ -1262,15 +1262,57 @@
 }
 
 @media (max-width: 720px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
   .app-header {
-    grid-template-columns: 1fr;
+    position: sticky;
+    display: flex;
+    flex-direction: column;
     align-items: stretch;
-    gap: 0;
+    gap: 10px;
     padding: 12px;
   }
 
   .app-content {
-    padding: 12px;
+    min-height: calc(100vh - 132px);
+    padding: 10px;
+  }
+
+  .brand {
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .brand strong {
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status {
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .session {
+    justify-content: space-between;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .session span {
+    min-width: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .session button {
+    flex: 0 0 auto;
   }
 
   .section-title,
@@ -1279,13 +1321,37 @@
     flex-direction: column;
   }
 
+  .section-title {
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .section-title h2 {
+    font-size: 18px;
+  }
+
   .summary {
     grid-template-columns: 1fr;
   }
 
+  .summary div {
+    padding: 14px;
+  }
+
+  .summary strong {
+    font-size: 20px;
+  }
+
+  .tab-panel {
+    overflow: visible;
+  }
+
   .main-tabs {
+    flex: none;
     justify-content: flex-start;
-    margin: 10px -2px 0;
+    margin: 0 -12px;
+    padding: 0 12px 4px;
+    scrollbar-width: thin;
   }
 
   .main-tabs button {
@@ -1299,6 +1365,41 @@
     color: #ffffff;
     background: #2563eb;
     box-shadow: none;
+  }
+
+  .inner-tabs {
+    gap: 6px;
+    margin: 0 -1px;
+    padding: 10px;
+    scrollbar-width: thin;
+  }
+
+  .inner-tabs button {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .tab-badge {
+    min-width: 20px;
+    height: 20px;
+    font-size: 11px;
+  }
+
+  .ozon-status,
+  .production-tools,
+  .supply-create-bar,
+  .supply-help-row,
+  .supply-actions,
+  .supply-filter,
+  .supply-list,
+  .all-supplies-list {
+    padding: 12px;
+  }
+
+  .ozon-status {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .user-form {
@@ -1318,5 +1419,235 @@
   .analytics-grid,
   .users-list li {
     grid-template-columns: 1fr;
+  }
+
+  .search-form,
+  .product-file-form,
+  .task-form {
+    gap: 8px;
+  }
+
+  .search-form button,
+  .product-file-form button,
+  .task-form button,
+  .supply-create-bar button,
+  .supply-help-row button,
+  .supply-form-block button,
+  .supply-actions button,
+  .supply-filter button,
+  .chat-form button,
+  .header-action {
+    width: 100%;
+  }
+
+  .supply-form-block,
+  .supply-edit-tools {
+    padding: 12px;
+  }
+
+  .data-table {
+    display: grid;
+    gap: 10px;
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .data-table .table-head {
+    display: none;
+  }
+
+  .table-row,
+  .stock-row,
+  .ozon-product-row,
+  .production-product-row,
+  .analytics-row,
+  .top-products-row,
+  .task-row,
+  .task-draft-row,
+  .task-archive-row,
+  .task-item-table-row,
+  .file-row,
+  .supply-item-row,
+  .supply-analytics-row,
+  .all-supply-item-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    min-width: 0;
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    padding: 12px;
+    background: #ffffff;
+  }
+
+  .table-row > *,
+  .users-list li > * {
+    min-width: 0;
+  }
+
+  .table-row strong,
+  .table-row small,
+  .table-row span,
+  .table-row a {
+    overflow-wrap: anywhere;
+  }
+
+  .row-actions,
+  .sort-actions,
+  .task-actions,
+  .supply-status-actions,
+  .reserve-replace,
+  .file-actions {
+    justify-content: stretch;
+  }
+
+  .row-actions button,
+  .sort-actions button,
+  .task-actions button,
+  .supply-status-actions button,
+  .reserve-replace button,
+  .file-actions button,
+  .data-table button {
+    flex: 1 1 140px;
+  }
+
+  .task-details-row,
+  .task-details-row.deferred-stale > summary {
+    border: 0;
+    background: transparent;
+  }
+
+  .task-details-row > summary {
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .task-details-row.deferred-stale > summary {
+    background: #fff1f3;
+  }
+
+  .task-items-table {
+    display: grid;
+    gap: 8px;
+    padding: 10px 0 0;
+    background: transparent;
+  }
+
+  .task-item-table-row:last-child {
+    border-bottom: 1px solid #d9dee7;
+  }
+
+  .task-item-table-row input {
+    max-width: none;
+  }
+
+  .inline-detail {
+    margin: 0 12px 12px;
+  }
+
+  .product-preview {
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .preview-media {
+    width: 96px;
+    height: 96px;
+  }
+
+  .product-preview h2 {
+    font-size: 18px;
+  }
+
+  .product-preview dl {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .product-file-form {
+    padding: 12px;
+  }
+
+  .all-supply-card summary,
+  .supply-card-head {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .supply-status-actions button {
+    width: auto;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .modal-card,
+  .modal-card-wide {
+    width: 100%;
+    max-height: calc(100vh - 20px);
+    overflow: auto;
+    padding: 16px;
+  }
+
+  .modal-title-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .modal-card button {
+    width: 100%;
+  }
+
+  .analytics-grid {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .analytics-grid div {
+    padding: 14px;
+  }
+
+  .users-list li {
+    padding: 12px;
+  }
+
+  .users-list button {
+    width: 100%;
+  }
+
+  .chat-layout {
+    grid-template-columns: 1fr;
+    min-height: calc(100vh - 190px);
+  }
+
+  .chat-users {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(190px, 78vw);
+    overflow-x: auto;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #d9dee7;
+  }
+
+  .chat-window {
+    min-height: 520px;
+  }
+
+  .chat-message {
+    width: min(100%, 560px);
+  }
+
+  .chat-form {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .chat-form textarea {
+    min-height: 48px;
   }
 }
