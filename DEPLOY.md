@@ -23,6 +23,14 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 
 ## Обновление проекта
 
+Быстрый вариант на сервере:
+
+```bash
+bash scripts/deploy-server.sh
+```
+
+Ручной вариант:
+
 1. Загрузить новую версию кода на сервер.
 2. Пересобрать и перезапустить приложение:
 
