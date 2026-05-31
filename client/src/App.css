@@ -773,6 +773,72 @@
   width: 100%;
 }
 
+@media (max-width: 960px) {
+  .stock-table {
+    display: grid;
+    width: 100%;
+    max-width: 100%;
+    gap: 10px;
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .stock-table .table-head {
+    display: none;
+  }
+
+  .stock-table .stock-row {
+    display: grid;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0 !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 8px;
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    padding: 12px;
+    background: #ffffff;
+  }
+
+  .stock-table .stock-row > span {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    grid-template-columns: 1fr;
+    justify-items: start;
+    gap: 4px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .stock-table .stock-row > [data-label]::before {
+    content: attr(data-label);
+    color: #677083;
+    font-size: 12px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .stock-table .stock-row > [data-label='Товар']::before {
+    display: none;
+  }
+
+  .stock-table .stock-row input,
+  .stock-table .stock-row button {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .stock-table .stock-row strong,
+  .stock-table .stock-row small,
+  .stock-table .stock-row a {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
 .supply-list {
   display: grid;
   gap: 14px;

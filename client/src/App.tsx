@@ -2077,7 +2077,7 @@ function App() {
                   </button>
                 </span>
               </div>
-              <div className="data-table">
+              <div className="data-table stock-table">
                 <div className="table-row stock-row table-head">
                   <span>Товар</span>
                   <span>Артикул</span>
