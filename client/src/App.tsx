@@ -896,7 +896,7 @@ function App() {
       setOzonStatus(
         response.status === 403
           ? 'Нет доступа к списку товаров Ozon'
-          : 'Не удалось получить данные Ozon',
+          : getApiErrorMessage(await response.text(), 'Не удалось получить данные Ozon'),
       )
       return
     }
@@ -916,7 +916,7 @@ function App() {
     })
 
     if (!response.ok) {
-      setStockStatus('Не удалось получить остатки Ozon')
+      setStockStatus(getApiErrorMessage(await response.text(), 'Не удалось получить остатки Ozon'))
       return
     }
 
@@ -983,7 +983,7 @@ function App() {
     })
 
     if (!response.ok) {
-      setAnalyticsStatus('Не удалось получить аналитику Ozon')
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось получить аналитику Ozon'))
       return
     }
 
