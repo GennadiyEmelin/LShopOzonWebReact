@@ -185,7 +185,7 @@ app.MapPost("/api/auth/heartbeat", async (AppDbContext db, ClaimsPrincipal princ
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapPost("/api/auth/logout", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -201,7 +201,7 @@ app.MapPost("/api/auth/logout", async (AppDbContext db, ClaimsPrincipal principa
     }
 
     return Results.NoContent();
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapGet("/api/auth/me", (ClaimsPrincipal principal) =>
 {
@@ -215,7 +215,7 @@ app.MapGet("/api/auth/me", (ClaimsPrincipal principal) =>
         userName,
         role
     });
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapGet("/api/admin/users", async (AppDbContext db) =>
 {
@@ -235,7 +235,7 @@ app.MapGet("/api/admin/users", async (AppDbContext db) =>
 })
     .RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext db) =>
+app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext db, ClaimsPrincipal principal) =>
 {
     if (string.IsNullOrWhiteSpace(request.UserName) || string.IsNullOrWhiteSpace(request.Password))
     {
@@ -258,6 +258,7 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
     };
 
     db.Users.Add(user);
+    AuditLogWriter.Add(db, principal, "Создание пользователя", "User", user.Id.ToString(), $"{user.UserName} ({user.Role})");
     await db.SaveChangesAsync();
 
     return Results.Created($"/api/admin/users/{user.Id}", new UserListItem(
@@ -269,12 +270,13 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
         user.CreatedAt,
         user.LastSeenAt,
         false));
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapPut("/api/admin/users/{id:guid}/password", async (
     Guid id,
     ChangeUserPasswordRequest request,
-    AppDbContext db) =>
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
 {
     if (string.IsNullOrWhiteSpace(request.Password))
     {
@@ -288,10 +290,11 @@ app.MapPut("/api/admin/users/{id:guid}/password", async (
     }
 
     user.PasswordHash = PasswordHasher.Hash(request.Password);
+    AuditLogWriter.Add(db, principal, "Смена пароля", "User", user.Id.ToString(), user.UserName);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapDelete("/api/admin/users/{id:guid}", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -308,10 +311,85 @@ app.MapDelete("/api/admin/users/{id:guid}", async (Guid id, AppDbContext db, Cla
     }
 
     db.Users.Remove(user);
+    AuditLogWriter.Add(db, principal, "Удаление пользователя", "User", user.Id.ToString(), user.UserName);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapGet("/api/admin/audit-logs", async (
+    string? search,
+    string? action,
+    string? entityType,
+    AppDbContext db) =>
+{
+    var query = db.AuditLogs.AsNoTracking();
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var value = search.Trim().ToLower();
+        query = query.Where(log =>
+            log.UserName.ToLower().Contains(value)
+            || log.DisplayName.ToLower().Contains(value)
+            || log.Action.ToLower().Contains(value)
+            || log.EntityType.ToLower().Contains(value)
+            || log.EntityId.ToLower().Contains(value)
+            || log.Details.ToLower().Contains(value));
+    }
+
+    if (!string.IsNullOrWhiteSpace(action))
+    {
+        query = query.Where(log => log.Action == action);
+    }
+
+    if (!string.IsNullOrWhiteSpace(entityType))
+    {
+        query = query.Where(log => log.EntityType == entityType);
+    }
+
+    return await query
+        .OrderByDescending(log => log.CreatedAt)
+        .Take(300)
+        .Select(log => new AuditLogListItem(
+            log.Id,
+            log.UserName,
+            log.DisplayName,
+            log.Action,
+            log.EntityType,
+            log.EntityId,
+            log.Details,
+            log.CreatedAt))
+        .ToListAsync();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapGet("/api/admin/audit-logs/export", async (AppDbContext db) =>
+{
+    var logs = await db.AuditLogs
+        .AsNoTracking()
+        .OrderByDescending(log => log.CreatedAt)
+        .Take(5000)
+        .ToListAsync();
+
+    var builder = new StringBuilder();
+    builder.AppendLine("Дата;Пользователь;Имя;Действие;Объект;ID;Детали");
+    foreach (var log in logs)
+    {
+        builder.AppendLine(string.Join(';', [
+            CsvExport.Cell(log.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
+            CsvExport.Cell(log.UserName),
+            CsvExport.Cell(log.DisplayName),
+            CsvExport.Cell(log.Action),
+            CsvExport.Cell(log.EntityType),
+            CsvExport.Cell(log.EntityId),
+            CsvExport.Cell(log.Details)
+        ]));
+    }
+
+    return Results.File(
+        Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
+        "text/csv; charset=utf-8",
+        $"audit-log-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -529,11 +607,21 @@ app.MapGet("/api/ozon/stocks", async (OzonApiClient ozonApi, CancellationToken c
 app.MapPut("/api/ozon/prices", async (
     OzonPriceUpdateRequest request,
     OzonApiClient ozonApi,
+    AppDbContext db,
+    ClaimsPrincipal principal,
     CancellationToken cancellationToken) =>
 {
     try
     {
         var result = await ozonApi.UpdatePriceAsync(request, cancellationToken);
+        AuditLogWriter.Add(
+            db,
+            principal,
+            result.Success ? "Изменение цены Ozon" : "Ошибка изменения цены Ozon",
+            "OzonProduct",
+            request.ProductId.ToString(),
+            $"{request.OfferId}: {request.Price} {request.CurrencyCode}. {result.Message}");
+        await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(result);
     }
     catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
@@ -706,6 +794,7 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db) =>
 app.MapPost("/api/production/tasks", async (
     CreateProductionTaskRequest request,
     AppDbContext db,
+    ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
     var requestItems = request.Items is { Count: > 0 }
@@ -740,6 +829,7 @@ app.MapPost("/api/production/tasks", async (
     };
 
     db.ProductionTasks.Add(task);
+    AuditLogWriter.Add(db, principal, "Создание задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
 
     var result = new ProductionTaskListItem(
@@ -797,6 +887,7 @@ app.MapPut("/api/production/tasks/{id:guid}/start", async (
         ?? principal.FindFirstValue(ClaimTypes.Name)
         ?? task.AssignedUserName;
     task.StartedAt ??= DateTimeOffset.UtcNow;
+    AuditLogWriter.Add(db, principal, "Задача взята в работу", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -806,6 +897,7 @@ app.MapPut("/api/production/tasks/{id:guid}/start", async (
 app.MapPut("/api/production/tasks/{id:guid}/defer", async (
     Guid id,
     AppDbContext db,
+    ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
     var task = await db.ProductionTasks.FindAsync(id);
@@ -821,6 +913,7 @@ app.MapPut("/api/production/tasks/{id:guid}/defer", async (
 
     task.Status = ProductionTaskStatuses.Deferred;
     task.DeferredAt = DateTimeOffset.UtcNow;
+    AuditLogWriter.Add(db, principal, "Задача отложена", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -878,6 +971,7 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
         : null;
     task.AssignedUserName ??= currentUser?.DisplayName ?? principal.FindFirstValue("display_name") ?? principal.FindFirstValue(ClaimTypes.Name);
     task.CompletedAt = DateTimeOffset.UtcNow;
+    AuditLogWriter.Add(db, principal, "Задача завершена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Факт: {task.ActualQuantity}");
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -887,6 +981,7 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
 app.MapPut("/api/production/tasks/{id:guid}/archive", async (
     Guid id,
     AppDbContext db,
+    ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
     var task = await db.ProductionTasks.FindAsync(id);
@@ -902,6 +997,7 @@ app.MapPut("/api/production/tasks/{id:guid}/archive", async (
 
     task.IsArchived = true;
     task.ArchivedAt = DateTimeOffset.UtcNow;
+    AuditLogWriter.Add(db, principal, "Задача архивирована", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -911,6 +1007,7 @@ app.MapPut("/api/production/tasks/{id:guid}/archive", async (
 app.MapDelete("/api/production/tasks/{id:guid}", async (
     Guid id,
     AppDbContext db,
+    ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
     var task = await db.ProductionTasks.FindAsync(id);
@@ -925,6 +1022,7 @@ app.MapDelete("/api/production/tasks/{id:guid}", async (
     }
 
     db.ProductionTasks.Remove(task);
+    AuditLogWriter.Add(db, principal, "Удаление задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -957,7 +1055,7 @@ app.MapGet("/api/supplies", async (AppDbContext db) =>
         .ToListAsync())
     .RequireAuthorization();
 
-app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db) =>
+app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db, ClaimsPrincipal principal) =>
 {
     if (request.Items.Count == 0)
     {
@@ -983,6 +1081,7 @@ app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db
     }
 
     db.Supplies.Add(supply);
+    AuditLogWriter.Add(db, principal, "Создание поставки", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
     await db.SaveChangesAsync();
 
     return Results.Created($"/api/supplies/{supply.Id}", new SupplyListItem(
@@ -1014,6 +1113,7 @@ app.MapGet("/api/supplies/import-template", () =>
 app.MapPost("/api/supplies/import", async (
     HttpRequest request,
     AppDbContext db,
+    ClaimsPrincipal principal,
     CancellationToken cancellationToken) =>
 {
     if (!request.HasFormContentType)
@@ -1063,6 +1163,7 @@ app.MapPost("/api/supplies/import", async (
     }
 
     db.Supplies.Add(supply);
+    AuditLogWriter.Add(db, principal, "Импорт поставки из Excel", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
     await db.SaveChangesAsync(cancellationToken);
 
     return Results.Ok(new { supply.Id, Items = supply.Items.Count });
@@ -1111,6 +1212,7 @@ app.MapPut("/api/supplies/{id:guid}/status", async (
         return Results.BadRequest("Можно поставить только статус отправлено или принято.");
     }
 
+    AuditLogWriter.Add(db, principal, $"Статус поставки: {request.Status}", "Supply", supply.Id.ToString(), supply.Status);
     await db.SaveChangesAsync();
     return Results.NoContent();
 }).RequireAuthorization();
@@ -1162,12 +1264,13 @@ app.MapPut("/api/supplies/{id:guid}", async (
 
     db.SupplyItems.RemoveRange(supply.Items);
     db.SupplyItems.AddRange(updatedItems);
+    AuditLogWriter.Add(db, principal, "Редактирование поставки", "Supply", supply.Id.ToString(), $"Товаров: {updatedItems.Count}");
     await db.SaveChangesAsync();
 
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPut("/api/supplies/{id:guid}/archive", async (Guid id, AppDbContext db) =>
+app.MapPut("/api/supplies/{id:guid}/archive", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
 {
     var supply = await db.Supplies.FindAsync(id);
     if (supply is null)
@@ -1177,12 +1280,13 @@ app.MapPut("/api/supplies/{id:guid}/archive", async (Guid id, AppDbContext db) =
 
     supply.IsArchived = true;
     supply.ArchivedAt = DateTimeOffset.UtcNow;
+    AuditLogWriter.Add(db, principal, "Поставка архивирована", "Supply", supply.Id.ToString(), supply.Status);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapDelete("/api/supplies/{id:guid}", async (Guid id, AppDbContext db) =>
+app.MapDelete("/api/supplies/{id:guid}", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
 {
     var supply = await db.Supplies.FindAsync(id);
     if (supply is null)
@@ -1196,6 +1300,7 @@ app.MapDelete("/api/supplies/{id:guid}", async (Guid id, AppDbContext db) =>
     }
 
     db.Supplies.Remove(supply);
+    AuditLogWriter.Add(db, principal, "Удаление поставки", "Supply", supply.Id.ToString(), supply.Status);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
@@ -1204,7 +1309,8 @@ app.MapDelete("/api/supplies/{id:guid}", async (Guid id, AppDbContext db) =>
 app.MapPut("/api/supplies/items/{id:guid}/replace-reserve", async (
     Guid id,
     ReplaceReserveSupplyItemRequest request,
-    AppDbContext db) =>
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
 {
     var item = await db.SupplyItems.FindAsync(id);
     if (item is null)
@@ -1226,6 +1332,7 @@ app.MapPut("/api/supplies/items/{id:guid}/replace-reserve", async (
     item.OfferId = request.OfferId.Trim();
     item.ProductName = request.ProductName.Trim();
     item.IsReserve = false;
+    AuditLogWriter.Add(db, principal, "Замена резервного товара", "SupplyItem", item.Id.ToString(), item.ProductName);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
@@ -1375,6 +1482,49 @@ record SupplyAnalyticsItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset? SentAt,
     DateTimeOffset? AcceptedAt);
+record AuditLogListItem(
+    Guid Id,
+    string UserName,
+    string DisplayName,
+    string Action,
+    string EntityType,
+    string EntityId,
+    string Details,
+    DateTimeOffset CreatedAt);
+
+static class AuditLogWriter
+{
+    public static void Add(
+        AppDbContext db,
+        ClaimsPrincipal principal,
+        string action,
+        string entityType,
+        string entityId,
+        string details)
+    {
+        Guid? userId = null;
+        if (Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
+        {
+            userId = parsedUserId;
+        }
+
+        db.AuditLogs.Add(new AuditLog
+        {
+            UserId = userId,
+            UserName = principal.FindFirstValue(ClaimTypes.Name) ?? string.Empty,
+            DisplayName = principal.FindFirstValue("display_name") ?? string.Empty,
+            Action = action,
+            EntityType = entityType,
+            EntityId = entityId,
+            Details = details,
+        });
+    }
+}
+
+static class CsvExport
+{
+    public static string Cell(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
+}
 
 static class ExcelSupplyImport
 {

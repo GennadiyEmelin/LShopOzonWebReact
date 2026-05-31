@@ -12,6 +12,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Supply> Supplies => Set<Supply>();
     public DbSet<SupplyItem> SupplyItems => Set<SupplyItem>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -86,6 +87,20 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .WithMany()
                 .HasForeignKey(message => message.ReceiverId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AuditLog>(entity =>
+        {
+            entity.HasIndex(log => log.CreatedAt);
+            entity.HasIndex(log => log.Action);
+            entity.HasIndex(log => log.EntityType);
+            entity.HasIndex(log => log.UserName);
+            entity.Property(log => log.UserName).HasMaxLength(80);
+            entity.Property(log => log.DisplayName).HasMaxLength(160);
+            entity.Property(log => log.Action).HasMaxLength(80);
+            entity.Property(log => log.EntityType).HasMaxLength(80);
+            entity.Property(log => log.EntityId).HasMaxLength(120);
+            entity.Property(log => log.Details).HasMaxLength(2000);
         });
     }
 }

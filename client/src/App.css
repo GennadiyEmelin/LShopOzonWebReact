@@ -1032,6 +1032,73 @@
   font-size: 22px;
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.settings-grid div {
+  border: 1px solid #d9dee7;
+  border-radius: 8px;
+  padding: 16px;
+  background: #f8fafc;
+}
+
+.settings-grid span,
+.settings-grid small {
+  display: block;
+  color: #677083;
+}
+
+.settings-grid strong {
+  display: block;
+  margin: 6px 0;
+  color: #121826;
+  font-size: 20px;
+}
+
+.settings-grid a {
+  color: #2563eb;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.audit-filter {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.audit-filter input {
+  width: 100%;
+  border: 1px solid #cfd6e3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #121826;
+  background: #ffffff;
+  font: inherit;
+}
+
+.audit-filter button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #ffffff;
+  background: #2563eb;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.audit-row {
+  grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(170px, 1fr) minmax(180px, 1fr) minmax(260px, 1.6fr);
+}
+
 .user-form {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1309,6 +1376,13 @@
   cursor: pointer;
 }
 
+.section-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .products ul {
   margin: 0;
   padding: 0;
@@ -1510,6 +1584,8 @@
   .supply-card-head,
   .all-supply-card summary,
   .analytics-grid,
+  .settings-grid,
+  .audit-filter,
   .users-list li {
     grid-template-columns: 1fr;
   }
@@ -1554,6 +1630,7 @@
   .ozon-product-row,
   .production-product-row,
   .analytics-row,
+  .audit-row,
   .top-products-row,
   .task-row,
   .task-draft-row,
@@ -1775,5 +1852,13 @@
 
   .chat-form textarea {
     min-height: 48px;
+  }
+
+  .section-actions {
+    justify-content: stretch;
+  }
+
+  .section-actions .header-action {
+    flex: 1 1 150px;
   }
 }

@@ -22,6 +22,17 @@ type ChatMessage = {
   isOwn: boolean
 }
 
+type AuditLog = {
+  id: string
+  userName: string
+  displayName: string
+  action: string
+  entityType: string
+  entityId: string
+  details: string
+  createdAt: string
+}
+
 type OzonProduct = {
   productId: number
   offerId: string
@@ -188,6 +199,7 @@ const tabs = [
   { id: 'supplies', label: 'Поставки' },
   { id: 'chats', label: 'Чаты' },
   { id: 'users', label: 'Пользователи', adminOnly: true },
+  { id: 'settings', label: 'Настройки', adminOnly: true },
 ] as const
 
 type TabId = (typeof tabs)[number]['id']
@@ -202,6 +214,9 @@ function App() {
     return value ? JSON.parse(value) : null
   })
   const [users, setUsers] = useState<User[]>([])
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
+  const [auditSearch, setAuditSearch] = useState('')
+  const [auditStatus, setAuditStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('production')
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
@@ -331,7 +346,11 @@ function App() {
     }
 
     loadUsers()
-    const intervalId = window.setInterval(loadUsers, 30000)
+    loadAuditLogs()
+    const intervalId = window.setInterval(() => {
+      loadUsers()
+      loadAuditLogs()
+    }, 30000)
     return () => window.clearInterval(intervalId)
   }, [token, user?.role])
 
@@ -521,6 +540,49 @@ function App() {
 
     const data: User[] = await response.json()
     setUsers(data)
+  }
+
+  async function loadAuditLogs(search = auditSearch) {
+    const params = new URLSearchParams()
+    if (search.trim()) {
+      params.set('search', search.trim())
+    }
+
+    const response = await fetch(`/api/admin/audit-logs?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAuditStatus('Не удалось загрузить журнал действий')
+      return
+    }
+
+    const data: AuditLog[] = await response.json()
+    setAuditLogs(data)
+    setAuditStatus(`Записей: ${data.length}`)
+  }
+
+  async function exportAuditLogs() {
+    const response = await fetch('/api/admin/audit-logs/export', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAuditStatus('Не удалось скачать журнал')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   async function loadChatUsers() {
@@ -2603,6 +2665,90 @@ function App() {
                   </li>
                 ))}
               </ul>
+            </section>
+          )}
+
+          {activeTab === 'settings' && user?.role === 'Admin' && (
+            <section className="admin-panel">
+              <div className="section-title">
+                <div>
+                  <h2>Настройки</h2>
+                  <p>{auditStatus || 'Системные инструменты и журнал действий'}</p>
+                </div>
+                <span className="section-actions">
+                  <button type="button" className="header-action" onClick={() => loadAuditLogs()}>
+                    Обновить журнал
+                  </button>
+                  <button type="button" className="header-action" onClick={exportAuditLogs}>
+                    Скачать CSV
+                  </button>
+                </span>
+              </div>
+
+              <div className="settings-grid">
+                <div>
+                  <span>База данных</span>
+                  <strong>PostgreSQL</strong>
+                  <small>Работает внутри Docker Compose.</small>
+                </div>
+                <div>
+                  <span>Бэкапы</span>
+                  <strong>Каждые 24 часа</strong>
+                  <small>Файлы складываются в папку backups рядом с проектом.</small>
+                </div>
+                <div>
+                  <span>Просмотр БД</span>
+                  <strong>Adminer</strong>
+                  <a href="http://localhost:8082" target="_blank" rel="noreferrer">
+                    Открыть Adminer
+                  </a>
+                </div>
+              </div>
+
+              <form
+                className="audit-filter"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  loadAuditLogs(auditSearch)
+                }}
+              >
+                <input
+                  placeholder="Поиск по журналу"
+                  value={auditSearch}
+                  onChange={(event) => setAuditSearch(event.target.value)}
+                />
+                <button type="submit">Найти</button>
+              </form>
+
+              <div className="data-table audit-table">
+                <div className="table-row audit-row table-head">
+                  <span>Дата</span>
+                  <span>Пользователь</span>
+                  <span>Действие</span>
+                  <span>Объект</span>
+                  <span>Детали</span>
+                </div>
+                {auditLogs.map((log) => (
+                  <div className="table-row audit-row" key={log.id}>
+                    <span>{formatDateTime(log.createdAt)}</span>
+                    <span>
+                      <strong>{log.displayName || log.userName || '-'}</strong>
+                      <small>{log.userName}</small>
+                    </span>
+                    <span>{log.action}</span>
+                    <span>
+                      <strong>{log.entityType}</strong>
+                      <small>{log.entityId}</small>
+                    </span>
+                    <span>{log.details}</span>
+                  </div>
+                ))}
+                {auditLogs.length === 0 && (
+                  <div className="empty-state">
+                    <strong>В журнале пока нет записей.</strong>
+                  </div>
+                )}
+              </div>
             </section>
           )}
         </section>

@@ -29,6 +29,7 @@ server/obj/
 *.tmp
 *.zip
 *.bak
+backups/
 
 # OS files
 Thumbs.db
