@@ -1183,10 +1183,36 @@ app.MapDelete("/api/production/tasks/{id:guid}", async (
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapGet("/api/supplies", async (AppDbContext db) =>
-    await db.Supplies
+{
+    var supplies = await db.Supplies
         .AsNoTracking()
         .Include(supply => supply.Items)
         .OrderByDescending(supply => supply.CreatedAt)
+        .ToListAsync();
+
+    var supplyIds = supplies.Select(supply => supply.Id.ToString()).ToList();
+    var histories = await db.AuditLogs
+        .AsNoTracking()
+        .Where(log => log.EntityType == "Supply" && supplyIds.Contains(log.EntityId))
+        .OrderByDescending(log => log.CreatedAt)
+        .Select(log => new
+        {
+            log.EntityId,
+            Item = new SupplyHistoryItem(
+                log.Id,
+                log.UserName,
+                log.DisplayName,
+                log.Action,
+                log.Details,
+                log.CreatedAt)
+        })
+        .ToListAsync();
+
+    var historiesBySupplyId = histories
+        .GroupBy(log => log.EntityId)
+        .ToDictionary(group => group.Key, group => group.Select(log => log.Item).ToList());
+
+    return supplies
         .Select(supply => new SupplyListItem(
             supply.Id,
             supply.Status,
@@ -1204,9 +1230,10 @@ app.MapGet("/api/supplies", async (AppDbContext db) =>
                     item.ProductName,
                     item.Quantity,
                     item.IsReserve))
-                .ToList()))
-        .ToListAsync())
-    .RequireAuthorization();
+                .ToList(),
+            historiesBySupplyId.GetValueOrDefault(supply.Id.ToString()) ?? []))
+        .ToList();
+}).RequireAuthorization();
 
 app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -1251,7 +1278,8 @@ app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db
             item.OfferId,
             item.ProductName,
             item.Quantity,
-            item.IsReserve)).ToList()));
+            item.IsReserve)).ToList(),
+        []));
 }).RequireAuthorization();
 
 app.MapGet("/api/supplies/import-template", () =>
@@ -1486,6 +1514,7 @@ app.MapPut("/api/supplies/items/{id:guid}/replace-reserve", async (
     item.ProductName = request.ProductName.Trim();
     item.IsReserve = false;
     AuditLogWriter.Add(db, principal, "Замена резервного товара", "SupplyItem", item.Id.ToString(), item.ProductName);
+    AuditLogWriter.Add(db, principal, "Замена резервного товара", "Supply", item.SupplyId.ToString(), item.ProductName);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
@@ -1662,7 +1691,8 @@ record SupplyListItem(
     DateTimeOffset? AcceptedAt,
     bool IsArchived,
     DateTimeOffset? ArchivedAt,
-    List<SupplyItemListItem> Items);
+    List<SupplyItemListItem> Items,
+    List<SupplyHistoryItem> History);
 record SupplyItemListItem(
     Guid Id,
     long? OzonProductId,
@@ -1670,6 +1700,13 @@ record SupplyItemListItem(
     string ProductName,
     int Quantity,
     bool IsReserve);
+record SupplyHistoryItem(
+    Guid Id,
+    string UserName,
+    string DisplayName,
+    string Action,
+    string Details,
+    DateTimeOffset CreatedAt);
 record SupplyAnalyticsItem(
     Guid Id,
     Guid SupplyId,

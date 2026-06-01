@@ -965,6 +965,44 @@
   color: #677083;
 }
 
+.supply-history {
+  border-bottom: 1px solid #edf0f5;
+  padding: 10px 16px;
+  background: #ffffff;
+}
+
+.supply-history summary {
+  color: #2563eb;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.supply-history-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.supply-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+  gap: 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.supply-history-row strong,
+.supply-history-row small {
+  display: block;
+}
+
+.supply-history-row small {
+  margin-top: 3px;
+  color: #677083;
+}
+
 .status-pill {
   border-radius: 999px;
   padding: 7px 10px;
@@ -1751,6 +1789,7 @@
   .supply-edit-tools,
   .supply-form-block,
   .supply-card-head,
+  .supply-history-row,
   .backup-panel-head,
   .backup-row,
   .all-supply-card summary,

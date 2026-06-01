@@ -170,6 +170,15 @@ type SupplyItem = {
   isReserve: boolean
 }
 
+type SupplyHistoryItem = {
+  id: string
+  userName: string
+  displayName: string
+  action: string
+  details: string
+  createdAt: string
+}
+
 type Supply = {
   id: string
   status: SupplyStatus
@@ -179,6 +188,7 @@ type Supply = {
   isArchived: boolean
   archivedAt?: string
   items: SupplyItem[]
+  history: SupplyHistoryItem[]
 }
 
 type SupplyAnalyticsItem = SupplyItem & {
@@ -3721,6 +3731,29 @@ function SupplyTable({
                 </span>
               )}
             </div>
+
+            {userRole === 'Admin' && (
+              <details className="supply-history">
+                <summary>История изменений</summary>
+                <div className="supply-history-list">
+                  {supply.history?.map((item) => (
+                    <div className="supply-history-row" key={item.id}>
+                      <span>
+                        <strong>{item.action}</strong>
+                        <small>{item.details || '-'}</small>
+                      </span>
+                      <span>
+                        <strong>{item.displayName || item.userName || '-'}</strong>
+                        <small>{formatDateTime(item.createdAt)}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {(!supply.history || supply.history.length === 0) && (
+                    <div className="empty-state">Истории по этой поставке пока нет.</div>
+                  )}
+                </div>
+              </details>
+            )}
 
             {isEditing && (
               <div className="supply-edit-tools">
