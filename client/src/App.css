@@ -202,6 +202,22 @@
   font-size: 14px;
 }
 
+.session .logout-button {
+  min-height: 32px;
+  border: 1px solid #d0d5dd;
+  padding: 6px 10px;
+  color: #344054;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.session .logout-button:hover {
+  border-color: #ef4444;
+  color: #b42318;
+  background: #fff5f5;
+}
+
 .summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1617,7 +1633,7 @@
     white-space: normal;
   }
 
-  .session button {
+  .session .logout-button {
     flex: 0 0 auto;
   }
 

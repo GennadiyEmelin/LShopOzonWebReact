@@ -571,6 +571,14 @@ function App() {
     selectedChatUserIdRef.current = ''
   }
 
+  function confirmLogout() {
+    if (!window.confirm('Выйти из аккаунта?')) {
+      return
+    }
+
+    logout()
+  }
+
   function requestBrowserNotifications() {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => undefined)
@@ -1834,7 +1842,7 @@ function App() {
             <small>В системе</small>
             <strong>{user?.displayName || user?.userName}</strong>
           </span>
-          <button type="button" onClick={logout}>
+          <button type="button" className="logout-button" onClick={confirmLogout}>
             Выйти
           </button>
         </div>
