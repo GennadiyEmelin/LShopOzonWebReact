@@ -260,7 +260,6 @@ app.MapPut("/api/profile", async (
     }
 
     user.DisplayName = request.DisplayName.Trim();
-    user.Position = request.Position.Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(UserResponses.Current(user));
@@ -915,6 +914,11 @@ app.MapPut("/api/ozon/prices", async (
     ClaimsPrincipal principal,
     CancellationToken cancellationToken) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "pooling.editPrices"))
+    {
+        return Results.Forbid();
+    }
+
     try
     {
         var result = await ozonApi.UpdatePriceAsync(request, cancellationToken);
@@ -1857,7 +1861,7 @@ record AuthResponse(string Token, CurrentUserResponse User);
 record CurrentUserResponse(Guid Id, string UserName, string DisplayName, string Position, string Role, string AvatarUrl, List<string> AllowedFeatures);
 record CreateUserRequest(string UserName, string DisplayName, string Position, string Password, string Role, List<string>? AllowedFeatures);
 record UpdateUserSettingsRequest(string DisplayName, string Position, string Role, List<string>? AllowedFeatures);
-record UpdateProfileRequest(string DisplayName, string Position);
+record UpdateProfileRequest(string DisplayName);
 record ChangeUserPasswordRequest(string Password);
 record UserListItem(
     Guid Id,
@@ -2055,18 +2059,40 @@ static class FeatureAccess
     public static readonly string[] UserDefaults =
     [
         Production,
+        "production.products",
+        "production.tasks",
+        "production.inProgress",
+        "production.deferred",
+        "production.completed",
         Products,
         Supplies,
+        "supplies.create",
+        "supplies.all",
         Chats
     ];
 
     public static readonly string[] All =
     [
         Production,
+        "production.products",
+        "production.tasks",
+        "production.inProgress",
+        "production.deferred",
+        "production.completed",
+        "production.archive",
+        "production.createTask",
         Products,
         Analytics,
+        "analytics.summary",
+        "analytics.topProducts",
         Pooling,
+        "pooling.editPrices",
         Supplies,
+        "supplies.create",
+        "supplies.editor",
+        "supplies.all",
+        "supplies.archive",
+        "supplies.analytics",
         Chats
     ];
 

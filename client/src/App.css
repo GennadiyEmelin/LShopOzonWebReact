@@ -242,10 +242,13 @@
 
 .profile-card {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-columns: 86px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
-  margin-bottom: 16px;
+  gap: 16px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f8fafc;
 }
 
 .profile-avatar,
@@ -263,14 +266,25 @@
 }
 
 .profile-avatar {
-  width: 74px;
-  height: 74px;
+  width: 86px;
+  height: 86px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.profile-avatar-upload {
+  border-style: dashed;
+}
+
+.profile-avatar-upload input {
+  display: none;
 }
 
 .profile-form {
   display: grid;
-  gap: 10px;
-  margin-top: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .profile-form input {
@@ -287,6 +301,22 @@
   margin: 12px 0 0;
   color: #344054;
   font-weight: 700;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-card .profile-actions button {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.modal-card .modal-title-row button {
+  padding: 8px 10px;
+  font-size: 13px;
 }
 
 .summary {
@@ -544,7 +574,7 @@
   box-shadow: 0 18px 40px rgba(18, 24, 38, 0.16);
 }
 
-.product-search-menu button {
+.product-search-control .product-search-menu button {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
@@ -560,8 +590,11 @@
   cursor: pointer;
 }
 
-.product-search-menu button:hover {
-  background: #f7f8fb;
+.product-search-control .product-search-menu button:hover,
+.product-search-control .product-search-menu button:focus {
+  color: #121826;
+  background: #f3f4f6;
+  outline: none;
 }
 
 .product-search-menu .product-thumb {
@@ -1333,14 +1366,6 @@
   cursor: pointer;
 }
 
-.product-thumb {
-  width: 46px;
-  height: 46px;
-  border-radius: 6px;
-  object-fit: cover;
-  border: 1px solid #d9dee7;
-}
-
 .analytics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1575,9 +1600,29 @@
 }
 
 .feature-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+.feature-checks fieldset {
   display: flex;
+  align-content: flex-start;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid #d9dee7;
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.feature-checks legend {
+  padding: 0 4px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .feature-checks label {
@@ -1586,10 +1631,10 @@
   gap: 6px;
   border: 1px solid #d9dee7;
   border-radius: 999px;
-  padding: 7px 10px;
+  padding: 5px 8px;
   color: #344054;
   background: #ffffff;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 

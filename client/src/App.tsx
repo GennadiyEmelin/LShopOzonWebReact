@@ -240,14 +240,45 @@ const tabs = [
   { id: 'settings', label: 'Настройки', adminOnly: true },
 ] as const
 
-const featureOptions = [
-  { id: 'production', label: 'Производство' },
-  { id: 'products', label: 'Товары' },
-  { id: 'analytics', label: 'Аналитика' },
-  { id: 'pooling', label: 'Складчина' },
-  { id: 'supplies', label: 'Поставки' },
-  { id: 'chats', label: 'Чаты' },
+const featureGroups = [
+  {
+    title: 'Производство',
+    items: [
+      { id: 'production', label: 'Раздел' },
+      { id: 'production.products', label: 'Список товаров' },
+      { id: 'production.tasks', label: 'Задачи' },
+      { id: 'production.inProgress', label: 'В работе' },
+      { id: 'production.deferred', label: 'Отложенные' },
+      { id: 'production.completed', label: 'Выполненные' },
+      { id: 'production.archive', label: 'Архив задач' },
+      { id: 'production.createTask', label: 'Создание задач' },
+    ],
+  },
+  {
+    title: 'Поставки',
+    items: [
+      { id: 'supplies', label: 'Раздел' },
+      { id: 'supplies.create', label: 'Создать поставку' },
+      { id: 'supplies.editor', label: 'Редактор поставок' },
+      { id: 'supplies.all', label: 'Все поставки' },
+      { id: 'supplies.archive', label: 'Архив поставок' },
+      { id: 'supplies.analytics', label: 'Аналитика поставок' },
+    ],
+  },
+  {
+    title: 'Остальное',
+    items: [
+      { id: 'products', label: 'Товары' },
+      { id: 'analytics', label: 'Аналитика' },
+      { id: 'analytics.summary', label: 'Сводка аналитики' },
+      { id: 'analytics.topProducts', label: 'Топ товары' },
+      { id: 'pooling', label: 'Складчина' },
+      { id: 'pooling.editPrices', label: 'Редактирование цен' },
+      { id: 'chats', label: 'Чаты' },
+    ],
+  },
 ]
+const defaultUserFeatures = ['production', 'production.products', 'production.tasks', 'production.inProgress', 'production.deferred', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats']
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'deferred' | 'completed' | 'archive'
@@ -326,7 +357,7 @@ function App() {
     position: '',
     password: '',
     role: 'User',
-    allowedFeatures: ['production', 'products', 'supplies', 'chats'],
+    allowedFeatures: defaultUserFeatures,
   })
   const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
   const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
@@ -428,6 +459,7 @@ function App() {
   const notificationTotal = newProductionTasks.length + inProgressProductionTasks.length + chatUnreadTotal
   const hasFeature = (feature: string) =>
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
+  const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
   const visibleTabs = tabs.filter((tab) => {
     if ('adminOnly' in tab) {
       return user?.role === 'Admin'
@@ -453,6 +485,43 @@ function App() {
 
     setActiveTab(visibleTabs[0]?.id ?? 'production')
   }, [activeTab, user, visibleTabs])
+
+  useEffect(() => {
+    if (user?.role === 'Admin') {
+      return
+    }
+
+    const productionFallbacks: Array<[ProductionSubTab, string]> = [
+      ['products', 'production.products'],
+      ['tasks', 'production.tasks'],
+      ['inProgress', 'production.inProgress'],
+      ['deferred', 'production.deferred'],
+      ['completed', 'production.completed'],
+      ['archive', 'production.archive'],
+    ]
+    if (activeTab === 'production' && !hasSubFeature(`production.${productionSubTab}`, 'production')) {
+      setProductionSubTab(productionFallbacks.find(([, feature]) => hasSubFeature(feature, 'production'))?.[0] ?? 'products')
+    }
+
+    const supplyFallbacks: Array<[SupplySubTab, string]> = [
+      ['create', 'supplies.create'],
+      ['editor', 'supplies.editor'],
+      ['all', 'supplies.all'],
+      ['archive', 'supplies.archive'],
+      ['analytics', 'supplies.analytics'],
+    ]
+    if (activeTab === 'supplies' && !hasSubFeature(`supplies.${supplySubTab}`, 'supplies')) {
+      setSupplySubTab(supplyFallbacks.find(([, feature]) => hasSubFeature(feature, 'supplies'))?.[0] ?? 'create')
+    }
+
+    const analyticsFallbacks: Array<[AnalyticsSubTab, string]> = [
+      ['summary', 'analytics.summary'],
+      ['topProducts', 'analytics.topProducts'],
+    ]
+    if (activeTab === 'analytics' && !hasSubFeature(`analytics.${analyticsSubTab}`, 'analytics')) {
+      setAnalyticsSubTab(analyticsFallbacks.find(([, feature]) => hasSubFeature(feature, 'analytics'))?.[0] ?? 'summary')
+    }
+  }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab])
 
   useEffect(() => {
     if (!token || user?.role !== 'Admin') {
@@ -986,7 +1055,7 @@ function App() {
       position: '',
       password: '',
       role: 'User',
-      allowedFeatures: ['production', 'products', 'supplies', 'chats'],
+      allowedFeatures: defaultUserFeatures,
     })
   }
 
@@ -2021,12 +2090,18 @@ function App() {
               </button>
             </div>
             <div className="profile-card">
-              <span className="profile-avatar">
-                {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>Фото</span>}
-              </span>
+              <label className="profile-avatar profile-avatar-upload">
+                {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>Загрузить фото</span>}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => setProfileAvatar(event.target.files?.[0] ?? null)}
+                />
+              </label>
               <span>
                 <strong>{user?.displayName || user?.userName}</strong>
-                <small>{user?.position || 'Должность не указана'}</small>
+                <small>{user?.position || 'Должность указывает администратор'}</small>
+                {profileAvatar && <small>Выбрано: {profileAvatar.name}</small>}
               </span>
             </div>
             <form className="profile-form" onSubmit={saveProfile}>
@@ -2036,23 +2111,13 @@ function App() {
                 onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })}
                 required
               />
-              <input
-                placeholder="Должность"
-                value={profileForm.position}
-                onChange={(event) => setProfileForm({ ...profileForm, position: event.target.value })}
-              />
-              <button type="submit">Сохранить карточку</button>
+              <span className="profile-actions">
+                <button type="submit">Сохранить имя</button>
+                <button type="button" onClick={uploadProfileAvatar}>
+                  Сохранить фото
+                </button>
+              </span>
             </form>
-            <div className="profile-form">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(event) => setProfileAvatar(event.target.files?.[0] ?? null)}
-              />
-              <button type="button" onClick={uploadProfileAvatar}>
-                Загрузить фото
-              </button>
-            </div>
             {profileStatus && <p className="modal-status">{profileStatus}</p>}
           </div>
         </div>
@@ -2068,7 +2133,7 @@ function App() {
                   <p>{productionSubTab === 'tasks' ? taskStatus : productionStatus || 'Фото, данные и задачи'}</p>
                 </div>
                 <span className="section-actions">
-                  {productionSubTab === 'archive' && user?.role === 'Admin' && (
+                  {productionSubTab === 'archive' && user?.role === 'Admin' && hasSubFeature('production.archive', 'production') && (
                     <button type="button" className="header-action" onClick={exportTaskArchive}>
                       Скачать CSV
                     </button>
@@ -2077,6 +2142,7 @@ function App() {
                     type="button"
                     className="header-action"
                     onClick={() => setProductionSubTab('archive')}
+                    hidden={!hasSubFeature('production.archive', 'production')}
                   >
                     Архив задач
                   </button>
@@ -2088,6 +2154,7 @@ function App() {
                   type="button"
                   className={productionSubTab === 'products' ? 'active' : ''}
                   onClick={() => setProductionSubTab('products')}
+                  hidden={!hasSubFeature('production.products', 'production')}
                 >
                   Список товаров
                 </button>
@@ -2095,6 +2162,7 @@ function App() {
                   type="button"
                   className={productionSubTab === 'tasks' ? 'active' : ''}
                   onClick={() => setProductionSubTab('tasks')}
+                  hidden={!hasSubFeature('production.tasks', 'production')}
                 >
                   Задачи
                   {newProductionTasks.length > 0 && (
@@ -2105,6 +2173,7 @@ function App() {
                   type="button"
                   className={productionSubTab === 'inProgress' ? 'active' : ''}
                   onClick={() => setProductionSubTab('inProgress')}
+                  hidden={!hasSubFeature('production.inProgress', 'production')}
                 >
                   В работе
                 </button>
@@ -2112,6 +2181,7 @@ function App() {
                   type="button"
                   className={productionSubTab === 'deferred' ? 'active' : ''}
                   onClick={() => setProductionSubTab('deferred')}
+                  hidden={!hasSubFeature('production.deferred', 'production')}
                 >
                   Отложенные
                 </button>
@@ -2119,6 +2189,7 @@ function App() {
                   type="button"
                   className={productionSubTab === 'completed' ? 'active' : ''}
                   onClick={() => setProductionSubTab('completed')}
+                  hidden={!hasSubFeature('production.completed', 'production')}
                 >
                   Выполненные
                 </button>
@@ -2237,7 +2308,7 @@ function App() {
 
               {productionSubTab === 'tasks' && (
                 <>
-                  {user?.role === 'Admin' && (
+                  {user?.role === 'Admin' && hasSubFeature('production.createTask', 'production') && (
                     <div className="supply-create-bar">
                       <button type="button" onClick={() => setShowCreateTaskModal(true)}>
                         Создать задачу
@@ -2450,6 +2521,7 @@ function App() {
                   type="button"
                   className={analyticsSubTab === 'summary' ? 'active' : ''}
                   onClick={() => setAnalyticsSubTab('summary')}
+                  hidden={!hasSubFeature('analytics.summary', 'analytics')}
                 >
                   Общая аналитика
                 </button>
@@ -2457,6 +2529,7 @@ function App() {
                   type="button"
                   className={analyticsSubTab === 'topProducts' ? 'active' : ''}
                   onClick={() => setAnalyticsSubTab('topProducts')}
+                  hidden={!hasSubFeature('analytics.topProducts', 'analytics')}
                 >
                   Топ товары
                 </button>
@@ -2622,6 +2695,7 @@ function App() {
                       setEditingPrices((current) => ({ ...current, [item.productId]: value }))
                     }
                     onSave={() => updateOzonPrice(item)}
+                    canEditPrice={hasSubFeature('pooling.editPrices', 'pooling')}
                   />
                 ))}
               </div>
@@ -2640,6 +2714,7 @@ function App() {
                     type="button"
                     className="header-action"
                     onClick={() => setSupplySubTab('archive')}
+                    hidden={!hasSubFeature('supplies.archive', 'supplies')}
                   >
                     Архив поставок
                   </button>
@@ -2651,6 +2726,7 @@ function App() {
                   type="button"
                   className={supplySubTab === 'create' ? 'active' : ''}
                   onClick={() => setSupplySubTab('create')}
+                  hidden={!hasSubFeature('supplies.create', 'supplies')}
                 >
                   Создать поставку
                 </button>
@@ -2659,6 +2735,7 @@ function App() {
                     type="button"
                     className={supplySubTab === 'editor' ? 'active' : ''}
                     onClick={() => setSupplySubTab('editor')}
+                    hidden={!hasSubFeature('supplies.editor', 'supplies')}
                   >
                     Редактор поставок
                   </button>
@@ -2667,6 +2744,7 @@ function App() {
                   type="button"
                   className={supplySubTab === 'all' ? 'active' : ''}
                   onClick={() => setSupplySubTab('all')}
+                  hidden={!hasSubFeature('supplies.all', 'supplies')}
                 >
                   Все поставки
                 </button>
@@ -2675,6 +2753,7 @@ function App() {
                     type="button"
                     className={supplySubTab === 'analytics' ? 'active' : ''}
                     onClick={() => setSupplySubTab('analytics')}
+                    hidden={!hasSubFeature('supplies.analytics', 'supplies')}
                   >
                     Аналитика поставок
                   </button>
@@ -3139,23 +3218,28 @@ function App() {
                 </select>
                 <button type="submit">Добавить</button>
                 <div className="feature-checks user-form-features">
-                  {featureOptions.map((feature) => (
-                    <label key={feature.id}>
-                      <input
-                        type="checkbox"
-                        checked={newUser.role === 'Admin' || newUser.allowedFeatures.includes(feature.id)}
-                        disabled={newUser.role === 'Admin'}
-                        onChange={(event) =>
-                          setNewUser((current) => ({
-                            ...current,
-                            allowedFeatures: event.target.checked
-                              ? [...current.allowedFeatures, feature.id]
-                              : current.allowedFeatures.filter((item) => item !== feature.id),
-                          }))
-                        }
-                      />
-                      {feature.label}
-                    </label>
+                  {featureGroups.map((group) => (
+                    <fieldset key={group.title}>
+                      <legend>{group.title}</legend>
+                      {group.items.map((feature) => (
+                        <label key={feature.id}>
+                          <input
+                            type="checkbox"
+                            checked={newUser.role === 'Admin' || newUser.allowedFeatures.includes(feature.id)}
+                            disabled={newUser.role === 'Admin'}
+                            onChange={(event) =>
+                              setNewUser((current) => ({
+                                ...current,
+                                allowedFeatures: event.target.checked
+                                  ? [...current.allowedFeatures, feature.id]
+                                  : current.allowedFeatures.filter((item) => item !== feature.id),
+                              }))
+                            }
+                          />
+                          {feature.label}
+                        </label>
+                      ))}
+                    </fieldset>
                   ))}
                 </div>
               </form>
@@ -3237,26 +3321,31 @@ function App() {
                           <option value="Admin">Admin</option>
                         </select>
                         <div className="feature-checks">
-                          {featureOptions.map((feature) => (
-                            <label key={feature.id}>
-                              <input
-                                type="checkbox"
-                                checked={edit.role === 'Admin' || edit.allowedFeatures.includes(feature.id)}
-                                disabled={edit.role === 'Admin'}
-                                onChange={(event) =>
-                                  setUserSettingsEdits((current) => ({
-                                    ...current,
-                                    [item.id]: {
-                                      ...edit,
-                                      allowedFeatures: event.target.checked
-                                        ? [...edit.allowedFeatures, feature.id]
-                                        : edit.allowedFeatures.filter((value) => value !== feature.id),
-                                    },
-                                  }))
-                                }
-                              />
-                              {feature.label}
-                            </label>
+                          {featureGroups.map((group) => (
+                            <fieldset key={group.title}>
+                              <legend>{group.title}</legend>
+                              {group.items.map((feature) => (
+                                <label key={feature.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={edit.role === 'Admin' || edit.allowedFeatures.includes(feature.id)}
+                                    disabled={edit.role === 'Admin'}
+                                    onChange={(event) =>
+                                      setUserSettingsEdits((current) => ({
+                                        ...current,
+                                        [item.id]: {
+                                          ...edit,
+                                          allowedFeatures: event.target.checked
+                                            ? [...edit.allowedFeatures, feature.id]
+                                            : edit.allowedFeatures.filter((value) => value !== feature.id),
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  {feature.label}
+                                </label>
+                              ))}
+                            </fieldset>
                           ))}
                         </div>
                         <button type="button" onClick={() => saveUserSettings(item.id)}>
@@ -4415,11 +4504,13 @@ function StockRow({
   priceValue,
   onPriceChange,
   onSave,
+  canEditPrice,
 }: {
   item: OzonStock
   priceValue: string
   onPriceChange: (value: string) => void
   onSave: () => void
+  canEditPrice: boolean
 }) {
   return (
     <div className="table-row stock-row">
@@ -4435,11 +4526,15 @@ function StockRow({
       <span data-label="FBO">{item.fboPresent}</span>
       <span data-label="FBS">{item.fbsPresent}</span>
       <span className="stock-price-cell" data-label="Цена">
-        <input value={priceValue} onChange={(event) => onPriceChange(event.target.value)} />
+        <input
+          value={priceValue}
+          onChange={(event) => onPriceChange(event.target.value)}
+          disabled={!canEditPrice}
+        />
         <small>{item.currencyCode}</small>
       </span>
       <span className="stock-save-cell" data-label="Действие">
-        <button type="button" onClick={onSave}>
+        <button type="button" onClick={onSave} disabled={!canEditPrice}>
           Сохранить
         </button>
       </span>
