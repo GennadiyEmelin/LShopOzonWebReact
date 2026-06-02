@@ -574,7 +574,8 @@
   box-shadow: 0 18px 40px rgba(18, 24, 38, 0.16);
 }
 
-.product-search-control .product-search-menu button {
+.product-search-control .product-search-menu button,
+.modal-card .product-search-control .product-search-menu button {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
@@ -591,9 +592,14 @@
 }
 
 .product-search-control .product-search-menu button:hover,
-.product-search-control .product-search-menu button:focus {
+.product-search-control .product-search-menu button:focus,
+.product-search-control .product-search-menu button:active,
+.modal-card .product-search-control .product-search-menu button:hover,
+.modal-card .product-search-control .product-search-menu button:focus,
+.modal-card .product-search-control .product-search-menu button:active {
   color: #121826;
   background: #f3f4f6;
+  box-shadow: none;
   outline: none;
 }
 
@@ -677,6 +683,15 @@
 .product-mini strong {
   display: block;
   overflow-wrap: anywhere;
+}
+
+.task-product-mini {
+  grid-template-columns: 52px minmax(0, 1fr);
+}
+
+.task-product-mini .product-thumb {
+  width: 52px;
+  height: 52px;
 }
 
 .supply-builder {
@@ -821,10 +836,16 @@
 }
 
 .task-draft-row {
-  grid-template-columns: minmax(360px, 1fr) minmax(120px, 0.35fr) minmax(100px, 0.25fr) auto;
+  grid-template-columns: minmax(420px, 1fr) 140px 120px max-content;
+  align-items: center;
 }
 
 .task-draft-row > span:last-child {
+  justify-self: start;
+}
+
+.task-draft-row > span:nth-child(2),
+.task-draft-row > span:nth-child(3) {
   justify-self: start;
 }
 
@@ -1442,11 +1463,43 @@
   border-bottom: 1px solid #edf0f5;
 }
 
+.audit-panel {
+  padding: 18px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
 .backup-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.backup-panel-head::-webkit-details-marker {
+  display: none;
+}
+
+.backup-panel-head::before {
+  content: 'Показать';
+  flex: 0 0 auto;
+  border: 1px solid #cfd6e3;
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #344054;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.backup-panel[open] .backup-panel-head::before,
+.audit-panel[open] .backup-panel-head::before {
+  content: 'Свернуть';
+}
+
+.backup-refresh {
   margin-bottom: 12px;
 }
 
@@ -1540,6 +1593,21 @@
   gap: 12px;
   padding: 20px;
   border-bottom: 1px solid #d9dee7;
+}
+
+.user-form > label,
+.user-settings-grid > label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.user-form > label > span,
+.user-settings-grid > label > span {
+  padding-left: 2px;
 }
 
 .user-form-features {

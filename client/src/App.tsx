@@ -447,14 +447,19 @@ function App() {
   const chatUnreadTotal = chatUsers.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
   const notificationItems = [
     ...(newProductionTasks.length > 0
-      ? [`Новые задачи: ${newProductionTasks.length}`]
+      ? [{ key: 'tasks-new', label: `Новые задачи: ${newProductionTasks.length}`, target: 'tasks' as const }]
       : []),
     ...(inProgressProductionTasks.length > 0
-      ? [`В работе: ${inProgressProductionTasks.length}`]
+      ? [{ key: 'tasks-work', label: `В работе: ${inProgressProductionTasks.length}`, target: 'inProgress' as const }]
       : []),
-    ...(chatUnreadTotal > 0
-      ? [`Новые сообщения: ${chatUnreadTotal}`]
-      : []),
+    ...chatUsers
+      .filter((item) => (item.unreadCount ?? 0) > 0)
+      .map((item) => ({
+        key: `chat-${item.id}`,
+        label: `${item.displayName || item.userName}: ${item.unreadCount} новых сообщений`,
+        target: 'chat' as const,
+        userId: item.id,
+      })),
   ]
   const notificationTotal = newProductionTasks.length + inProgressProductionTasks.length + chatUnreadTotal
   const hasFeature = (feature: string) =>
@@ -2048,18 +2053,19 @@ function App() {
                 {notificationItems.map((item) => (
                   <button
                     type="button"
-                    key={item}
+                    key={item.key}
                     onClick={() => {
                       setShowNotifications(false)
-                      if (item.includes('сообщ')) {
+                      if (item.target === 'chat') {
+                        setSelectedChatUserId(item.userId)
                         setActiveTab('chats')
                       } else {
                         setActiveTab('production')
-                        setProductionSubTab(item.includes('В работе') ? 'inProgress' : 'tasks')
+                        setProductionSubTab(item.target)
                       }
                     }}
                   >
-                    {item}
+                    {item.label}
                   </button>
                 ))}
                 {notificationItems.length === 0 && <span>Новых уведомлений нет</span>}
@@ -2396,6 +2402,7 @@ function App() {
 
                   <ProductionTaskTable
                     tasks={newProductionTasks}
+                    products={ozonProducts}
                     actualQuantities={actualQuantities}
                     setActualQuantities={setActualQuantities}
                     onStart={startProductionTask}
@@ -2408,6 +2415,7 @@ function App() {
               {productionSubTab === 'inProgress' && (
                 <ProductionTaskTable
                   tasks={inProgressProductionTasks}
+                  products={ozonProducts}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   onStart={startProductionTask}
@@ -2419,6 +2427,7 @@ function App() {
               {productionSubTab === 'deferred' && (
                 <ProductionTaskTable
                   tasks={deferredProductionTasks}
+                  products={ozonProducts}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   onStart={startProductionTask}
@@ -2431,6 +2440,7 @@ function App() {
               {productionSubTab === 'completed' && (
                 <ProductionTaskArchiveTable
                   tasks={completedProductionTasks}
+                  products={ozonProducts}
                   onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
                   emptyText="Выполненных задач пока нет."
                 />
@@ -2439,6 +2449,7 @@ function App() {
               {productionSubTab === 'archive' && (
                 <ProductionTaskArchiveTable
                   tasks={archivedProductionTasks}
+                  products={ozonProducts}
                   onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
                   emptyText="В архиве задач пока нет."
                 />
@@ -3090,7 +3101,7 @@ function App() {
                       </span>
                       <span>
                         <strong>{item.displayName || item.userName}</strong>
-                        <small>{item.position || item.userName}</small>
+                        <small>{item.position || 'Должность не указана'}</small>
                       </span>
                       <b className={item.isOnline ? 'online-dot' : 'offline-dot'}>
                         {item.isOnline ? 'В сети' : 'Не в сети'}
@@ -3121,7 +3132,7 @@ function App() {
                         <span>
                           <strong>{selectedChatUser.displayName || selectedChatUser.userName}</strong>
                           <small>
-                            {selectedChatUser.position || selectedChatUser.userName} |{' '}
+                            {selectedChatUser.position || 'Должность не указана'} |{' '}
                             {selectedChatUser.isOnline ? 'В сети' : 'Не в сети'}
                           </small>
                         </span>
@@ -3185,37 +3196,52 @@ function App() {
               </div>
 
               <form className="user-form" onSubmit={createUser}>
-                <input
-                  placeholder="Логин"
-                  value={newUser.userName}
-                  onChange={(event) => setNewUser({ ...newUser, userName: event.target.value })}
-                  required
-                />
-                <input
-                  placeholder="Имя"
-                  value={newUser.displayName}
-                  onChange={(event) => setNewUser({ ...newUser, displayName: event.target.value })}
-                  required
-                />
-                <input
-                  placeholder="Должность"
-                  value={newUser.position}
-                  onChange={(event) => setNewUser({ ...newUser, position: event.target.value })}
-                />
-                <input
-                  placeholder="Пароль"
-                  type="password"
-                  value={newUser.password}
-                  onChange={(event) => setNewUser({ ...newUser, password: event.target.value })}
-                  required
-                />
-                <select
-                  value={newUser.role}
-                  onChange={(event) => setNewUser({ ...newUser, role: event.target.value })}
-                >
-                  <option value="User">User</option>
-                  <option value="Admin">Admin</option>
-                </select>
+                <label>
+                  <span>Логин</span>
+                  <input
+                    placeholder="Логин"
+                    value={newUser.userName}
+                    onChange={(event) => setNewUser({ ...newUser, userName: event.target.value })}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>Имя</span>
+                  <input
+                    placeholder="Имя"
+                    value={newUser.displayName}
+                    onChange={(event) => setNewUser({ ...newUser, displayName: event.target.value })}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>Должность</span>
+                  <input
+                    placeholder="Должность"
+                    value={newUser.position}
+                    onChange={(event) => setNewUser({ ...newUser, position: event.target.value })}
+                  />
+                </label>
+                <label>
+                  <span>Пароль</span>
+                  <input
+                    placeholder="Пароль"
+                    type="password"
+                    value={newUser.password}
+                    onChange={(event) => setNewUser({ ...newUser, password: event.target.value })}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>Роль</span>
+                  <select
+                    value={newUser.role}
+                    onChange={(event) => setNewUser({ ...newUser, role: event.target.value })}
+                  >
+                    <option value="User">User</option>
+                    <option value="Admin">Admin</option>
+                  </select>
+                </label>
                 <button type="submit">Добавить</button>
                 <div className="feature-checks user-form-features">
                   {featureGroups.map((group) => (
@@ -3255,8 +3281,8 @@ function App() {
                           {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <span>Фото</span>}
                         </span>
                         <span>
-                          <strong>{item.userName}</strong>
-                          <small>{item.displayName}</small>
+                          <strong>{item.displayName || item.userName}</strong>
+                          <small>Логин: {item.userName}</small>
                           <small>{item.position || 'Должность не указана'}</small>
                         </span>
                       </span>
@@ -3288,38 +3314,47 @@ function App() {
                     <details className="user-settings-panel">
                       <summary>Настройки пользователя</summary>
                       <div className="user-settings-grid">
-                        <input
-                          placeholder="Имя"
-                          value={edit.displayName}
-                          onChange={(event) =>
-                            setUserSettingsEdits((current) => ({
-                              ...current,
-                              [item.id]: { ...edit, displayName: event.target.value },
-                            }))
-                          }
-                        />
-                        <input
-                          placeholder="Должность"
-                          value={edit.position}
-                          onChange={(event) =>
-                            setUserSettingsEdits((current) => ({
-                              ...current,
-                              [item.id]: { ...edit, position: event.target.value },
-                            }))
-                          }
-                        />
-                        <select
-                          value={edit.role}
-                          onChange={(event) =>
-                            setUserSettingsEdits((current) => ({
-                              ...current,
-                              [item.id]: { ...edit, role: event.target.value },
-                            }))
-                          }
-                        >
-                          <option value="User">User</option>
-                          <option value="Admin">Admin</option>
-                        </select>
+                        <label>
+                          <span>Имя</span>
+                          <input
+                            placeholder="Имя"
+                            value={edit.displayName}
+                            onChange={(event) =>
+                              setUserSettingsEdits((current) => ({
+                                ...current,
+                                [item.id]: { ...edit, displayName: event.target.value },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>Должность</span>
+                          <input
+                            placeholder="Должность"
+                            value={edit.position}
+                            onChange={(event) =>
+                              setUserSettingsEdits((current) => ({
+                                ...current,
+                                [item.id]: { ...edit, position: event.target.value },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>Роль</span>
+                          <select
+                            value={edit.role}
+                            onChange={(event) =>
+                              setUserSettingsEdits((current) => ({
+                                ...current,
+                                [item.id]: { ...edit, role: event.target.value },
+                              }))
+                            }
+                          >
+                            <option value="User">User</option>
+                            <option value="Admin">Admin</option>
+                          </select>
+                        </label>
                         <div className="feature-checks">
                           {featureGroups.map((group) => (
                             <fieldset key={group.title}>
@@ -3400,12 +3435,8 @@ function App() {
                 </div>
                 <div>
                   <span>Сервер</span>
-                  <strong>{systemHealth ? formatDuration(systemHealth.uptime) : '-'}</strong>
-                  <small>
-                    {systemHealth
-                      ? `${systemHealth.machineName} | .NET ${systemHealth.dotnetVersion}`
-                      : 'Статус загружается'}
-                  </small>
+                  <strong>{systemHealth ? 'Работает' : 'Проверка...'}</strong>
+                  <small>{systemHealth ? 'Сервер приложения доступен.' : 'Статус загружается'}</small>
                 </div>
                 <div>
                   <span>Ozon API</span>
@@ -3429,16 +3460,16 @@ function App() {
                 </div>
               </div>
 
-              <div className="backup-panel">
-                <div className="backup-panel-head">
+              <details className="backup-panel">
+                <summary className="backup-panel-head">
                   <div>
                     <h3>Бэкапы базы данных</h3>
                     <p>{backupStatus || 'Последние сохраненные копии PostgreSQL'}</p>
                   </div>
-                  <button type="button" className="header-action" onClick={loadBackups}>
-                    Обновить
-                  </button>
-                </div>
+                </summary>
+                <button type="button" className="header-action backup-refresh" onClick={loadBackups}>
+                  Обновить
+                </button>
                 <div className="backup-list">
                   {backupFiles.map((file) => (
                     <div className="backup-row" key={file.fileName}>
@@ -3457,52 +3488,60 @@ function App() {
                     <div className="empty-state">Бэкапы появятся после первого запуска backup-контейнера.</div>
                   )}
                 </div>
-              </div>
+              </details>
 
-              <form
-                className="audit-filter"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  loadAuditLogs(auditSearch)
-                }}
-              >
-                <input
-                  placeholder="Поиск по журналу"
-                  value={auditSearch}
-                  onChange={(event) => setAuditSearch(event.target.value)}
-                />
-                <button type="submit">Найти</button>
-              </form>
+              <details className="audit-panel">
+                <summary className="backup-panel-head">
+                  <div>
+                    <h3>Журнал действий</h3>
+                    <p>{auditStatus || 'Последние действия пользователей и системы'}</p>
+                  </div>
+                </summary>
+                <form
+                  className="audit-filter"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    loadAuditLogs(auditSearch)
+                  }}
+                >
+                  <input
+                    placeholder="Поиск по журналу"
+                    value={auditSearch}
+                    onChange={(event) => setAuditSearch(event.target.value)}
+                  />
+                  <button type="submit">Найти</button>
+                </form>
 
-              <div className="data-table audit-table">
-                <div className="table-row audit-row table-head">
-                  <span>Дата</span>
-                  <span>Пользователь</span>
-                  <span>Действие</span>
-                  <span>Объект</span>
-                  <span>Детали</span>
+                <div className="data-table audit-table">
+                  <div className="table-row audit-row table-head">
+                    <span>Дата</span>
+                    <span>Пользователь</span>
+                    <span>Действие</span>
+                    <span>Объект</span>
+                    <span>Детали</span>
+                  </div>
+                  {auditLogs.map((log) => (
+                    <div className="table-row audit-row" key={log.id}>
+                      <span>{formatDateTime(log.createdAt)}</span>
+                      <span>
+                        <strong>{log.displayName || log.userName || '-'}</strong>
+                        <small>{log.userName}</small>
+                      </span>
+                      <span>{log.action}</span>
+                      <span>
+                        <strong>{log.entityType}</strong>
+                        <small>{log.entityId}</small>
+                      </span>
+                      <span>{log.details}</span>
+                    </div>
+                  ))}
+                  {auditLogs.length === 0 && (
+                    <div className="empty-state">
+                      <strong>В журнале пока нет записей.</strong>
+                    </div>
+                  )}
                 </div>
-                {auditLogs.map((log) => (
-                  <div className="table-row audit-row" key={log.id}>
-                    <span>{formatDateTime(log.createdAt)}</span>
-                    <span>
-                      <strong>{log.displayName || log.userName || '-'}</strong>
-                      <small>{log.userName}</small>
-                    </span>
-                    <span>{log.action}</span>
-                    <span>
-                      <strong>{log.entityType}</strong>
-                      <small>{log.entityId}</small>
-                    </span>
-                    <span>{log.details}</span>
-                  </div>
-                ))}
-                {auditLogs.length === 0 && (
-                  <div className="empty-state">
-                    <strong>В журнале пока нет записей.</strong>
-                  </div>
-                )}
-              </div>
+              </details>
             </section>
           )}
         </section>
@@ -3726,6 +3765,7 @@ function ProductDetail({
 
 function ProductionTaskTable({
   tasks,
+  products,
   actualQuantities,
   setActualQuantities,
   onStart,
@@ -3736,6 +3776,7 @@ function ProductionTaskTable({
   deferred = false,
 }: {
   tasks: ProductionTask[]
+  products: OzonProduct[]
   actualQuantities: Record<string, string>
   setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
   onStart: (id: string) => void
@@ -3837,8 +3878,11 @@ function ProductionTaskTable({
             </div>
             {taskItems.map((item) => (
               <div className="table-row task-item-table-row" key={item.id}>
-                <span>
-                  <strong>{item.productName}</strong>
+                <span className="product-mini task-product-mini">
+                  <ProductThumb imageUrl={getTaskItemImageUrl(item, products)} name={item.productName} />
+                  <span>
+                    <strong>{item.productName}</strong>
+                  </span>
                 </span>
                 <span>{item.offerId || '-'}</span>
                 <span>{item.requiredQuantity}</span>
@@ -3883,6 +3927,10 @@ function getProductionTaskItems(task: ProductionTask) {
     requiredQuantity: task.requiredQuantity,
     actualQuantity: task.actualQuantity,
   }]
+}
+
+function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) {
+  return products.find((product) => product.productId === item.ozonProductId)?.imageUrl
 }
 
 function getProductionTaskRequiredTotal(task: ProductionTask) {
@@ -3935,14 +3983,6 @@ function matchesSupply(supply: Supply, search: string) {
     .some((value) => String(value).toLowerCase().includes(search))
 }
 
-function formatDuration(value: string) {
-  const [daysPart, timePart = daysPart] = value.includes('.') ? value.split('.') : ['0', value]
-  const [hours = '0', minutes = '0'] = timePart.split(':')
-  const days = Number(daysPart)
-  const prefix = days > 0 ? `${days} д. ` : ''
-  return `${prefix}${Number(hours)} ч. ${Number(minutes)} мин.`
-}
-
 function formatFileSize(value: number) {
   if (value < 1024) {
     return `${value} Б`
@@ -3958,11 +3998,13 @@ function formatFileSize(value: number) {
 
 function ProductionTaskArchiveTable({
   tasks,
+  products,
   onArchive,
   onDelete,
   emptyText = 'В архиве задач пока нет.',
 }: {
   tasks: ProductionTask[]
+  products: OzonProduct[]
   onArchive?: (id: string) => void
   onDelete?: (id: string) => void
   emptyText?: string
@@ -4020,8 +4062,11 @@ function ProductionTaskArchiveTable({
             </div>
             {getProductionTaskItems(task).map((item) => (
               <div className="table-row task-item-table-row" key={item.id}>
-                <span>
-                  <strong>{item.productName}</strong>
+                <span className="product-mini task-product-mini">
+                  <ProductThumb imageUrl={getTaskItemImageUrl(item, products)} name={item.productName} />
+                  <span>
+                    <strong>{item.productName}</strong>
+                  </span>
                 </span>
                 <span>{item.offerId || '-'}</span>
                 <span>{item.requiredQuantity}</span>
