@@ -891,6 +891,14 @@
   background: #fff1f3;
 }
 
+.task-details-row.task-stale-new > summary {
+  background: #fff7ed;
+}
+
+.task-details-row.task-stale-new > summary strong {
+  color: #b42318;
+}
+
 .task-items-table {
   padding: 0 20px 14px;
   background: #fbfcfe;

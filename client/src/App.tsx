@@ -371,6 +371,8 @@ function App() {
   const [chatText, setChatText] = useState('')
   const [chatStatus, setChatStatus] = useState('')
   const [showNotifications, setShowNotifications] = useState(false)
+  const [seenNewTaskNotificationIds, setSeenNewTaskNotificationIds] = useState<string[]>([])
+  const [seenInProgressTaskNotificationIds, setSeenInProgressTaskNotificationIds] = useState<string[]>([])
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
@@ -398,6 +400,8 @@ function App() {
   const filteredProductionTasks = normalizedTaskSearch
     ? productionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
     : productionTasks
+  const allNewProductionTasks = productionTasks.filter((task) => task.status === 'New' && !task.isArchived)
+  const allInProgressProductionTasks = productionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
   const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const inProgressProductionTasks = filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
   const deferredProductionTasks = filteredProductionTasks.filter((task) => task.status === 'Deferred' && !task.isArchived)
@@ -445,12 +449,18 @@ function App() {
     .sort((left, right) => right.quantity - left.quantity)
   const selectedChatUser = chatUsers.find((item) => item.id === selectedChatUserId)
   const chatUnreadTotal = chatUsers.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
+  const unseenNewProductionTasks = allNewProductionTasks.filter(
+    (task) => !seenNewTaskNotificationIds.includes(task.id),
+  )
+  const unseenInProgressProductionTasks = allInProgressProductionTasks.filter(
+    (task) => !seenInProgressTaskNotificationIds.includes(task.id),
+  )
   const notificationItems = [
-    ...(newProductionTasks.length > 0
-      ? [{ key: 'tasks-new', label: `Новые задачи: ${newProductionTasks.length}`, target: 'tasks' as const }]
+    ...(unseenNewProductionTasks.length > 0
+      ? [{ key: 'tasks-new', label: `Новые задачи: ${unseenNewProductionTasks.length}`, target: 'tasks' as const }]
       : []),
-    ...(inProgressProductionTasks.length > 0
-      ? [{ key: 'tasks-work', label: `В работе: ${inProgressProductionTasks.length}`, target: 'inProgress' as const }]
+    ...(unseenInProgressProductionTasks.length > 0
+      ? [{ key: 'tasks-work', label: `В работе: ${unseenInProgressProductionTasks.length}`, target: 'inProgress' as const }]
       : []),
     ...chatUsers
       .filter((item) => (item.unreadCount ?? 0) > 0)
@@ -461,7 +471,8 @@ function App() {
         userId: item.id,
       })),
   ]
-  const notificationTotal = newProductionTasks.length + inProgressProductionTasks.length + chatUnreadTotal
+  const productionNotificationTotal = unseenNewProductionTasks.length
+  const notificationTotal = unseenNewProductionTasks.length + unseenInProgressProductionTasks.length + chatUnreadTotal
   const hasFeature = (feature: string) =>
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
   const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
@@ -482,6 +493,17 @@ function App() {
     loadCurrentUser()
     setIsLoading(false)
   }, [token])
+
+  useEffect(() => {
+    if (!user?.id) {
+      setSeenNewTaskNotificationIds([])
+      setSeenInProgressTaskNotificationIds([])
+      return
+    }
+
+    setSeenNewTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'new')))
+    setSeenInProgressTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'in-progress')))
+  }, [user?.id])
 
   useEffect(() => {
     if (!user || visibleTabs.some((tab) => tab.id === activeTab)) {
@@ -568,6 +590,12 @@ function App() {
   useEffect(() => {
     selectedChatUserIdRef.current = selectedChatUserId
   }, [selectedChatUserId])
+
+  useEffect(() => {
+    if (activeTab === 'chats' && selectedChatUserId) {
+      markChatNotificationsSeen(selectedChatUserId)
+    }
+  }, [activeTab, selectedChatUserId])
 
   useEffect(() => {
     if (!token) {
@@ -1407,6 +1435,35 @@ function App() {
     await loadProductionFiles(productionSearch)
   }
 
+  function markTaskNotificationsSeen(kind: 'new' | 'in-progress', taskIds: string[]) {
+    if (!user?.id || taskIds.length === 0) {
+      return
+    }
+
+    const storageKey = getTaskNotificationStorageKey(user.id, kind)
+    const updateState = kind === 'new' ? setSeenNewTaskNotificationIds : setSeenInProgressTaskNotificationIds
+
+    updateState((current) => {
+      const next = Array.from(new Set([...current, ...taskIds]))
+      localStorage.setItem(storageKey, JSON.stringify(next))
+      return next
+    })
+  }
+
+  function markChatNotificationsSeen(chatUserId: string) {
+    setChatUsers((current) =>
+      current.map((item) => (item.id === chatUserId ? { ...item, unreadCount: 0 } : item)),
+    )
+  }
+
+  function markVisibleNotificationsSeen() {
+    markTaskNotificationsSeen('new', unseenNewProductionTasks.map((task) => task.id))
+    markTaskNotificationsSeen('in-progress', unseenInProgressProductionTasks.map((task) => task.id))
+    chatUsers
+      .filter((item) => (item.unreadCount ?? 0) > 0)
+      .forEach((item) => markChatNotificationsSeen(item.id))
+  }
+
   async function loadProductionTasks() {
     const response = await fetch('/api/production/tasks', {
       headers: {
@@ -2031,6 +2088,9 @@ function App() {
                 onClick={() => setActiveTab(tab.id)}
               >
                 {tab.label}
+                {tab.id === 'production' && productionNotificationTotal > 0 && (
+                  <span className="tab-badge">{productionNotificationTotal}</span>
+                )}
                 {tab.id === 'chats' && chatUnreadTotal > 0 && (
                   <span className="tab-badge">{chatUnreadTotal}</span>
                 )}
@@ -2043,7 +2103,12 @@ function App() {
             <button
               type="button"
               className="notification-button"
-              onClick={() => setShowNotifications((current) => !current)}
+              onClick={() => {
+                if (showNotifications) {
+                  markVisibleNotificationsSeen()
+                }
+                setShowNotifications((current) => !current)
+              }}
             >
               Уведомления
               {notificationTotal > 0 && <span className="tab-badge">{notificationTotal}</span>}
@@ -2058,8 +2123,14 @@ function App() {
                       setShowNotifications(false)
                       if (item.target === 'chat') {
                         setSelectedChatUserId(item.userId)
+                        markChatNotificationsSeen(item.userId)
                         setActiveTab('chats')
+                      } else if (item.target === 'tasks') {
+                        markTaskNotificationsSeen('new', allNewProductionTasks.map((task) => task.id))
+                        setActiveTab('production')
+                        setProductionSubTab('tasks')
                       } else {
+                        markTaskNotificationsSeen('in-progress', allInProgressProductionTasks.map((task) => task.id))
                         setActiveTab('production')
                         setProductionSubTab(item.target)
                       }
@@ -2167,18 +2238,24 @@ function App() {
                 <button
                   type="button"
                   className={productionSubTab === 'tasks' ? 'active' : ''}
-                  onClick={() => setProductionSubTab('tasks')}
+                  onClick={() => {
+                    markTaskNotificationsSeen('new', allNewProductionTasks.map((task) => task.id))
+                    setProductionSubTab('tasks')
+                  }}
                   hidden={!hasSubFeature('production.tasks', 'production')}
                 >
                   Задачи
-                  {newProductionTasks.length > 0 && (
-                    <span className="tab-badge">{newProductionTasks.length}</span>
+                  {unseenNewProductionTasks.length > 0 && (
+                    <span className="tab-badge">{unseenNewProductionTasks.length}</span>
                   )}
                 </button>
                 <button
                   type="button"
                   className={productionSubTab === 'inProgress' ? 'active' : ''}
-                  onClick={() => setProductionSubTab('inProgress')}
+                  onClick={() => {
+                    markTaskNotificationsSeen('in-progress', allInProgressProductionTasks.map((task) => task.id))
+                    setProductionSubTab('inProgress')
+                  }}
                   hidden={!hasSubFeature('production.inProgress', 'production')}
                 >
                   В работе
@@ -3550,6 +3627,20 @@ function App() {
   )
 }
 
+function getTaskNotificationStorageKey(userId: string, kind: 'new' | 'in-progress') {
+  return `lshop:${userId}:seen-production-${kind}-tasks`
+}
+
+function readStringListFromStorage(key: string) {
+  try {
+    const value = localStorage.getItem(key)
+    const parsed = value ? JSON.parse(value) : []
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 function ProductSearchInput({
   listId: _listId,
   products,
@@ -3803,9 +3894,15 @@ function ProductionTaskTable({
           task.status === 'Deferred' &&
           task.deferredAt &&
           Date.now() - new Date(task.deferredAt).getTime() > 2 * 24 * 60 * 60 * 1000
+        const isStaleNew =
+          task.status === 'New' &&
+          Date.now() - new Date(task.createdAt).getTime() > 4 * 60 * 60 * 1000
 
         return (
-        <details className={`task-details-row ${isStaleDeferred ? 'deferred-stale' : ''}`} key={task.id}>
+        <details
+          className={`task-details-row ${isStaleDeferred ? 'deferred-stale' : ''} ${isStaleNew ? 'task-stale-new' : ''}`}
+          key={task.id}
+        >
           <summary className="table-row task-row">
           <span>
             <strong>{getProductionTaskSummary(task)}</strong>
