@@ -21,6 +21,9 @@ type ChatMessage = {
   senderId: string
   receiverId: string
   text: string
+  attachmentFileName: string
+  attachmentContentType: string
+  hasAttachment: boolean
   createdAt: string
   isOwn: boolean
 }
@@ -369,6 +372,7 @@ function App() {
   const [selectedChatUserId, setSelectedChatUserId] = useState('')
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatText, setChatText] = useState('')
+  const [chatFile, setChatFile] = useState<File | null>(null)
   const [chatStatus, setChatStatus] = useState('')
   const [showNotifications, setShowNotifications] = useState(false)
   const [seenNewTaskNotificationIds, setSeenNewTaskNotificationIds] = useState<string[]>([])
@@ -376,6 +380,7 @@ function App() {
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
+  const chatMessagesEndRef = useRef<HTMLDivElement | null>(null)
   const selectedChatUserIdRef = useRef('')
   const normalizedProductionSearch = productionSearch.trim().toLowerCase()
   const filteredOzonProducts = normalizedProductionSearch
@@ -596,6 +601,12 @@ function App() {
       markChatNotificationsSeen(selectedChatUserId)
     }
   }, [activeTab, selectedChatUserId])
+
+  useEffect(() => {
+    if (activeTab === 'chats') {
+      chatMessagesEndRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [activeTab, selectedChatUserId, chatMessages.length])
 
   useEffect(() => {
     if (!token) {
@@ -1008,9 +1019,10 @@ function App() {
     if (previousMessageIds) {
       const incomingMessages = data.filter((message) => !message.isOwn && !previousMessageIds.has(message.id))
       if (incomingMessages.length > 0) {
+        const lastMessage = incomingMessages[incomingMessages.length - 1]
         showBrowserNotification(
           'Новое сообщение',
-          incomingMessages[incomingMessages.length - 1].text,
+          lastMessage.text || lastMessage.attachmentFileName || 'Вложение',
         )
       }
     }
@@ -1023,18 +1035,23 @@ function App() {
   async function sendChatMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    if (!selectedChatUserId || !chatText.trim()) {
-      setChatStatus('Выберите пользователя и напишите сообщение')
+    if (!selectedChatUserId || (!chatText.trim() && !chatFile)) {
+      setChatStatus('Выберите пользователя и напишите сообщение или прикрепите файл')
       return
+    }
+
+    const formData = new FormData()
+    formData.append('text', chatText)
+    if (chatFile) {
+      formData.append('file', chatFile)
     }
 
     const response = await fetch(`/api/chat/${selectedChatUserId}/messages`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ text: chatText }),
+      body: formData,
     })
 
     if (!response.ok) {
@@ -1043,6 +1060,7 @@ function App() {
     }
 
     setChatText('')
+    setChatFile(null)
     setChatStatus('')
     await loadChatMessages(selectedChatUserId)
   }
@@ -1062,6 +1080,30 @@ function App() {
 
     setChatStatus('Сообщение удалено')
     await loadChatMessages(selectedChatUserId)
+  }
+
+  async function downloadChatAttachment(message: ChatMessage) {
+    const response = await fetch(`/api/chat/messages/${message.id}/attachment`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setChatStatus('Не удалось скачать вложение')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+
+    link.href = url
+    link.download = message.attachmentFileName || 'chat-file'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
@@ -3221,7 +3263,17 @@ function App() {
                             className={`chat-message ${message.isOwn ? 'own' : 'incoming'}`}
                             key={message.id}
                           >
-                            <p>{message.text}</p>
+                            {message.text && <p>{message.text}</p>}
+                            {message.hasAttachment && (
+                              <button
+                                type="button"
+                                className="chat-attachment"
+                                onClick={() => downloadChatAttachment(message)}
+                              >
+                                <span>{isImageAttachment(message) ? 'Скриншот' : 'Файл'}</span>
+                                <strong>{message.attachmentFileName}</strong>
+                              </button>
+                            )}
                             <span>
                               {formatDateTime(message.createdAt)}
                               {(message.isOwn || user?.role === 'Admin') && (
@@ -3237,21 +3289,40 @@ function App() {
                             <strong>Сообщений пока нет.</strong>
                           </div>
                         )}
+                        <div ref={chatMessagesEndRef} />
                       </div>
 
                       <form className="chat-form" onSubmit={sendChatMessage}>
-                        <textarea
-                          placeholder="Напишите сообщение"
-                          value={chatText}
-                          onChange={(event) => setChatText(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' && !event.shiftKey) {
-                              event.preventDefault()
-                              event.currentTarget.form?.requestSubmit()
-                            }
-                          }}
-                          rows={3}
-                        />
+                        <div className="chat-compose">
+                          <textarea
+                            placeholder="Напишите сообщение"
+                            value={chatText}
+                            onChange={(event) => setChatText(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault()
+                                event.currentTarget.form?.requestSubmit()
+                              }
+                            }}
+                            rows={3}
+                          />
+                          {chatFile && (
+                            <div className="chat-file-preview">
+                              <span>{chatFile.name}</span>
+                              <button type="button" onClick={() => setChatFile(null)}>
+                                Убрать
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <label className="chat-file-button">
+                          Прикрепить
+                          <input
+                            type="file"
+                            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar"
+                            onChange={(event) => setChatFile(event.target.files?.[0] ?? null)}
+                          />
+                        </label>
                         <button type="submit">Отправить</button>
                       </form>
                     </>
@@ -3639,6 +3710,10 @@ function readStringListFromStorage(key: string) {
   } catch {
     return []
   }
+}
+
+function isImageAttachment(message: ChatMessage) {
+  return message.attachmentContentType.toLowerCase().startsWith('image/')
 }
 
 function ProductSearchInput({

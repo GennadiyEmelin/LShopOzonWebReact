@@ -8,6 +8,9 @@ public class ChatMessage
     public Guid ReceiverId { get; set; }
     public AppUser Receiver { get; set; } = null!;
     public string Text { get; set; } = string.Empty;
+    public string AttachmentFileName { get; set; } = string.Empty;
+    public string AttachmentContentType { get; set; } = string.Empty;
+    public byte[]? AttachmentContent { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ReadAt { get; set; }
 }

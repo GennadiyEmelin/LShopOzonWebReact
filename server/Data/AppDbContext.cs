@@ -82,6 +82,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(message => new { message.ReceiverId, message.SenderId, message.CreatedAt });
             entity.HasIndex(message => new { message.ReceiverId, message.ReadAt });
             entity.Property(message => message.Text).HasMaxLength(2000);
+            entity.Property(message => message.AttachmentFileName).HasMaxLength(260);
+            entity.Property(message => message.AttachmentContentType).HasMaxLength(120);
             entity.HasOne(message => message.Sender)
                 .WithMany()
                 .HasForeignKey(message => message.SenderId)

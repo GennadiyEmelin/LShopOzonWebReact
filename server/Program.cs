@@ -753,6 +753,9 @@ app.MapGet("/api/chat/{userId:guid}/messages", async (
             message.SenderId,
             message.ReceiverId,
             message.Text,
+            message.AttachmentFileName,
+            message.AttachmentContentType,
+            message.AttachmentContent != null,
             message.CreatedAt,
             message.SenderId == parsedCurrentUserId))
         .ToListAsync();
@@ -762,10 +765,11 @@ app.MapGet("/api/chat/{userId:guid}/messages", async (
 
 app.MapPost("/api/chat/{userId:guid}/messages", async (
     Guid userId,
-    CreateChatMessageRequest request,
+    HttpRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    CancellationToken cancellationToken) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
     {
@@ -783,15 +787,28 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
         return Results.BadRequest("Нельзя отправить сообщение самому себе.");
     }
 
-    var text = request.Text.Trim();
-    if (string.IsNullOrWhiteSpace(text))
+    if (!request.HasFormContentType)
     {
-        return Results.BadRequest("Сообщение не может быть пустым.");
+        return Results.BadRequest("Ожидается multipart/form-data.");
     }
+
+    var form = await request.ReadFormAsync(cancellationToken);
+    var text = form["text"].ToString().Trim();
+    var file = form.Files.GetFile("file");
 
     if (text.Length > 2000)
     {
         return Results.BadRequest("Сообщение слишком длинное.");
+    }
+
+    if (file is not null && file.Length > 10 * 1024 * 1024)
+    {
+        return Results.BadRequest("Файл слишком большой. Максимум 10 МБ.");
+    }
+
+    if (string.IsNullOrWhiteSpace(text) && (file is null || file.Length == 0))
+    {
+        return Results.BadRequest("Напишите сообщение или прикрепите файл.");
     }
 
     var receiverExists = await db.Users.AnyAsync(user => user.Id == userId && user.IsActive);
@@ -800,11 +817,29 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
         return Results.NotFound();
     }
 
+    byte[]? attachmentContent = null;
+    var attachmentFileName = string.Empty;
+    var attachmentContentType = string.Empty;
+    if (file is not null && file.Length > 0)
+    {
+        await using var stream = file.OpenReadStream();
+        using var memory = new MemoryStream();
+        await stream.CopyToAsync(memory, cancellationToken);
+        attachmentContent = memory.ToArray();
+        attachmentFileName = Path.GetFileName(file.FileName);
+        attachmentContentType = string.IsNullOrWhiteSpace(file.ContentType)
+            ? "application/octet-stream"
+            : file.ContentType;
+    }
+
     var message = new ChatMessage
     {
         SenderId = parsedCurrentUserId,
         ReceiverId = userId,
-        Text = text
+        Text = text,
+        AttachmentFileName = attachmentFileName,
+        AttachmentContentType = attachmentContentType,
+        AttachmentContent = attachmentContent
     };
 
     db.ChatMessages.Add(message);
@@ -815,12 +850,46 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
         message.SenderId,
         message.ReceiverId,
         message.Text,
+        message.AttachmentFileName,
+        message.AttachmentContentType,
+        message.AttachmentContent != null,
         message.CreatedAt,
         true);
 
     await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, message.ReceiverId);
 
     return Results.Created($"/api/chat/{userId}/messages/{message.Id}", result);
+}).DisableAntiforgery().RequireAuthorization();
+
+app.MapGet("/api/chat/messages/{id:guid}/attachment", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var message = await db.ChatMessages.AsNoTracking().FirstOrDefaultAsync(message => message.Id == id);
+    if (message is null || message.AttachmentContent is null || string.IsNullOrWhiteSpace(message.AttachmentFileName))
+    {
+        return Results.NotFound();
+    }
+
+    var isAdmin = principal.IsInRole(UserRoles.Admin);
+    if (message.SenderId != parsedCurrentUserId && message.ReceiverId != parsedCurrentUserId && !isAdmin)
+    {
+        return Results.Forbid();
+    }
+
+    return Results.File(message.AttachmentContent, message.AttachmentContentType, message.AttachmentFileName);
 }).RequireAuthorization();
 
 app.MapDelete("/api/chat/messages/{id:guid}", async (
@@ -1885,12 +1954,14 @@ record ChatUserListItem(
     DateTimeOffset? LastSeenAt,
     bool IsOnline,
     int UnreadCount);
-record CreateChatMessageRequest(string Text);
 record ChatMessageListItem(
     Guid Id,
     Guid SenderId,
     Guid ReceiverId,
     string Text,
+    string AttachmentFileName,
+    string AttachmentContentType,
+    bool HasAttachment,
     DateTimeOffset CreatedAt,
     bool IsOwn);
 record ProductionFileListItem(
