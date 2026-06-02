@@ -214,6 +214,7 @@ type DraftTaskItem = {
   ozonProductId: number
   offerId: string
   productName: string
+  imageUrl: string
   requiredQuantity: number
 }
 
@@ -1233,6 +1234,7 @@ function App() {
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
+        imageUrl: product.imageUrl,
         requiredQuantity: quantity,
       },
     ])
@@ -2084,7 +2086,12 @@ function App() {
                           </div>
                           {draftTaskItems.map((item) => (
                             <div className="table-row task-draft-row" key={item.tempId}>
-                              <span>{item.productName}</span>
+                              <span className="product-mini">
+                                <ProductThumb imageUrl={item.imageUrl} name={item.productName} />
+                                <span>
+                                  <strong>{item.productName}</strong>
+                                </span>
+                              </span>
                               <span>{item.offerId}</span>
                               <span>{item.requiredQuantity}</span>
                               <span>
@@ -3121,7 +3128,7 @@ function ProductSearchInput({
   required?: boolean
 }) {
   const selectedProduct = products.find((product) => String(product.productId) === selectedProductId)
-  const selectedLabel = selectedProduct ? formatProductOption(selectedProduct) : ''
+  const selectedLabel = selectedProduct ? formatProductSelectedLabel(selectedProduct) : ''
   const [query, setQuery] = useState(selectedLabel)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProducts = normalizedQuery
@@ -3156,27 +3163,55 @@ function ProductSearchInput({
   }
 
   return (
-    <>
-      <input
-        className="product-search-input"
-        list={listId}
-        placeholder={placeholder}
-        value={query}
-        onChange={(event) => handleChange(event.target.value)}
-        required={required}
-      />
+    <div className="product-search-wrap">
+      <div className="product-search-control">
+        <input
+          className="product-search-input"
+          list={listId}
+          placeholder={placeholder}
+          value={query}
+          onChange={(event) => handleChange(event.target.value)}
+          required={required}
+        />
+        {selectedProduct && <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />}
+      </div>
+      {selectedProduct && (
+        <div className="selected-product-card">
+          <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />
+          <span>
+            <strong>{selectedProduct.name}</strong>
+            <small>
+              {selectedProduct.offerId}
+              {selectedProduct.sku ? ` | SKU ${selectedProduct.sku}` : ''}
+            </small>
+          </span>
+        </div>
+      )}
       <datalist id={listId}>
         {filteredProducts.map((product) => (
           <option value={formatProductOption(product)} key={product.productId} />
         ))}
       </datalist>
-    </>
+    </div>
   )
 }
 
 function formatProductOption(product: OzonProduct) {
   const sku = product.sku ? ` | SKU ${product.sku}` : ''
   return `${product.offerId} | ${product.name}${sku} | ID ${product.productId}`
+}
+
+function formatProductSelectedLabel(product: OzonProduct) {
+  const name = product.name.length > 64 ? `${product.name.slice(0, 64)}...` : product.name
+  return `${product.offerId} | ${name}`
+}
+
+function ProductThumb({ imageUrl, name }: { imageUrl?: string; name: string }) {
+  return (
+    <span className="product-thumb">
+      {imageUrl ? <img src={imageUrl} alt={name} loading="lazy" /> : <span>Фото</span>}
+    </span>
+  )
 }
 
 function ProductDetail({
