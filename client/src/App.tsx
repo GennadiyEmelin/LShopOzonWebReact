@@ -3113,7 +3113,7 @@ function App() {
 }
 
 function ProductSearchInput({
-  listId,
+  listId: _listId,
   products,
   selectedProductId,
   onProductIdChange,
@@ -3130,6 +3130,7 @@ function ProductSearchInput({
   const selectedProduct = products.find((product) => String(product.productId) === selectedProductId)
   const selectedLabel = selectedProduct ? formatProductSelectedLabel(selectedProduct) : ''
   const [query, setQuery] = useState(selectedLabel)
+  const [isOpen, setIsOpen] = useState(false)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProducts = normalizedQuery
     ? products
@@ -3153,13 +3154,20 @@ function ProductSearchInput({
 
   function handleChange(value: string) {
     setQuery(value)
+    setIsOpen(true)
 
     const selected = products.find((product) => {
       const productId = String(product.productId)
-      return productId === value || formatProductOption(product) === value
+      return productId === value || formatProductOption(product) === value || formatProductSelectedLabel(product) === value
     })
 
     onProductIdChange(selected ? String(selected.productId) : '')
+  }
+
+  function selectProduct(product: OzonProduct) {
+    onProductIdChange(String(product.productId))
+    setQuery(formatProductSelectedLabel(product))
+    setIsOpen(false)
   }
 
   return (
@@ -3167,13 +3175,32 @@ function ProductSearchInput({
       <div className="product-search-control">
         <input
           className="product-search-input"
-          list={listId}
           placeholder={placeholder}
           value={query}
           onChange={(event) => handleChange(event.target.value)}
+          onFocus={() => setIsOpen(true)}
+          onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
           required={required}
         />
         {selectedProduct && <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />}
+        {isOpen && filteredProducts.length > 0 && (
+          <div className="product-search-menu" id={_listId}>
+            {filteredProducts.map((product) => (
+              <button
+                type="button"
+                key={product.productId}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectProduct(product)}
+              >
+                <ProductThumb imageUrl={product.imageUrl} name={product.name} />
+                <span>
+                  <strong>{product.offerId}</strong>
+                  <small>{product.name}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {selectedProduct && (
         <div className="selected-product-card">
@@ -3187,11 +3214,6 @@ function ProductSearchInput({
           </span>
         </div>
       )}
-      <datalist id={listId}>
-        {filteredProducts.map((product) => (
-          <option value={formatProductOption(product)} key={product.productId} />
-        ))}
-      </datalist>
     </div>
   )
 }
