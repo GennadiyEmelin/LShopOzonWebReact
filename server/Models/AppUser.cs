@@ -5,6 +5,9 @@ public class AppUser
     public Guid Id { get; set; } = Guid.NewGuid();
     public string UserName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+    public string Position { get; set; } = string.Empty;
+    public string AvatarFileName { get; set; } = string.Empty;
+    public string AllowedFeatures { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
     public string Role { get; set; } = UserRoles.User;
     public bool IsActive { get; set; } = true;

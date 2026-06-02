@@ -7,7 +7,10 @@ type User = {
   id: string
   userName: string
   displayName: string
+  position: string
   role: string
+  avatarUrl: string
+  allowedFeatures: string[]
   isOnline?: boolean
   lastSeenAt?: string
   unreadCount?: number
@@ -229,13 +232,22 @@ function createTempId() {
 const tabs = [
   { id: 'production', label: 'Производство' },
   { id: 'products', label: 'Товары' },
-  { id: 'analytics', label: 'Аналитика', adminOnly: true },
-  { id: 'pooling', label: 'Складчина', adminOnly: true },
+  { id: 'analytics', label: 'Аналитика' },
+  { id: 'pooling', label: 'Складчина' },
   { id: 'supplies', label: 'Поставки' },
   { id: 'chats', label: 'Чаты' },
   { id: 'users', label: 'Пользователи', adminOnly: true },
   { id: 'settings', label: 'Настройки', adminOnly: true },
 ] as const
+
+const featureOptions = [
+  { id: 'production', label: 'Производство' },
+  { id: 'products', label: 'Товары' },
+  { id: 'analytics', label: 'Аналитика' },
+  { id: 'pooling', label: 'Складчина' },
+  { id: 'supplies', label: 'Поставки' },
+  { id: 'chats', label: 'Чаты' },
+]
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'deferred' | 'completed' | 'archive'
@@ -311,10 +323,17 @@ function App() {
   const [newUser, setNewUser] = useState({
     userName: '',
     displayName: '',
+    position: '',
     password: '',
     role: 'User',
+    allowedFeatures: ['production', 'products', 'supplies', 'chats'],
   })
   const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
+  const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
+  const [showProfileModal, setShowProfileModal] = useState(false)
+  const [profileForm, setProfileForm] = useState({ displayName: '', position: '' })
+  const [profileAvatar, setProfileAvatar] = useState<File | null>(null)
+  const [profileStatus, setProfileStatus] = useState('')
   const [chatUsers, setChatUsers] = useState<User[]>([])
   const [selectedChatUserId, setSelectedChatUserId] = useState('')
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
@@ -407,6 +426,15 @@ function App() {
       : []),
   ]
   const notificationTotal = newProductionTasks.length + inProgressProductionTasks.length + chatUnreadTotal
+  const hasFeature = (feature: string) =>
+    user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
+  const visibleTabs = tabs.filter((tab) => {
+    if ('adminOnly' in tab) {
+      return user?.role === 'Admin'
+    }
+
+    return hasFeature(tab.id)
+  })
 
   useEffect(() => {
     if (!token) {
@@ -414,8 +442,17 @@ function App() {
       return
     }
 
+    loadCurrentUser()
     setIsLoading(false)
   }, [token])
+
+  useEffect(() => {
+    if (!user || visibleTabs.some((tab) => tab.id === activeTab)) {
+      return
+    }
+
+    setActiveTab(visibleTabs[0]?.id ?? 'production')
+  }, [activeTab, user, visibleTabs])
 
   useEffect(() => {
     if (!token || user?.role !== 'Admin') {
@@ -435,6 +472,13 @@ function App() {
     }, 30000)
     return () => window.clearInterval(intervalId)
   }, [token, user?.role])
+
+  useEffect(() => {
+    setProfileForm({
+      displayName: user?.displayName ?? '',
+      position: user?.position ?? '',
+    })
+  }, [user?.displayName, user?.position])
 
   useEffect(() => {
     if (!token) {
@@ -505,10 +549,10 @@ function App() {
     }
 
     loadOzonProducts()
-    if (user?.role === 'Admin') {
+    if (hasFeature('analytics')) {
       loadAnalytics()
     }
-  }, [token, user?.role])
+  }, [token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
     if (!token) {
@@ -602,6 +646,22 @@ function App() {
     }
 
     new Notification(title, { body })
+  }
+
+  async function loadCurrentUser() {
+    const response = await fetch('/api/auth/me', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const data: User = await response.json()
+    localStorage.setItem('authUser', JSON.stringify(data))
+    setUser(data)
   }
 
   async function sendHeartbeat() {
@@ -923,8 +983,43 @@ function App() {
     setNewUser({
       userName: '',
       displayName: '',
+      position: '',
       password: '',
       role: 'User',
+      allowedFeatures: ['production', 'products', 'supplies', 'chats'],
+    })
+  }
+
+  async function saveUserSettings(id: string) {
+    const edit = userSettingsEdits[id]
+    if (!edit) {
+      return
+    }
+
+    const response = await fetch(`/api/admin/users/${id}/settings`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        displayName: edit.displayName,
+        position: edit.position,
+        role: edit.role,
+        allowedFeatures: edit.allowedFeatures,
+      }),
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const updatedUser: User = await response.json()
+    setUsers((current) => current.map((item) => (item.id === id ? updatedUser : item)))
+    setUserSettingsEdits((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
     })
   }
 
@@ -963,6 +1058,60 @@ function App() {
     }
 
     setPasswordEdits((current) => ({ ...current, [id]: '' }))
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setProfileStatus('Сохраняем профиль...')
+
+    const response = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(profileForm),
+    })
+
+    if (!response.ok) {
+      setProfileStatus('Не удалось сохранить профиль')
+      return
+    }
+
+    const updatedUser: User = await response.json()
+    localStorage.setItem('authUser', JSON.stringify(updatedUser))
+    setUser(updatedUser)
+    setProfileStatus('Профиль сохранен')
+  }
+
+  async function uploadProfileAvatar() {
+    if (!profileAvatar) {
+      setProfileStatus('Выберите фотографию')
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('avatar', profileAvatar)
+    setProfileStatus('Загружаем фото...')
+
+    const response = await fetch('/api/profile/avatar', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      setProfileStatus(await response.text() || 'Не удалось загрузить фото')
+      return
+    }
+
+    const updatedUser: User = await response.json()
+    localStorage.setItem('authUser', JSON.stringify(updatedUser))
+    setUser(updatedUser)
+    setProfileAvatar(null)
+    setProfileStatus('Фото обновлено')
   }
 
   async function loadOzonProducts() {
@@ -1800,9 +1949,7 @@ function App() {
         </div>
 
         <nav className="main-tabs" aria-label="Основные разделы">
-          {tabs
-            .filter((tab) => !('adminOnly' in tab) || user?.role === 'Admin')
-            .map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
@@ -1853,12 +2000,63 @@ function App() {
           <span>
             <small>В системе</small>
             <strong>{user?.displayName || user?.userName}</strong>
+            {user?.position && <small>{user.position}</small>}
           </span>
+          <button type="button" className="profile-button" onClick={() => setShowProfileModal(true)}>
+            {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : 'Профиль'}
+          </button>
           <button type="button" className="logout-button" onClick={confirmLogout}>
             Выйти
           </button>
         </div>
       </header>
+
+      {showProfileModal && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card" role="dialog" aria-modal="true">
+            <div className="modal-title-row">
+              <h3>Моя карточка</h3>
+              <button type="button" onClick={() => setShowProfileModal(false)}>
+                Закрыть
+              </button>
+            </div>
+            <div className="profile-card">
+              <span className="profile-avatar">
+                {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>Фото</span>}
+              </span>
+              <span>
+                <strong>{user?.displayName || user?.userName}</strong>
+                <small>{user?.position || 'Должность не указана'}</small>
+              </span>
+            </div>
+            <form className="profile-form" onSubmit={saveProfile}>
+              <input
+                placeholder="Имя"
+                value={profileForm.displayName}
+                onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })}
+                required
+              />
+              <input
+                placeholder="Должность"
+                value={profileForm.position}
+                onChange={(event) => setProfileForm({ ...profileForm, position: event.target.value })}
+              />
+              <button type="submit">Сохранить карточку</button>
+            </form>
+            <div className="profile-form">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => setProfileAvatar(event.target.files?.[0] ?? null)}
+              />
+              <button type="button" onClick={uploadProfileAvatar}>
+                Загрузить фото
+              </button>
+            </div>
+            {profileStatus && <p className="modal-status">{profileStatus}</p>}
+          </div>
+        </div>
+      )}
 
       <div className="app-content">
         <section className="workspace">
@@ -2808,9 +3006,12 @@ function App() {
                       onClick={() => setSelectedChatUserId(item.id)}
                       key={item.id}
                     >
+                      <span className="chat-avatar">
+                        {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <span>Фото</span>}
+                      </span>
                       <span>
                         <strong>{item.displayName || item.userName}</strong>
-                        <small>{item.userName}</small>
+                        <small>{item.position || item.userName}</small>
                       </span>
                       <b className={item.isOnline ? 'online-dot' : 'offline-dot'}>
                         {item.isOnline ? 'В сети' : 'Не в сети'}
@@ -2831,9 +3032,19 @@ function App() {
                   {selectedChatUser ? (
                     <>
                       <div className="chat-window-head">
+                        <span className="chat-avatar">
+                          {selectedChatUser.avatarUrl ? (
+                            <img src={selectedChatUser.avatarUrl} alt="" />
+                          ) : (
+                            <span>Фото</span>
+                          )}
+                        </span>
                         <span>
                           <strong>{selectedChatUser.displayName || selectedChatUser.userName}</strong>
-                          <small>{selectedChatUser.isOnline ? 'В сети' : 'Не в сети'}</small>
+                          <small>
+                            {selectedChatUser.position || selectedChatUser.userName} |{' '}
+                            {selectedChatUser.isOnline ? 'В сети' : 'Не в сети'}
+                          </small>
                         </span>
                       </div>
 
@@ -2908,6 +3119,11 @@ function App() {
                   required
                 />
                 <input
+                  placeholder="Должность"
+                  value={newUser.position}
+                  onChange={(event) => setNewUser({ ...newUser, position: event.target.value })}
+                />
+                <input
                   placeholder="Пароль"
                   type="password"
                   value={newUser.password}
@@ -2922,14 +3138,44 @@ function App() {
                   <option value="Admin">Admin</option>
                 </select>
                 <button type="submit">Добавить</button>
+                <div className="feature-checks user-form-features">
+                  {featureOptions.map((feature) => (
+                    <label key={feature.id}>
+                      <input
+                        type="checkbox"
+                        checked={newUser.role === 'Admin' || newUser.allowedFeatures.includes(feature.id)}
+                        disabled={newUser.role === 'Admin'}
+                        onChange={(event) =>
+                          setNewUser((current) => ({
+                            ...current,
+                            allowedFeatures: event.target.checked
+                              ? [...current.allowedFeatures, feature.id]
+                              : current.allowedFeatures.filter((item) => item !== feature.id),
+                          }))
+                        }
+                      />
+                      {feature.label}
+                    </label>
+                  ))}
+                </div>
               </form>
 
               <ul className="users-list">
-                {users.map((item) => (
+                {users.map((item) => {
+                  const edit = userSettingsEdits[item.id] ?? item
+                  return (
                   <li key={item.id}>
                     <span>
-                      <strong>{item.userName}</strong>
-                      <small>{item.displayName}</small>
+                      <span className="user-card-head">
+                        <span className="chat-avatar">
+                          {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <span>Фото</span>}
+                        </span>
+                        <span>
+                          <strong>{item.userName}</strong>
+                          <small>{item.displayName}</small>
+                          <small>{item.position || 'Должность не указана'}</small>
+                        </span>
+                      </span>
                     </span>
                     <b>{item.role}</b>
                     <span className={`online-status ${item.isOnline ? 'is-online' : 'is-offline'}`}>
@@ -2955,8 +3201,72 @@ function App() {
                     <button type="button" className="danger" onClick={() => deleteUser(item.id)}>
                       Удалить
                     </button>
+                    <details className="user-settings-panel">
+                      <summary>Настройки пользователя</summary>
+                      <div className="user-settings-grid">
+                        <input
+                          placeholder="Имя"
+                          value={edit.displayName}
+                          onChange={(event) =>
+                            setUserSettingsEdits((current) => ({
+                              ...current,
+                              [item.id]: { ...edit, displayName: event.target.value },
+                            }))
+                          }
+                        />
+                        <input
+                          placeholder="Должность"
+                          value={edit.position}
+                          onChange={(event) =>
+                            setUserSettingsEdits((current) => ({
+                              ...current,
+                              [item.id]: { ...edit, position: event.target.value },
+                            }))
+                          }
+                        />
+                        <select
+                          value={edit.role}
+                          onChange={(event) =>
+                            setUserSettingsEdits((current) => ({
+                              ...current,
+                              [item.id]: { ...edit, role: event.target.value },
+                            }))
+                          }
+                        >
+                          <option value="User">User</option>
+                          <option value="Admin">Admin</option>
+                        </select>
+                        <div className="feature-checks">
+                          {featureOptions.map((feature) => (
+                            <label key={feature.id}>
+                              <input
+                                type="checkbox"
+                                checked={edit.role === 'Admin' || edit.allowedFeatures.includes(feature.id)}
+                                disabled={edit.role === 'Admin'}
+                                onChange={(event) =>
+                                  setUserSettingsEdits((current) => ({
+                                    ...current,
+                                    [item.id]: {
+                                      ...edit,
+                                      allowedFeatures: event.target.checked
+                                        ? [...edit.allowedFeatures, feature.id]
+                                        : edit.allowedFeatures.filter((value) => value !== feature.id),
+                                    },
+                                  }))
+                                }
+                              />
+                              {feature.label}
+                            </label>
+                          ))}
+                        </div>
+                        <button type="button" onClick={() => saveUserSettings(item.id)}>
+                          Сохранить настройки
+                        </button>
+                      </div>
+                    </details>
                   </li>
-                ))}
+                  )
+                })}
               </ul>
             </section>
           )}

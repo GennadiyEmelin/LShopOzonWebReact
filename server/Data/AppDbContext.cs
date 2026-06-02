@@ -21,6 +21,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(user => user.UserName).IsUnique();
             entity.Property(user => user.UserName).HasMaxLength(80);
             entity.Property(user => user.DisplayName).HasMaxLength(160);
+            entity.Property(user => user.Position).HasMaxLength(160);
+            entity.Property(user => user.AvatarFileName).HasMaxLength(260);
+            entity.Property(user => user.AllowedFeatures).HasMaxLength(2000);
             entity.Property(user => user.Role).HasMaxLength(32);
         });
 

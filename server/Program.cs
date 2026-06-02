@@ -133,11 +133,7 @@ app.MapPost("/api/setup/admin", async (CreateInitialAdminRequest request, AppDbC
     db.Users.Add(admin);
     await db.SaveChangesAsync();
 
-    return Results.Created("/api/admin/users", new CurrentUserResponse(
-        admin.Id,
-        admin.UserName,
-        admin.DisplayName,
-        admin.Role));
+    return Results.Created("/api/admin/users", UserResponses.Current(admin));
 });
 
 var products = new[]
@@ -146,6 +142,31 @@ var products = new[]
     new Product(2, "Складской остаток", "12 единиц в наличии", 3490),
     new Product(3, "Заказ клиента", "Ожидает обработки", 780)
 };
+
+app.MapGet("/api/avatars/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+{
+    if (fileName != Path.GetFileName(fileName))
+    {
+        return Results.BadRequest();
+    }
+
+    var avatarPath = Path.Combine(AppPaths.GetAvatarDirectory(environment), fileName);
+    if (!System.IO.File.Exists(avatarPath))
+    {
+        return Results.NotFound();
+    }
+
+    var extension = Path.GetExtension(fileName).ToLowerInvariant();
+    var contentType = extension switch
+    {
+        ".png" => "image/png",
+        ".webp" => "image/webp",
+        ".gif" => "image/gif",
+        _ => "image/jpeg"
+    };
+
+    return Results.File(avatarPath, contentType);
+});
 
 app.MapPost("/api/auth/login", async (
     LoginRequest request,
@@ -160,12 +181,17 @@ app.MapPost("/api/auth/login", async (
         return Results.Unauthorized();
     }
 
+    if (user.Role != UserRoles.Admin && string.IsNullOrWhiteSpace(user.AllowedFeatures))
+    {
+        user.AllowedFeatures = FeatureAccess.NormalizeForRole(user.Role, FeatureAccess.UserDefaults);
+    }
+
     user.LastSeenAt = DateTimeOffset.UtcNow;
     await db.SaveChangesAsync();
 
     return Results.Ok(new AuthResponse(
         tokenService.CreateToken(user),
-        new CurrentUserResponse(user.Id, user.UserName, user.DisplayName, user.Role)));
+        UserResponses.Current(user)));
 });
 
 app.MapPost("/api/auth/heartbeat", async (AppDbContext db, ClaimsPrincipal principal) =>
@@ -186,7 +212,7 @@ app.MapPost("/api/auth/heartbeat", async (AppDbContext db, ClaimsPrincipal princ
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapPost("/api/auth/logout", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -202,21 +228,110 @@ app.MapPost("/api/auth/logout", async (AppDbContext db, ClaimsPrincipal principa
     }
 
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
-app.MapGet("/api/auth/me", (ClaimsPrincipal principal) =>
+app.MapGet("/api/auth/me", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
-    var id = principal.FindFirstValue(ClaimTypes.NameIdentifier);
-    var userName = principal.FindFirstValue(ClaimTypes.Name) ?? string.Empty;
-    var role = principal.FindFirstValue(ClaimTypes.Role) ?? string.Empty;
-
-    return Results.Ok(new
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
     {
-        id,
-        userName,
-        role
-    });
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+        return Results.Unauthorized();
+    }
+
+    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == userId && item.IsActive);
+    return user is null ? Results.Unauthorized() : Results.Ok(UserResponses.Current(user));
+}).RequireAuthorization();
+
+app.MapPut("/api/profile", async (
+    UpdateProfileRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var user = await db.Users.FindAsync(userId);
+    if (user is null || !user.IsActive)
+    {
+        return Results.Unauthorized();
+    }
+
+    user.DisplayName = request.DisplayName.Trim();
+    user.Position = request.Position.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(UserResponses.Current(user));
+}).RequireAuthorization();
+
+app.MapPost("/api/profile/avatar", async (
+    HttpRequest request,
+    IWebHostEnvironment environment,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest("Ожидается файл изображения.");
+    }
+
+    var user = await db.Users.FindAsync(new object[] { userId }, cancellationToken);
+    if (user is null || !user.IsActive)
+    {
+        return Results.Unauthorized();
+    }
+
+    var form = await request.ReadFormAsync(cancellationToken);
+    var file = form.Files.GetFile("avatar");
+    if (file is null || file.Length == 0)
+    {
+        return Results.BadRequest("Выберите фотографию.");
+    }
+
+    if (file.Length > 3 * 1024 * 1024)
+    {
+        return Results.BadRequest("Фотография должна быть меньше 3 МБ.");
+    }
+
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".webp", ".gif" };
+    if (!allowedExtensions.Contains(extension))
+    {
+        return Results.BadRequest("Поддерживаются jpg, png, webp и gif.");
+    }
+
+    var avatarDirectory = AppPaths.GetAvatarDirectory(environment);
+    Directory.CreateDirectory(avatarDirectory);
+    if (!string.IsNullOrWhiteSpace(user.AvatarFileName))
+    {
+        var oldPath = Path.Combine(avatarDirectory, user.AvatarFileName);
+        if (System.IO.File.Exists(oldPath))
+        {
+            System.IO.File.Delete(oldPath);
+        }
+    }
+
+    var fileName = $"{user.Id:N}{extension}";
+    var fullPath = Path.Combine(avatarDirectory, fileName);
+    await using (var stream = System.IO.File.Create(fullPath))
+    {
+        await file.CopyToAsync(stream, cancellationToken);
+    }
+
+    user.AvatarFileName = fileName;
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(UserResponses.Current(user));
+}).DisableAntiforgery().RequireAuthorization();
 
 app.MapGet("/api/admin/users", async (AppDbContext db) =>
 {
@@ -227,7 +342,10 @@ app.MapGet("/api/admin/users", async (AppDbContext db) =>
             user.Id,
             user.UserName,
             user.DisplayName,
+            user.Position,
             user.Role,
+            UserResponses.AvatarUrl(user),
+            UserResponses.Features(user),
             user.IsActive,
             user.CreatedAt,
             user.LastSeenAt,
@@ -254,6 +372,8 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
     {
         UserName = request.UserName.Trim(),
         DisplayName = request.DisplayName.Trim(),
+        Position = request.Position.Trim(),
+        AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures),
         PasswordHash = PasswordHasher.Hash(request.Password),
         Role = role
     };
@@ -266,7 +386,45 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
         user.Id,
         user.UserName,
         user.DisplayName,
+        user.Position,
         user.Role,
+        UserResponses.AvatarUrl(user),
+        UserResponses.Features(user),
+        user.IsActive,
+        user.CreatedAt,
+        user.LastSeenAt,
+        false));
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapPut("/api/admin/users/{id:guid}/settings", async (
+    Guid id,
+    UpdateUserSettingsRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    var user = await db.Users.FindAsync(id);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    var role = request.Role == UserRoles.Admin ? UserRoles.Admin : UserRoles.User;
+    user.DisplayName = request.DisplayName.Trim();
+    user.Position = request.Position.Trim();
+    user.Role = role;
+    user.AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures);
+
+    AuditLogWriter.Add(db, principal, "Настройки пользователя", "User", user.Id.ToString(), $"{user.UserName} ({user.Role})");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new UserListItem(
+        user.Id,
+        user.UserName,
+        user.DisplayName,
+        user.Position,
+        user.Role,
+        UserResponses.AvatarUrl(user),
+        UserResponses.Features(user),
         user.IsActive,
         user.CreatedAt,
         user.LastSeenAt,
@@ -497,6 +655,11 @@ app.MapGet("/api/admin/ozon-status", async (
 
 app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     if (!Guid.TryParse(currentUserId, out var userId))
     {
@@ -520,6 +683,8 @@ app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal)
             user.Id,
             user.UserName,
             user.DisplayName,
+            user.Position,
+            user.AvatarFileName,
             user.Role,
             user.LastSeenAt,
             IsOnline = user.LastSeenAt >= onlineAfter
@@ -530,6 +695,8 @@ app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal)
         user.Id,
         user.UserName,
         user.DisplayName,
+        user.Position,
+        UserResponses.AvatarUrl(user.AvatarFileName),
         user.Role,
         user.LastSeenAt,
         user.IsOnline,
@@ -541,6 +708,11 @@ app.MapGet("/api/chat/{userId:guid}/messages", async (
     AppDbContext db,
     ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
     {
@@ -596,6 +768,11 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
     {
@@ -653,6 +830,11 @@ app.MapDelete("/api/chat/messages/{id:guid}", async (
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
     {
@@ -678,12 +860,25 @@ app.MapDelete("/api/chat/messages/{id:guid}", async (
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapGet("/api/products", () => products)
+app.MapGet("/api/products", async (AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Products))
+    {
+        return Results.Forbid();
+    }
+
+    return Results.Ok(products);
+})
     .WithName("GetProducts")
     .RequireAuthorization();
 
-app.MapGet("/api/ozon/products", async (OzonApiClient ozonApi, CancellationToken cancellationToken) =>
+app.MapGet("/api/ozon/products", async (OzonApiClient ozonApi, AppDbContext db, ClaimsPrincipal principal, CancellationToken cancellationToken) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Products, FeatureAccess.Production, FeatureAccess.Supplies))
+    {
+        return Results.Forbid();
+    }
+
     try
     {
         var result = await ozonApi.GetProductSummariesAsync(100, cancellationToken);
@@ -695,8 +890,13 @@ app.MapGet("/api/ozon/products", async (OzonApiClient ozonApi, CancellationToken
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/ozon/stocks", async (OzonApiClient ozonApi, CancellationToken cancellationToken) =>
+app.MapGet("/api/ozon/stocks", async (OzonApiClient ozonApi, AppDbContext db, ClaimsPrincipal principal, CancellationToken cancellationToken) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Pooling))
+    {
+        return Results.Forbid();
+    }
+
     try
     {
         var result = await ozonApi.GetStockSummariesAsync(100, cancellationToken);
@@ -734,8 +934,13 @@ app.MapPut("/api/ozon/prices", async (
     }
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapGet("/api/ozon/analytics", async (OzonApiClient ozonApi, CancellationToken cancellationToken) =>
+app.MapGet("/api/ozon/analytics", async (OzonApiClient ozonApi, AppDbContext db, ClaimsPrincipal principal, CancellationToken cancellationToken) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+    {
+        return Results.Forbid();
+    }
+
     try
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -746,10 +951,15 @@ app.MapGet("/api/ozon/analytics", async (OzonApiClient ozonApi, CancellationToke
     {
         return Results.Problem(exception.Message);
     }
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
-app.MapGet("/api/production/files", async (string? search, AppDbContext db) =>
+app.MapGet("/api/production/files", async (string? search, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
     var query = db.ProductionFiles.AsNoTracking();
 
     if (!string.IsNullOrWhiteSpace(search))
@@ -761,7 +971,7 @@ app.MapGet("/api/production/files", async (string? search, AppDbContext db) =>
             file.Notes.ToLower().Contains(value));
     }
 
-    return await query
+    var files = await query
         .OrderByDescending(file => file.CreatedAt)
         .Select(file => new ProductionFileListItem(
             file.Id,
@@ -773,6 +983,8 @@ app.MapGet("/api/production/files", async (string? search, AppDbContext db) =>
             file.ContentType,
             file.CreatedAt))
         .ToListAsync();
+
+    return Results.Ok(files);
 }).RequireAuthorization();
 
 app.MapPost("/api/production/files", async (
@@ -849,8 +1061,13 @@ app.MapDelete("/api/production/files/{id:guid}", async (Guid id, AppDbContext db
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapGet("/api/production/tasks", async (string? status, AppDbContext db) =>
+app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
     IQueryable<ProductionTask> query = db.ProductionTasks
         .AsNoTracking()
         .Include(task => task.Items);
@@ -860,7 +1077,7 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db) =>
         query = query.Where(task => task.Status == status);
     }
 
-    return await query
+    var tasks = await query
         .OrderByDescending(task => task.CreatedAt)
         .Select(task => new ProductionTaskListItem(
             task.Id,
@@ -893,6 +1110,8 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db) =>
                         item.ActualQuantity))
                     .ToList()))
         .ToListAsync();
+
+    return Results.Ok(tasks);
 }).RequireAuthorization();
 
 app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
@@ -1182,8 +1401,13 @@ app.MapDelete("/api/production/tasks/{id:guid}", async (
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapGet("/api/supplies", async (AppDbContext db) =>
+app.MapGet("/api/supplies", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+    {
+        return Results.Forbid();
+    }
+
     var supplies = await db.Supplies
         .AsNoTracking()
         .Include(supply => supply.Items)
@@ -1212,7 +1436,7 @@ app.MapGet("/api/supplies", async (AppDbContext db) =>
         .GroupBy(log => log.EntityId)
         .ToDictionary(group => group.Key, group => group.Select(log => log.Item).ToList());
 
-    return supplies
+    return Results.Ok(supplies
         .Select(supply => new SupplyListItem(
             supply.Id,
             supply.Status,
@@ -1232,11 +1456,16 @@ app.MapGet("/api/supplies", async (AppDbContext db) =>
                     item.IsReserve))
                 .ToList(),
             historiesBySupplyId.GetValueOrDefault(supply.Id.ToString()) ?? []))
-        .ToList();
+        .ToList());
 }).RequireAuthorization();
 
 app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+    {
+        return Results.Forbid();
+    }
+
     if (request.Items.Count == 0)
     {
         return Results.BadRequest("Добавьте хотя бы один товар в поставку.");
@@ -1520,14 +1749,19 @@ app.MapPut("/api/supplies/items/{id:guid}/replace-reserve", async (
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapGet("/api/supplies/analytics", async (AppDbContext db) =>
+app.MapGet("/api/supplies/analytics", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+    {
+        return Results.Forbid();
+    }
+
     var items = await db.SupplyItems
         .AsNoTracking()
         .Include(item => item.Supply)
         .ToListAsync();
 
-    return items
+    return Results.Ok(items
         .GroupBy(item => new
         {
             item.SupplyId,
@@ -1558,7 +1792,7 @@ app.MapGet("/api/supplies/analytics", async (AppDbContext db) =>
             group.Key.CreatedAt,
             group.Key.SentAt,
             group.Key.AcceptedAt))
-        .ToList();
+        .ToList());
 })
     .RequireAuthorization();
 
@@ -1620,14 +1854,19 @@ record Product(int Id, string Name, string Status, decimal Price);
 record CreateInitialAdminRequest(string UserName, string DisplayName, string Password);
 record LoginRequest(string UserName, string Password);
 record AuthResponse(string Token, CurrentUserResponse User);
-record CurrentUserResponse(Guid Id, string UserName, string DisplayName, string Role);
-record CreateUserRequest(string UserName, string DisplayName, string Password, string Role);
+record CurrentUserResponse(Guid Id, string UserName, string DisplayName, string Position, string Role, string AvatarUrl, List<string> AllowedFeatures);
+record CreateUserRequest(string UserName, string DisplayName, string Position, string Password, string Role, List<string>? AllowedFeatures);
+record UpdateUserSettingsRequest(string DisplayName, string Position, string Role, List<string>? AllowedFeatures);
+record UpdateProfileRequest(string DisplayName, string Position);
 record ChangeUserPasswordRequest(string Password);
 record UserListItem(
     Guid Id,
     string UserName,
     string DisplayName,
+    string Position,
     string Role,
+    string AvatarUrl,
+    List<string> AllowedFeatures,
     bool IsActive,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastSeenAt,
@@ -1636,6 +1875,8 @@ record ChatUserListItem(
     Guid Id,
     string UserName,
     string DisplayName,
+    string Position,
+    string AvatarUrl,
     string Role,
     DateTimeOffset? LastSeenAt,
     bool IsOnline,
@@ -1802,8 +2043,108 @@ static class AppPublicText
     }
 }
 
+static class FeatureAccess
+{
+    public const string Production = "production";
+    public const string Products = "products";
+    public const string Analytics = "analytics";
+    public const string Pooling = "pooling";
+    public const string Supplies = "supplies";
+    public const string Chats = "chats";
+
+    public static readonly string[] UserDefaults =
+    [
+        Production,
+        Products,
+        Supplies,
+        Chats
+    ];
+
+    public static readonly string[] All =
+    [
+        Production,
+        Products,
+        Analytics,
+        Pooling,
+        Supplies,
+        Chats
+    ];
+
+    public static List<string> Parse(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(feature => All.Contains(feature))
+            .Distinct()
+            .ToList();
+
+    public static string NormalizeForRole(string role, IReadOnlyCollection<string>? features)
+    {
+        if (role == UserRoles.Admin)
+        {
+            return string.Join(',', All);
+        }
+
+        var selected = features is { Count: > 0 }
+            ? features.Where(feature => All.Contains(feature)).Distinct().ToList()
+            : UserDefaults.ToList();
+
+        return string.Join(',', selected);
+    }
+
+    public static async Task<bool> HasAnyAsync(AppDbContext db, ClaimsPrincipal principal, params string[] features)
+    {
+        if (principal.IsInRole(UserRoles.Admin))
+        {
+            return true;
+        }
+
+        var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(currentUserId, out var userId))
+        {
+            return false;
+        }
+
+        var allowedFeatures = await db.Users
+            .AsNoTracking()
+            .Where(user => user.Id == userId && user.IsActive)
+            .Select(user => user.AllowedFeatures)
+            .FirstOrDefaultAsync();
+
+        if (allowedFeatures is null)
+        {
+            return false;
+        }
+
+        var allowed = Parse(allowedFeatures);
+        return features.Any(feature => allowed.Contains(feature));
+    }
+}
+
+static class UserResponses
+{
+    public static CurrentUserResponse Current(AppUser user) =>
+        new(
+            user.Id,
+            user.UserName,
+            user.DisplayName,
+            user.Position,
+            user.Role,
+            AvatarUrl(user),
+            Features(user));
+
+    public static List<string> Features(AppUser user) =>
+        user.Role == UserRoles.Admin ? FeatureAccess.All.ToList() : FeatureAccess.Parse(user.AllowedFeatures);
+
+    public static string AvatarUrl(AppUser user) => AvatarUrl(user.AvatarFileName);
+
+    public static string AvatarUrl(string avatarFileName) =>
+        string.IsNullOrWhiteSpace(avatarFileName) ? string.Empty : $"/api/avatars/{Uri.EscapeDataString(avatarFileName)}";
+}
+
 static class AppPaths
 {
+    public static string GetAvatarDirectory(IWebHostEnvironment environment) =>
+        Path.GetFullPath(Path.Combine(environment.ContentRootPath, "user-avatars"));
+
     public static string GetBackupDirectory(IWebHostEnvironment environment)
     {
         var contentRootBackups = Path.Combine(environment.ContentRootPath, "backups");
