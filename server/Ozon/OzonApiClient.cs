@@ -486,12 +486,15 @@ public record OzonProductInfoItem(
     [property: JsonPropertyName("offer_id")] string OfferId,
     [property: JsonPropertyName("price")]
     [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    [property: JsonConverter(typeof(SafeDecimalConverter))]
     decimal Price,
     [property: JsonPropertyName("old_price")]
     [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    [property: JsonConverter(typeof(SafeDecimalConverter))]
     decimal OldPrice,
     [property: JsonPropertyName("min_price")]
     [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    [property: JsonConverter(typeof(SafeDecimalConverter))]
     decimal MinPrice,
     [property: JsonPropertyName("currency_code")] string CurrencyCode,
     [property: JsonPropertyName("sku")] long? Sku,
@@ -505,6 +508,50 @@ public record OzonProductSource(
 
 public record OzonProductStatuses(
     [property: JsonPropertyName("status_name")] string StatusName);
+
+public class SafeDecimalConverter : JsonConverter<decimal>
+{
+    public override decimal Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        try
+        {
+            if (reader.TokenType == JsonTokenType.Number)
+            {
+                return reader.GetDecimal();
+            }
+
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                var value = reader.GetString();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return 0;
+                }
+
+                return decimal.TryParse(
+                    value,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var parsed)
+                    ? parsed
+                    : 0;
+            }
+        }
+        catch (FormatException)
+        {
+            return 0;
+        }
+        catch (OverflowException)
+        {
+            return 0;
+        }
+
+        return 0;
+    }
+
+    public override void Write(Utf8JsonWriter writer, decimal value, JsonSerializerOptions options) =>
+        writer.WriteNumberValue(value);
+}
 
 public record OzonProductSummary(
     long ProductId,
