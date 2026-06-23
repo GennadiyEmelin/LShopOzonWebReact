@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import type { Dispatch, FormEvent, SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import * as signalR from '@microsoft/signalr'
 import './App.css'
 
@@ -18,14 +18,37 @@ type User = {
 
 type ChatMessage = {
   id: string
+  groupId?: string
   senderId: string
-  receiverId: string
+  senderDisplayName?: string
+  receiverId?: string
   text: string
   attachmentFileName: string
   attachmentContentType: string
   hasAttachment: boolean
   createdAt: string
   isOwn: boolean
+}
+
+type ChatThread = {
+  type: 'user' | 'group'
+  id: string
+  title: string
+  subtitle: string
+  avatarUrl: string
+  isOnline: boolean
+  unreadCount: number
+  memberCount: number
+  createdByUserId?: string
+  members?: ChatGroupMember[]
+}
+
+type ChatGroupMember = {
+  userId: string
+  userName: string
+  displayName: string
+  position: string
+  avatarUrl: string
 }
 
 type AuditLog = {
@@ -106,6 +129,22 @@ type OzonAnalytics = {
     payout: number
     currencyCode: string
     logisticsAmount: number
+    operationDate: string
+  }>
+  orderRows: Array<{
+    sku: number
+    offerId: string
+    productName: string
+    status: string
+    postingNumber: string
+    quantity: number
+    revenue: number
+    commissionPercent: number
+    commissionAmount: number
+    payout: number
+    currencyCode: string
+    logisticsAmount: number
+    operationDate: string
   }>
   topProducts: Array<{
     sku: number
@@ -114,6 +153,17 @@ type OzonAnalytics = {
     quantity: number
     revenue: number
     currencyCode: string
+    stockTotal: number
+  }>
+  unsoldProducts: Array<{
+    sku: number
+    offerId: string
+    productName: string
+    price: number
+    currencyCode: string
+    stockTotal: number
+    status: string
+    imageUrl: string
   }>
   orderedUnitsTotal: number
   revenueTotal: number
@@ -124,6 +174,20 @@ type OzonAnalytics = {
   awaitingDeliverCount: number
   deliveringCount: number
   deliveredCount: number
+  salesTotalCount: number
+  salesAmountTotal: number
+  inTransitCount: number
+  inTransitAmount: number
+  deliveredProductCount: number
+  deliveredAmount: number
+  cancelledCount: number
+  cancelledAmount: number
+  cancelledLogisticsTotal: number
+  accountBalance?: number | null
+  accountBalanceCurrency: string
+  sellingProductsCount: number
+  readyForSaleProductsCount: number
+  archivedProductsCount: number
   timestamp: string
 }
 
@@ -145,11 +209,17 @@ type ProductionTask = {
   productName: string
   requiredQuantity: number
   actualQuantity?: number
-  status: 'New' | 'InProgress' | 'Deferred' | 'Completed'
+  status: 'New' | 'InProgress' | 'Cancelled' | 'Completed'
+  isUrgent: boolean
   assignedUserName?: string
+  createdByUserId?: string
+  createdByDisplayName?: string
   createdAt: string
   startedAt?: string
-  deferredAt?: string
+  cancelledAt?: string
+  cancelledByUserId?: string
+  cancelledByDisplayName?: string
+  cancellationComment?: string
   completedAt?: string
   isArchived: boolean
   archivedAt?: string
@@ -163,6 +233,7 @@ type ProductionTaskItem = {
   productName: string
   requiredQuantity: number
   actualQuantity?: number
+  enforceMinimumQuantity?: boolean
 }
 
 type SupplyStatus = 'Created' | 'Sent' | 'Accepted'
@@ -200,6 +271,8 @@ type Supply = {
 type SupplyAnalyticsItem = SupplyItem & {
   supplyId: string
   status: SupplyStatus
+  isArchived?: boolean
+  archivedAt?: string
   createdAt: string
   sentAt?: string
   acceptedAt?: string
@@ -211,6 +284,7 @@ type DraftSupplyItem = {
   ozonProductId?: number
   offerId: string
   productName: string
+  imageUrl?: string
   quantity: number
   isReserve: boolean
 }
@@ -222,6 +296,7 @@ type DraftTaskItem = {
   productName: string
   imageUrl: string
   requiredQuantity: number
+  enforceMinimumQuantity: boolean
 }
 
 function createTempId() {
@@ -232,7 +307,25 @@ function createTempId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+function formatInputDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getDefaultAnalyticsDateFrom() {
+  const date = new Date()
+  date.setDate(1)
+  return formatInputDate(date)
+}
+
+function getDefaultAnalyticsDateTo() {
+  return formatInputDate(new Date())
+}
+
 const tabs = [
+  { id: 'home', label: 'Главная' },
   { id: 'production', label: 'Производство' },
   { id: 'products', label: 'Товары' },
   { id: 'analytics', label: 'Аналитика' },
@@ -245,16 +338,40 @@ const tabs = [
 
 const featureGroups = [
   {
+    title: 'Главная',
+    items: [{ id: 'home', label: 'Раздел' }],
+  },
+  {
     title: 'Производство',
     items: [
       { id: 'production', label: 'Раздел' },
       { id: 'production.products', label: 'Список товаров' },
       { id: 'production.tasks', label: 'Задачи' },
       { id: 'production.inProgress', label: 'В работе' },
-      { id: 'production.deferred', label: 'Отложенные' },
+      { id: 'production.cancelled', label: 'Отменённые' },
       { id: 'production.completed', label: 'Выполненные' },
       { id: 'production.archive', label: 'Архив задач' },
       { id: 'production.createTask', label: 'Создание задач' },
+    ],
+  },
+  {
+    title: 'Товары',
+    items: [{ id: 'products', label: 'Раздел' }],
+  },
+  {
+    title: 'Аналитика',
+    items: [
+      { id: 'analytics', label: 'Раздел' },
+      { id: 'analytics.summary', label: 'Сводка аналитики' },
+      { id: 'analytics.topProducts', label: 'Топ товары' },
+      { id: 'analytics.noSales', label: 'Без продаж' },
+    ],
+  },
+  {
+    title: 'Складчина',
+    items: [
+      { id: 'pooling', label: 'Раздел' },
+      { id: 'pooling.editPrices', label: 'Редактирование цен' },
     ],
   },
   {
@@ -269,24 +386,16 @@ const featureGroups = [
     ],
   },
   {
-    title: 'Остальное',
-    items: [
-      { id: 'products', label: 'Товары' },
-      { id: 'analytics', label: 'Аналитика' },
-      { id: 'analytics.summary', label: 'Сводка аналитики' },
-      { id: 'analytics.topProducts', label: 'Топ товары' },
-      { id: 'pooling', label: 'Складчина' },
-      { id: 'pooling.editPrices', label: 'Редактирование цен' },
-      { id: 'chats', label: 'Чаты' },
-    ],
+    title: 'Чаты',
+    items: [{ id: 'chats', label: 'Раздел' }],
   },
 ]
-const defaultUserFeatures = ['production', 'production.products', 'production.tasks', 'production.inProgress', 'production.deferred', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats']
+const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats']
 
 type TabId = (typeof tabs)[number]['id']
-type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'deferred' | 'completed' | 'archive'
+type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
-type AnalyticsSubTab = 'summary' | 'topProducts'
+type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales'
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('authToken') ?? '')
@@ -304,32 +413,53 @@ function App() {
   const [ozonIntegrationStatus, setOzonIntegrationStatus] = useState('')
   const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
   const [backupStatus, setBackupStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<TabId>('production')
+  const [activeTab, setActiveTab] = useState<TabId>('home')
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
   const [ozonStatus, setOzonStatus] = useState('')
   const [ozonProducts, setOzonProducts] = useState<OzonProduct[]>([])
+  const [productSearch, setProductSearch] = useState('')
   const [stockStatus, setStockStatus] = useState('')
   const [ozonStocks, setOzonStocks] = useState<OzonStock[]>([])
   const [stockSearch, setStockSearch] = useState('')
-  const [stockSortDirection, setStockSortDirection] = useState<'desc' | 'asc'>('desc')
+  const [stockSortDirection, setStockSortDirection] = useState<'desc' | 'asc' | null>(null)
   const [priceStatus, setPriceStatus] = useState('')
   const [editingPrices, setEditingPrices] = useState<Record<number, string>>({})
   const [analyticsStatus, setAnalyticsStatus] = useState('')
   const [analytics, setAnalytics] = useState<OzonAnalytics | null>(null)
+  const [homeAnalytics, setHomeAnalytics] = useState<OzonAnalytics | null>(null)
+  const [homeAnalyticsStatus, setHomeAnalyticsStatus] = useState('')
   const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>('summary')
+  const [analyticsDateFrom, setAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
+  const [analyticsDateTo, setAnalyticsDateTo] = useState(getDefaultAnalyticsDateTo)
+  const [analyticsRowSearch, setAnalyticsRowSearch] = useState('')
+  const [analyticsStatusFilter, setAnalyticsStatusFilter] = useState<
+    'all' | 'awaiting_deliver' | 'delivering' | 'delivered' | 'cancelled'
+  >('all')
+  const [unsoldProductStatusFilter, setUnsoldProductStatusFilter] = useState<'all' | 'selling' | 'ready'>('all')
+  const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
   const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
   const [selectedProductionProductId, setSelectedProductionProductId] = useState<number | null>(null)
   const [productionFiles, setProductionFiles] = useState<ProductionFile[]>([])
+  const [productionFilesModal, setProductionFilesModal] = useState<{
+    productName: string
+    files: ProductionFile[]
+  } | null>(null)
   const [productionTasks, setProductionTasks] = useState<ProductionTask[]>([])
   const [taskSearch, setTaskSearch] = useState('')
+  const [taskUrgencyFilter, setTaskUrgencyFilter] = useState<'all' | 'urgent' | 'normal'>('all')
+  const [archiveTaskStatusFilter, setArchiveTaskStatusFilter] = useState<'all' | 'Completed' | 'Cancelled'>('all')
   const [productionStatus, setProductionStatus] = useState('')
   const [taskStatus, setTaskStatus] = useState('')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [selectedTaskProductId, setSelectedTaskProductId] = useState('')
   const [taskQuantity, setTaskQuantity] = useState('')
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false)
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [taskIsUrgent, setTaskIsUrgent] = useState(false)
+  const [cancelTaskId, setCancelTaskId] = useState<string | null>(null)
+  const [cancelTaskComment, setCancelTaskComment] = useState('')
   const [draftTaskItems, setDraftTaskItems] = useState<DraftTaskItem[]>([])
   const [actualQuantities, setActualQuantities] = useState<Record<string, string>>({})
   const [supplySubTab, setSupplySubTab] = useState<SupplySubTab>('create')
@@ -364,12 +494,36 @@ function App() {
   })
   const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
   const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
-  const [showProfileModal, setShowProfileModal] = useState(false)
+  const [profileModalUser, setProfileModalUser] = useState<User | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', position: '' })
   const [profileAvatar, setProfileAvatar] = useState<File | null>(null)
   const [profileStatus, setProfileStatus] = useState('')
-  const [chatUsers, setChatUsers] = useState<User[]>([])
-  const [selectedChatUserId, setSelectedChatUserId] = useState('')
+  const [chatThreads, setChatThreads] = useState<ChatThread[]>([])
+  const [chatPickerUsers, setChatPickerUsers] = useState<User[]>([])
+  const [selectedChatType, setSelectedChatType] = useState<'user' | 'group'>('user')
+  const [selectedChatId, setSelectedChatId] = useState('')
+  const [chatGroupDetail, setChatGroupDetail] = useState<{
+    id: string
+    name: string
+    createdByUserId: string
+    members: ChatGroupMember[]
+  } | null>(null)
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
+  const [createGroupHint, setCreateGroupHint] = useState('')
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newGroupMemberIds, setNewGroupMemberIds] = useState<string[]>([])
+  const [showGroupMembersModal, setShowGroupMembersModal] = useState(false)
+  const [groupMembersModalState, setGroupMembersModalState] = useState<{
+    groupId: string
+    loading: boolean
+    error: string
+    detail: {
+      id: string
+      name: string
+      createdByUserId: string
+      members: ChatGroupMember[]
+    } | null
+  } | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatText, setChatText] = useState('')
   const [chatFile, setChatFile] = useState<File | null>(null)
@@ -381,9 +535,30 @@ function App() {
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null)
-  const selectedChatUserIdRef = useRef('')
+  const selectedChatKey = `${selectedChatType}:${selectedChatId}`
+  const selectedChatKeyRef = useRef('')
+  const creatingGroupRef = useRef(false)
+  const normalizedProductSearch = productSearch.trim().toLowerCase()
+  const filteredCatalogProducts = [...(normalizedProductSearch
+    ? ozonProducts.filter((item) =>
+        [
+          item.productId,
+          item.offerId,
+          item.sku,
+          item.name,
+          item.price,
+          item.oldPrice,
+          item.minPrice,
+          item.currencyCode,
+          item.status,
+          item.productUrl,
+        ]
+          .filter((value) => value !== undefined && value !== null)
+          .some((value) => String(value).toLowerCase().includes(normalizedProductSearch)),
+      )
+    : ozonProducts)].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
   const normalizedProductionSearch = productionSearch.trim().toLowerCase()
-  const filteredOzonProducts = normalizedProductionSearch
+  const filteredOzonProducts = [...(normalizedProductionSearch
     ? ozonProducts.filter((item) =>
         [
           item.productId,
@@ -400,7 +575,7 @@ function App() {
           .filter((value) => value !== undefined && value !== null)
           .some((value) => String(value).toLowerCase().includes(normalizedProductionSearch)),
       )
-    : ozonProducts
+    : ozonProducts)].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
   const normalizedTaskSearch = taskSearch.trim().toLowerCase()
   const filteredProductionTasks = normalizedTaskSearch
     ? productionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
@@ -408,10 +583,32 @@ function App() {
   const allNewProductionTasks = productionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const allInProgressProductionTasks = productionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
   const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
-  const inProgressProductionTasks = filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
-  const deferredProductionTasks = filteredProductionTasks.filter((task) => task.status === 'Deferred' && !task.isArchived)
-  const completedProductionTasks = filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
+  const filteredNewProductionTasks = sortProductionTasksByUrgency(
+    newProductionTasks.filter((task) => {
+    if (taskUrgencyFilter === 'urgent') {
+      return task.isUrgent
+    }
+
+    if (taskUrgencyFilter === 'normal') {
+      return !task.isUrgent
+    }
+
+    return true
+    }),
+  )
+  const inProgressProductionTasks = sortProductionTasksByUrgency(
+    filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived),
+  )
+  const cancelledProductionTasks = sortProductionTasksByUrgency(
+    filteredProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived),
+  )
+  const completedProductionTasks = sortProductionTasksByUrgency(
+    filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived),
+  )
   const archivedProductionTasks = filteredProductionTasks.filter((task) => task.isArchived)
+  const filteredArchivedProductionTasks = archivedProductionTasks.filter(
+    (task) => archiveTaskStatusFilter === 'all' || task.status === archiveTaskStatusFilter,
+  )
   const selectedProductionProduct = ozonProducts.find(
     (item) => item.productId === selectedProductionProductId,
   )
@@ -442,18 +639,113 @@ function App() {
       )
     : ozonStocks
   const sortedOzonStocks = [...filteredOzonStocks].sort((left, right) => {
-    const leftTotal = left.fboPresent + left.fbsPresent
-    const rightTotal = right.fboPresent + right.fbsPresent
-    return stockSortDirection === 'desc' ? rightTotal - leftTotal : leftTotal - rightTotal
+    if (stockSortDirection) {
+      const leftTotal = left.fboPresent + left.fbsPresent
+      const rightTotal = right.fboPresent + right.fbsPresent
+      const byStock = stockSortDirection === 'desc' ? rightTotal - leftTotal : leftTotal - rightTotal
+      if (byStock !== 0) {
+        return byStock
+      }
+    }
+
+    return left.offerId.localeCompare(right.offerId, 'ru')
   })
+  const analyticsProductImages = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const product of ozonProducts) {
+      if (!product.imageUrl) {
+        continue
+      }
+
+      if (product.sku) {
+        map.set(`sku:${product.sku}`, product.imageUrl)
+      }
+
+      if (product.offerId) {
+        map.set(`offer:${product.offerId}`, product.imageUrl)
+      }
+    }
+
+    return map
+  }, [ozonProducts])
   const topAnalyticsProducts = (analytics?.topProducts ?? [])
     .map((row) => ({
       ...row,
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
     .sort((left, right) => right.quantity - left.quantity)
-  const selectedChatUser = chatUsers.find((item) => item.id === selectedChatUserId)
-  const chatUnreadTotal = chatUsers.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
+  const unsoldAnalyticsProducts = (analytics?.unsoldProducts ?? [])
+    .map((row) => ({
+      ...row,
+      key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
+    }))
+    .sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
+  const unsoldProductStatusCounts = useMemo(() => {
+    const counts = { all: unsoldAnalyticsProducts.length, selling: 0, ready: 0 }
+
+    for (const row of unsoldAnalyticsProducts) {
+      const group = getProductStatusGroup(row.status)
+      if (group === 'selling') {
+        counts.selling += 1
+      } else if (group === 'ready') {
+        counts.ready += 1
+      }
+    }
+
+    return counts
+  }, [unsoldAnalyticsProducts])
+  const filteredUnsoldAnalyticsProducts = useMemo(() => {
+    if (unsoldProductStatusFilter === 'all') {
+      return unsoldAnalyticsProducts
+    }
+
+    return unsoldAnalyticsProducts.filter(
+      (row) => getProductStatusGroup(row.status) === unsoldProductStatusFilter,
+    )
+  }, [unsoldAnalyticsProducts, unsoldProductStatusFilter])
+  const analyticsOrderRows =
+    analytics?.orderRows && analytics.orderRows.length > 0 ? analytics.orderRows : (analytics?.rows ?? [])
+  const groupedAnalyticsProducts = useMemo(
+    () => groupAnalyticsProducts(analyticsOrderRows),
+    [analyticsOrderRows],
+  )
+  const analyticsStatusCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: analyticsOrderRows.length }
+    for (const row of analyticsOrderRows) {
+      const status = normalizeOrderStatus(row.status)
+      counts[status] = (counts[status] ?? 0) + 1
+    }
+    return counts
+  }, [analyticsOrderRows])
+  const filteredAnalyticsOrderRows = useMemo(() => {
+    if (analyticsStatusFilter === 'all') {
+      return analyticsOrderRows
+    }
+
+    return analyticsOrderRows.filter((row) => normalizeOrderStatus(row.status) === analyticsStatusFilter)
+  }, [analyticsOrderRows, analyticsStatusFilter])
+  const filteredGroupedAnalyticsProducts = useMemo(() => {
+    const query = analyticsRowSearch.trim().toLowerCase()
+    const grouped = groupAnalyticsProducts(filteredAnalyticsOrderRows)
+
+    if (!query) {
+      return grouped
+    }
+
+    return grouped.filter((group) =>
+      [group.productName, group.offerId, String(group.sku), group.status]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(query)),
+    )
+  }, [filteredAnalyticsOrderRows, analyticsRowSearch])
+  const exportableAnalyticsRows = useMemo(
+    () => filteredGroupedAnalyticsProducts.flatMap((group) => group.byDate.flatMap((dateGroup) => dateGroup.rows)),
+    [filteredGroupedAnalyticsProducts],
+  )
+  const selectedChatThread = chatThreads.find(
+    (item) => item.type === selectedChatType && isSameChatId(item.id, selectedChatId),
+  )
+  const chatUnreadTotal = chatThreads.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
   const unseenNewProductionTasks = allNewProductionTasks.filter(
     (task) => !seenNewTaskNotificationIds.includes(task.id),
   )
@@ -467,13 +759,14 @@ function App() {
     ...(unseenInProgressProductionTasks.length > 0
       ? [{ key: 'tasks-work', label: `В работе: ${unseenInProgressProductionTasks.length}`, target: 'inProgress' as const }]
       : []),
-    ...chatUsers
+    ...chatThreads
       .filter((item) => (item.unreadCount ?? 0) > 0)
       .map((item) => ({
-        key: `chat-${item.id}`,
-        label: `${item.displayName || item.userName}: ${item.unreadCount} новых сообщений`,
+        key: `chat-${item.type}-${item.id}`,
+        label: `${item.title}: ${item.unreadCount} новых сообщений`,
         target: 'chat' as const,
-        userId: item.id,
+        chatType: item.type,
+        chatId: item.id,
       })),
   ]
   const productionNotificationTotal = unseenNewProductionTasks.length
@@ -482,12 +775,65 @@ function App() {
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
   const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
   const visibleTabs = tabs.filter((tab) => {
+    if (tab.id === 'home') {
+      return Boolean(user)
+    }
+
     if ('adminOnly' in tab) {
       return user?.role === 'Admin'
     }
 
     return hasFeature(tab.id)
   })
+  const homeProductionStats = useMemo(() => {
+    const activeTasks = productionTasks.filter((task) => !task.isArchived)
+
+    return {
+      new: activeTasks.filter((task) => task.status === 'New').length,
+      inProgress: activeTasks.filter((task) => task.status === 'InProgress').length,
+      cancelled: activeTasks.filter((task) => task.status === 'Cancelled').length,
+      completed: activeTasks.filter((task) => task.status === 'Completed').length,
+      urgent: activeTasks.filter((task) => task.isUrgent).length,
+      total: activeTasks.length,
+    }
+  }, [productionTasks])
+  const homeSupplyStats = useMemo(() => {
+    const active = supplies.filter((supply) => !supply.isArchived)
+
+    return {
+      created: active.filter((supply) => supply.status === 'Created').length,
+      sent: active.filter((supply) => supply.status === 'Sent').length,
+      accepted: active.filter((supply) => supply.status === 'Accepted').length,
+      total: active.length,
+    }
+  }, [supplies])
+  const homeMonthPeriodLabel = useMemo(() => {
+    const from = new Date(getDefaultAnalyticsDateFrom())
+    const to = new Date(getDefaultAnalyticsDateTo())
+    return `${from.toLocaleDateString('ru-RU')} — ${to.toLocaleDateString('ru-RU')}`
+  }, [])
+  const homeProductStats = useMemo(() => {
+    const stats = {
+      total: ozonProducts.length,
+      selling: 0,
+      ready: 0,
+      archived: 0,
+    }
+
+    for (const product of ozonProducts) {
+      const group = getProductStatusGroup(product.status)
+
+      if (group === 'selling') {
+        stats.selling++
+      } else if (group === 'ready') {
+        stats.ready++
+      } else if (group === 'archived') {
+        stats.archived++
+      }
+    }
+
+    return stats
+  }, [ozonProducts])
 
   useEffect(() => {
     if (!token) {
@@ -515,7 +861,7 @@ function App() {
       return
     }
 
-    setActiveTab(visibleTabs[0]?.id ?? 'production')
+    setActiveTab(visibleTabs[0]?.id ?? 'home')
   }, [activeTab, user, visibleTabs])
 
   useEffect(() => {
@@ -527,7 +873,7 @@ function App() {
       ['products', 'production.products'],
       ['tasks', 'production.tasks'],
       ['inProgress', 'production.inProgress'],
-      ['deferred', 'production.deferred'],
+      ['cancelled', 'production.cancelled'],
       ['completed', 'production.completed'],
       ['archive', 'production.archive'],
     ]
@@ -549,6 +895,7 @@ function App() {
     const analyticsFallbacks: Array<[AnalyticsSubTab, string]> = [
       ['summary', 'analytics.summary'],
       ['topProducts', 'analytics.topProducts'],
+      ['noSales', 'analytics.noSales'],
     ]
     if (activeTab === 'analytics' && !hasSubFeature(`analytics.${analyticsSubTab}`, 'analytics')) {
       setAnalyticsSubTab(analyticsFallbacks.find(([, feature]) => hasSubFeature(feature, 'analytics'))?.[0] ?? 'summary')
@@ -593,20 +940,20 @@ function App() {
   }, [token])
 
   useEffect(() => {
-    selectedChatUserIdRef.current = selectedChatUserId
-  }, [selectedChatUserId])
+    selectedChatKeyRef.current = selectedChatKey
+  }, [selectedChatKey])
 
   useEffect(() => {
-    if (activeTab === 'chats' && selectedChatUserId) {
-      markChatNotificationsSeen(selectedChatUserId)
+    if (activeTab === 'chats' && selectedChatId) {
+      markChatNotificationsSeen(selectedChatType, selectedChatId)
     }
-  }, [activeTab, selectedChatUserId])
+  }, [activeTab, selectedChatType, selectedChatId])
 
   useEffect(() => {
     if (activeTab === 'chats') {
       chatMessagesEndRef.current?.scrollIntoView({ block: 'end' })
     }
-  }, [activeTab, selectedChatUserId, chatMessages.length])
+  }, [activeTab, selectedChatType, selectedChatId, chatMessages.length])
 
   useEffect(() => {
     if (!token) {
@@ -624,16 +971,20 @@ function App() {
       loadProductionTasks()
     })
 
-    connection.on('ChatMessagesChanged', (senderId: string, receiverId: string) => {
-      if (user?.id !== senderId && user?.id !== receiverId) {
-        return
+    connection.on('ChatMessagesChanged', (senderId: string, receiverId: string | null, groupId: string | null) => {
+      loadChatThreads()
+      const activeKey = selectedChatKeyRef.current
+      const activeMatch =
+        groupId
+          ? activeKey === `group:${groupId}`
+          : user?.id === senderId || user?.id === receiverId
+      if (activeMatch && selectedChatId) {
+        loadChatMessages(selectedChatType, selectedChatId)
       }
+    })
 
-      loadChatUsers()
-      const activeChatUserId = selectedChatUserIdRef.current
-      if (activeChatUserId && (activeChatUserId === senderId || activeChatUserId === receiverId)) {
-        loadChatMessages(activeChatUserId)
-      }
+    connection.on('ChatThreadsChanged', () => {
+      loadChatThreads()
     })
 
     connection.start().catch(() => {
@@ -662,30 +1013,63 @@ function App() {
     }
 
     loadOzonProducts()
-    if (hasFeature('analytics')) {
-      loadAnalytics()
-    }
   }, [token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'home' || !hasFeature('analytics')) {
+      return
+    }
+
+    loadHomeAnalytics()
+  }, [activeTab, token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics')) {
+      return
+    }
+
+    setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
+    setAnalyticsDateTo(getDefaultAnalyticsDateTo())
+  }, [activeTab, token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics')) {
+      return
+    }
+
+    if (!analyticsDateFrom || !analyticsDateTo) {
+      return
+    }
+
+    loadAnalytics()
+  }, [analyticsDateFrom, analyticsDateTo, activeTab, token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
     if (!token) {
       return
     }
 
-    loadChatUsers()
-    const intervalId = window.setInterval(loadChatUsers, 30000)
+    loadChatThreads()
+    loadChatPickerUsers()
+    const intervalId = window.setInterval(loadChatThreads, 30000)
     return () => window.clearInterval(intervalId)
   }, [token])
 
   useEffect(() => {
-    if (!token || !selectedChatUserId) {
+    if (!token || !selectedChatId) {
       return
     }
 
-    loadChatMessages(selectedChatUserId)
-    const intervalId = window.setInterval(() => loadChatMessages(selectedChatUserId), 5000)
+    if (selectedChatType === 'group') {
+      loadChatGroupDetail(selectedChatId)
+    } else {
+      setChatGroupDetail(null)
+    }
+
+    loadChatMessages(selectedChatType, selectedChatId)
+    const intervalId = window.setInterval(() => loadChatMessages(selectedChatType, selectedChatId), 5000)
     return () => window.clearInterval(intervalId)
-  }, [token, selectedChatUserId])
+  }, [token, selectedChatType, selectedChatId])
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -730,13 +1114,16 @@ function App() {
     setToken('')
     setUser(null)
     setUsers([])
-    setChatUsers([])
+    setChatThreads([])
+    setChatPickerUsers([])
     setChatMessages([])
-    setSelectedChatUserId('')
+    setSelectedChatType('user')
+    setSelectedChatId('')
+    setChatGroupDetail(null)
     knownNewTaskIdsRef.current = null
     knownChatUnreadCountsRef.current = null
     knownChatMessageIdsRef.current = {}
-    selectedChatUserIdRef.current = ''
+    selectedChatKeyRef.current = ''
   }
 
   function confirmLogout() {
@@ -963,7 +1350,7 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
-  async function loadChatUsers() {
+  async function loadChatPickerUsers() {
     const response = await fetch('/api/chat/users', {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -975,36 +1362,535 @@ function App() {
     }
 
     const data: User[] = await response.json()
+    setChatPickerUsers(data.map(normalizeApiUser))
+  }
+
+  async function fetchChatThreadsRaw(): Promise<ChatThread[]> {
+    const response = await fetch('/api/chat/threads', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return []
+    }
+
+    const data: ChatThread[] = await response.json()
+    return data.map(normalizeApiThread)
+  }
+
+  function finishCreateGroupSuccess(
+    data: {
+      id: string
+      name: string
+      createdByUserId?: string
+      members?: ChatGroupMember[]
+    } | null,
+  ) {
+    setShowCreateGroupModal(false)
+    setCreateGroupHint('')
+    setNewGroupName('')
+    setNewGroupMemberIds([])
+    setChatStatus('Группа создана')
+
+    if (data?.id) {
+      setChatGroupDetail({
+        id: String(data.id),
+        name: data.name,
+        createdByUserId: String(data.createdByUserId ?? user?.id ?? ''),
+        members: data.members ?? [],
+      })
+      selectChatThread('group', String(data.id))
+    }
+
+    void loadChatThreads().catch(() => undefined)
+  }
+
+  function parseCreateGroupResponse(raw: string) {
+    if (!raw.trim()) {
+      return null
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const membersRaw = (parsed.members ?? parsed.Members ?? []) as Array<Record<string, unknown>>
+      const id = parsed.id ?? parsed.Id
+      const name = parsed.name ?? parsed.Name
+      const createdByUserId = parsed.createdByUserId ?? parsed.CreatedByUserId
+
+      if (!id || !name) {
+        return null
+      }
+
+      const members = membersRaw.map((member) =>
+        normalizeApiGroupMember({
+          userId: String(member.userId ?? member.UserId ?? ''),
+          userName: String(member.userName ?? member.UserName ?? ''),
+          displayName: String(member.displayName ?? member.DisplayName ?? ''),
+          position: String(member.position ?? member.Position ?? ''),
+          avatarUrl: String(member.avatarUrl ?? member.AvatarUrl ?? ''),
+        }),
+      )
+
+      return {
+        id: String(id),
+        name: String(name),
+        createdByUserId: createdByUserId ? String(createdByUserId) : undefined,
+        members,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async function loadChatThreads() {
+    const response = await fetch('/api/chat/threads', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const data: ChatThread[] = await response.json()
+    const normalizedData = data.map(normalizeApiThread)
     const previousUnreadCounts = knownChatUnreadCountsRef.current
     const nextUnreadCounts = Object.fromEntries(
-      data.map((item) => [item.id, item.unreadCount ?? 0]),
+      normalizedData.map((item) => [`${item.type}:${item.id}`, item.unreadCount ?? 0]),
     )
 
     if (previousUnreadCounts) {
-      data.forEach((item) => {
-        const previousCount = previousUnreadCounts[item.id] ?? 0
+      normalizedData.forEach((item) => {
+        const key = `${item.type}:${item.id}`
+        const previousCount = previousUnreadCounts[key] ?? 0
         const currentCount = item.unreadCount ?? 0
         if (currentCount > previousCount) {
           showBrowserNotification(
-            'Новое сообщение',
-            `${item.displayName || item.userName}: ${currentCount - previousCount} новое`,
+            item.type === 'group' ? 'Новое сообщение в группе' : 'Новое сообщение',
+            `${item.title}: ${currentCount - previousCount} новое`,
           )
         }
       })
     }
 
     knownChatUnreadCountsRef.current = nextUnreadCounts
-    setChatUsers(data)
-    setSelectedChatUserId((current) => current || data[0]?.id || '')
+    setChatThreads(normalizedData)
+    if (selectedChatType === 'group' && selectedChatId) {
+      const groupThread = normalizedData.find((item) => item.type === 'group' && isSameChatId(item.id, selectedChatId))
+      if (groupThread?.members?.length) {
+        setChatGroupDetail({
+          id: groupThread.id,
+          name: groupThread.title,
+          createdByUserId: groupThread.createdByUserId ?? '',
+          members: groupThread.members,
+        })
+      }
+    }
+    const hasCurrent = normalizedData.some(
+      (item) => isSameChatId(item.id, selectedChatId) && item.type === selectedChatType,
+    )
+    if (!hasCurrent) {
+      const first = normalizedData[0]
+      if (first) {
+        setSelectedChatType(first.type)
+        setSelectedChatId(first.id)
+      } else {
+        setSelectedChatId('')
+      }
+    }
   }
 
-  async function loadChatMessages(chatUserId = selectedChatUserId) {
-    if (!chatUserId) {
+  async function loadChatGroupDetail(groupId: string) {
+    const response = await fetch(`/api/chat/groups/${groupId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setChatGroupDetail(null)
+      return null
+    }
+
+    const data = await response.json()
+    const detail = {
+      id: String(data.id),
+      name: data.name,
+      createdByUserId: String(data.createdByUserId),
+      members: (data.members ?? []) as ChatGroupMember[],
+    }
+    setChatGroupDetail(detail)
+    return detail
+  }
+
+  function selectChatThread(type: 'user' | 'group', id: string) {
+    setSelectedChatType(type)
+    setSelectedChatId(id)
+  }
+
+  async function openGroupMembersModal() {
+    if (!selectedChatId || selectedChatType !== 'group') {
+      return
+    }
+
+    const groupId = selectedChatId
+    const thread = chatThreads.find((item) => item.type === 'group' && isSameChatId(item.id, groupId))
+    const seededDetail =
+      thread?.members && thread.members.length > 0
+        ? {
+            id: thread.id,
+            name: thread.title,
+            createdByUserId: thread.createdByUserId ?? '',
+            members: thread.members,
+          }
+        : chatGroupDetail?.id && isSameChatId(chatGroupDetail.id, groupId)
+          ? chatGroupDetail
+          : null
+
+    setShowGroupMembersModal(true)
+    setGroupMembersModalState({
+      groupId,
+      loading: !seededDetail,
+      error: '',
+      detail: seededDetail,
+    })
+
+    if (seededDetail) {
+      setChatGroupDetail(seededDetail)
+    }
+
+    try {
+      const response = await fetch(`/api/chat/groups/${groupId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        if (!seededDetail) {
+          setGroupMembersModalState({
+            groupId,
+            loading: false,
+            error: 'Не удалось загрузить участников',
+            detail: null,
+          })
+        } else {
+          setGroupMembersModalState((current) =>
+            current
+              ? {
+                  ...current,
+                  loading: false,
+                }
+              : current,
+          )
+        }
+        return
+      }
+
+      const data = await response.json()
+      setChatGroupDetail({
+        id: String(data.id),
+        name: data.name,
+        createdByUserId: String(data.createdByUserId),
+        members: data.members ?? [],
+      })
+      setGroupMembersModalState({
+        groupId,
+        loading: false,
+        error: '',
+        detail: {
+          id: String(data.id),
+          name: data.name,
+          createdByUserId: String(data.createdByUserId),
+          members: data.members ?? [],
+        },
+      })
+    } catch {
+      if (!seededDetail) {
+        setGroupMembersModalState({
+          groupId,
+          loading: false,
+          error: 'Не удалось загрузить участников',
+          detail: null,
+        })
+      } else {
+        setGroupMembersModalState((current) =>
+          current
+            ? {
+                ...current,
+                loading: false,
+              }
+            : current,
+        )
+      }
+    }
+  }
+
+  async function createChatGroup() {
+    if (creatingGroupRef.current) {
+      return
+    }
+
+    const name = newGroupName.trim()
+    if (name.length < 2) {
+      setCreateGroupHint('Укажите название группы')
+      return
+    }
+
+    if (newGroupMemberIds.length < 2) {
+      setCreateGroupHint('Выберите минимум 2 участников — вместе с вами в группе должно быть 3 человека')
+      return
+    }
+
+    creatingGroupRef.current = true
+    setCreateGroupHint('')
+    setChatStatus('')
+
+    const memberIds = newGroupMemberIds
+      .map((id) => id.trim())
+      .filter(Boolean)
+
+    try {
+      const response = await fetch('/api/chat/groups', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name,
+          memberIds,
+        }),
+      })
+
+      const responseText = await response.text()
+      const success = response.status >= 200 && response.status < 300
+
+      if (success) {
+        finishCreateGroupSuccess(parseCreateGroupResponse(responseText))
+        return
+      }
+
+      const threads = await fetchChatThreadsRaw()
+      const createdGroup = threads.find(
+        (thread) => thread.type === 'group' && thread.title.trim().toLowerCase() === name.toLowerCase(),
+      )
+
+      if (createdGroup) {
+        finishCreateGroupSuccess({
+          id: createdGroup.id,
+          name: createdGroup.title,
+          createdByUserId: createdGroup.createdByUserId,
+          members: createdGroup.members ?? [],
+        })
+        return
+      }
+
+      const message = parseApiErrorMessage(responseText) || 'Не удалось создать группу'
+      setCreateGroupHint(message)
+      setChatStatus(message)
+    } catch {
+      const threads = await fetchChatThreadsRaw().catch(() => [] as ChatThread[])
+      const createdGroup = threads.find(
+        (thread) => thread.type === 'group' && thread.title.trim().toLowerCase() === name.toLowerCase(),
+      )
+
+      if (createdGroup) {
+        finishCreateGroupSuccess({
+          id: createdGroup.id,
+          name: createdGroup.title,
+          createdByUserId: createdGroup.createdByUserId,
+          members: createdGroup.members ?? [],
+        })
+        return
+      }
+
+      setCreateGroupHint('Не удалось создать группу')
+      setChatStatus('Не удалось создать группу')
+    } finally {
+      creatingGroupRef.current = false
+    }
+  }
+
+  async function addSingleMemberToGroup(memberUserId: string) {
+    const groupId = groupMembersModalState?.groupId || selectedChatId
+    if (!groupId || selectedChatType !== 'group') {
+      return
+    }
+
+    const response = await fetch(`/api/chat/groups/${groupId}/members`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ memberIds: [memberUserId] }),
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setChatStatus(message || 'Не удалось добавить участника')
+      return
+    }
+
+    const data = await response.json()
+    const detail = {
+      id: String(data.id),
+      name: data.name,
+      createdByUserId: String(data.createdByUserId),
+      members: (data.members ?? []) as ChatGroupMember[],
+    }
+
+    setChatGroupDetail(detail)
+    setGroupMembersModalState((current) =>
+      current
+        ? {
+            ...current,
+            groupId,
+            loading: false,
+            error: '',
+            detail,
+          }
+        : current,
+    )
+    setChatStatus('Участник добавлен')
+    await loadChatThreads()
+  }
+
+  async function removeMemberFromGroup(memberUserId: string) {
+    const groupId = groupMembersModalState?.groupId || selectedChatId
+    if (!groupId || selectedChatType !== 'group') {
+      return
+    }
+
+    const response = await fetch(`/api/chat/groups/${groupId}/members/${memberUserId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setChatStatus(message || 'Не удалось удалить участника')
+      return
+    }
+
+    const payload = await response.json()
+
+    if (payload.deleted) {
+      setShowGroupMembersModal(false)
+      setGroupMembersModalState(null)
+      setSelectedChatId('')
+      setSelectedChatType('user')
+      setChatGroupDetail(null)
+      setChatMessages([])
+      setChatStatus(
+        isSameUserId(memberUserId, user?.id)
+          ? isSameUserId(groupMembersModalState?.detail?.createdByUserId || selectedChatThread?.createdByUserId, user?.id)
+            ? 'Группа удалена'
+            : 'Вы вышли из группы'
+          : 'Группа удалена',
+      )
+      await loadChatThreads()
+      return
+    }
+
+    const data = payload.group
+    if (!data) {
+      setChatStatus('Не удалось обновить список участников')
+      return
+    }
+
+    const detail = {
+      id: String(data.id),
+      name: data.name,
+      createdByUserId: String(data.createdByUserId),
+      members: (data.members ?? []) as ChatGroupMember[],
+    }
+
+    setChatGroupDetail(detail)
+    setGroupMembersModalState((current) =>
+      current
+        ? {
+            ...current,
+            groupId,
+            loading: false,
+            error: '',
+            detail,
+          }
+        : current,
+    )
+    setShowGroupMembersModal(true)
+    setChatStatus(isSameUserId(memberUserId, user?.id) ? 'Вы вышли из группы' : 'Участник удалён')
+
+    if (isSameUserId(memberUserId, user?.id)) {
+      setShowGroupMembersModal(false)
+      setGroupMembersModalState(null)
+      setSelectedChatId('')
+      setSelectedChatType('user')
+      setChatGroupDetail(null)
+      setChatMessages([])
+    }
+
+    await loadChatThreads()
+  }
+
+  async function deleteChatGroup() {
+    const groupId = groupMembersModalState?.groupId || selectedChatId
+    if (!groupId || selectedChatType !== 'group') {
+      return
+    }
+
+    if (!window.confirm('Удалить группу без возможности восстановления?')) {
+      return
+    }
+
+    const response = await fetch(`/api/chat/groups/${groupId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setChatStatus('Не удалось удалить группу')
+      return
+    }
+
+    setShowGroupMembersModal(false)
+    setGroupMembersModalState(null)
+    setSelectedChatId('')
+    setChatGroupDetail(null)
+    setChatMessages([])
+    setChatStatus('Группа удалена')
+    await loadChatThreads()
+  }
+
+  function toggleNewGroupMember(userId: string) {
+    setCreateGroupHint('')
+    setNewGroupMemberIds((current) =>
+      current.some((id) => isSameUserId(id, userId))
+        ? current.filter((id) => !isSameUserId(id, userId))
+        : [...current, userId],
+    )
+  }
+
+  async function loadChatMessages(chatType = selectedChatType, chatId = selectedChatId) {
+    if (!chatId) {
       setChatMessages([])
       return
     }
 
-    const response = await fetch(`/api/chat/${chatUserId}/messages`, {
+    const url =
+      chatType === 'group'
+        ? `/api/chat/groups/${chatId}/messages`
+        : `/api/chat/${chatId}/messages`
+
+    const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -1015,28 +1901,29 @@ function App() {
     }
 
     const data: ChatMessage[] = await response.json()
-    const previousMessageIds = knownChatMessageIdsRef.current[chatUserId]
+    const threadKey = `${chatType}:${chatId}`
+    const previousMessageIds = knownChatMessageIdsRef.current[threadKey]
     if (previousMessageIds) {
       const incomingMessages = data.filter((message) => !message.isOwn && !previousMessageIds.has(message.id))
       if (incomingMessages.length > 0) {
         const lastMessage = incomingMessages[incomingMessages.length - 1]
         showBrowserNotification(
-          'Новое сообщение',
+          chatType === 'group' ? 'Новое сообщение в группе' : 'Новое сообщение',
           lastMessage.text || lastMessage.attachmentFileName || 'Вложение',
         )
       }
     }
 
-    knownChatMessageIdsRef.current[chatUserId] = new Set(data.map((message) => message.id))
+    knownChatMessageIdsRef.current[threadKey] = new Set(data.map((message) => message.id))
     setChatMessages(data)
-    await loadChatUsers()
+    await loadChatThreads()
   }
 
   async function sendChatMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    if (!selectedChatUserId || (!chatText.trim() && !chatFile)) {
-      setChatStatus('Выберите пользователя и напишите сообщение или прикрепите файл')
+    if (!selectedChatId || (!chatText.trim() && !chatFile)) {
+      setChatStatus('Выберите чат и напишите сообщение или прикрепите файл')
       return
     }
 
@@ -1046,7 +1933,12 @@ function App() {
       formData.append('file', chatFile)
     }
 
-    const response = await fetch(`/api/chat/${selectedChatUserId}/messages`, {
+    const url =
+      selectedChatType === 'group'
+        ? `/api/chat/groups/${selectedChatId}/messages`
+        : `/api/chat/${selectedChatId}/messages`
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -1062,24 +1954,7 @@ function App() {
     setChatText('')
     setChatFile(null)
     setChatStatus('')
-    await loadChatMessages(selectedChatUserId)
-  }
-
-  async function deleteChatMessage(id: string) {
-    const response = await fetch(`/api/chat/messages/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setChatStatus('Не удалось удалить сообщение')
-      return
-    }
-
-    setChatStatus('Сообщение удалено')
-    await loadChatMessages(selectedChatUserId)
+    await loadChatMessages(selectedChatType, selectedChatId)
   }
 
   async function downloadChatAttachment(message: ChatMessage) {
@@ -1104,6 +1979,26 @@ function App() {
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
+  }
+
+  async function deleteChatMessage(message: ChatMessage) {
+    if (!message.isOwn) {
+      return
+    }
+
+    const response = await fetch(`/api/chat/messages/${message.id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setChatStatus('Не удалось удалить сообщение')
+      return
+    }
+
+    setChatMessages((current) => current.filter((item) => item.id !== message.id))
   }
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
@@ -1226,6 +2121,7 @@ function App() {
     localStorage.setItem('authUser', JSON.stringify(updatedUser))
     setUser(updatedUser)
     setProfileStatus('Профиль сохранен')
+    setProfileModalUser((current) => (current?.id === updatedUser.id ? updatedUser : current))
   }
 
   async function uploadProfileAvatar() {
@@ -1256,6 +2152,72 @@ function App() {
     setUser(updatedUser)
     setProfileAvatar(null)
     setProfileStatus('Фото обновлено')
+    setProfileModalUser((current) => (current?.id === updatedUser.id ? updatedUser : current))
+  }
+
+  function openUserProfile(profileUser: User) {
+    setProfileModalUser(profileUser)
+    setProfileAvatar(null)
+    setProfileStatus('')
+    if (profileUser.id === user?.id) {
+      setProfileForm({ displayName: profileUser.displayName, position: profileUser.position })
+    }
+  }
+
+  function closeUserProfile() {
+    setProfileModalUser(null)
+    setProfileAvatar(null)
+    setProfileStatus('')
+  }
+
+  function openUserProfileFromThread(thread: ChatThread) {
+    if (thread.type !== 'user') {
+      return
+    }
+
+    const knownUser = users.find((item) => isSameUserId(item.id, thread.id))
+    openUserProfile(
+      knownUser ?? {
+        id: thread.id,
+        userName: thread.title,
+        displayName: thread.title,
+        position: thread.subtitle,
+        role: 'User',
+        avatarUrl: thread.avatarUrl,
+        allowedFeatures: [],
+        isOnline: thread.isOnline,
+      },
+    )
+  }
+
+  function openUserProfileFromMember(member: ChatGroupMember) {
+    const knownUser = users.find((item) => isSameUserId(item.id, member.userId))
+    openUserProfile(
+      knownUser ?? {
+        id: member.userId,
+        userName: member.userName,
+        displayName: member.displayName || member.userName,
+        position: member.position,
+        role: 'User',
+        avatarUrl: member.avatarUrl,
+        allowedFeatures: [],
+      },
+    )
+  }
+
+  function openUserProfileFromSender(senderId: string, displayName?: string) {
+    const knownUser = users.find((item) => isSameUserId(item.id, senderId))
+    openUserProfile(
+      knownUser ?? {
+        id: senderId,
+        userName: displayName || 'Пользователь',
+        displayName: displayName || 'Пользователь',
+        position: '',
+        role: 'User',
+        avatarUrl: '',
+        allowedFeatures: [],
+      },
+    )
   }
 
   async function loadOzonProducts() {
@@ -1354,10 +2316,72 @@ function App() {
     )
   }
 
+  async function loadHomeAnalytics() {
+    setHomeAnalyticsStatus('Загружаем аналитику за текущий месяц...')
+
+    const params = new URLSearchParams({
+      dateFrom: getDefaultAnalyticsDateFrom(),
+      dateTo: getDefaultAnalyticsDateTo(),
+    })
+
+    const response = await fetch(`/api/ozon/analytics?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setHomeAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось получить аналитику Ozon'))
+      return
+    }
+
+    const data: OzonAnalytics = await response.json()
+    setHomeAnalytics(data)
+    setHomeAnalyticsStatus(`Обновлено: ${new Date(data.timestamp).toLocaleString('ru-RU')}`)
+  }
+
+  function openTab(
+    tab: TabId,
+    subTab?: {
+      production?: ProductionSubTab
+      supply?: SupplySubTab
+      analytics?: AnalyticsSubTab
+      taskUrgency?: 'all' | 'urgent' | 'normal'
+    },
+  ) {
+    setActiveTab(tab)
+
+    if (subTab?.production) {
+      setProductionSubTab(subTab.production)
+    }
+
+    if (subTab?.taskUrgency) {
+      setTaskUrgencyFilter(subTab.taskUrgency)
+    }
+
+    if (subTab?.supply) {
+      setSupplySubTab(subTab.supply)
+    }
+
+    if (subTab?.analytics) {
+      setAnalyticsSubTab(subTab.analytics)
+      setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
+      setAnalyticsDateTo(getDefaultAnalyticsDateTo())
+    }
+  }
+
   async function loadAnalytics() {
     setAnalyticsStatus('Загружаем аналитику Ozon...')
 
-    const response = await fetch('/api/ozon/analytics', {
+    const params = new URLSearchParams()
+    if (analyticsDateFrom) {
+      params.set('dateFrom', analyticsDateFrom)
+    }
+    if (analyticsDateTo) {
+      params.set('dateTo', analyticsDateTo)
+    }
+
+    const response = await fetch(`/api/ozon/analytics?${params.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -1371,6 +2395,76 @@ function App() {
     const data: OzonAnalytics = await response.json()
     setAnalytics(data)
     setAnalyticsStatus(`Аналитика обновлена: ${data.timestamp}`)
+  }
+
+  async function exportAnalyticsOrderRowsExcel(
+    rows: OzonAnalytics['orderRows'],
+    fileName: string,
+    sheetName: string,
+  ) {
+    if (rows.length === 0) {
+      setAnalyticsStatus('Нет данных для выгрузки')
+      return
+    }
+
+    const response = await fetch('/api/ozon/analytics/export', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sheetName,
+        fileName,
+        rows: buildAnalyticsExportRows(rows),
+      }),
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось выгрузить Excel'))
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName.endsWith('.xlsx') ? fileName : `${fileName}.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+    setAnalyticsStatus(`Excel выгружен: ${rows.length} строк`)
+  }
+
+  function exportCurrentAnalyticsExcel() {
+    const statusLabels: Record<typeof analyticsStatusFilter, string> = {
+      all: 'vse',
+      awaiting_deliver: 'sobirayutsya',
+      delivering: 'edut',
+      delivered: 'dostavleny',
+      cancelled: 'otmeneny',
+    }
+    const statusSheetNames: Record<typeof analyticsStatusFilter, string> = {
+      all: 'Все заказы',
+      awaiting_deliver: 'Собираются',
+      delivering: 'Едут',
+      delivered: 'Доставлены',
+      cancelled: 'Отменены',
+    }
+    const period =
+      analyticsDateFrom && analyticsDateTo ? `${analyticsDateFrom}_${analyticsDateTo}` : 'period'
+    void exportAnalyticsOrderRowsExcel(
+      exportableAnalyticsRows,
+      `analytics-${statusLabels[analyticsStatusFilter]}-${period}`,
+      statusSheetNames[analyticsStatusFilter],
+    )
+  }
+
+  function exportAnalyticsProductExcel(group: AnalyticsProductGroup) {
+    const rows = group.byDate.flatMap((dateGroup) => dateGroup.rows)
+    const safeName = group.productName.replace(/[^\wа-яА-ЯёЁ\s-]+/gi, '').trim().slice(0, 40) || 'product'
+    const period =
+      analyticsDateFrom && analyticsDateTo ? `${analyticsDateFrom}_${analyticsDateTo}` : 'period'
+    void exportAnalyticsOrderRowsExcel(rows, `analytics-${safeName}-${period}`, safeName)
   }
 
   async function loadProductionFiles(search: string) {
@@ -1460,6 +2554,14 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  function openProductionFilesModal(productName: string, files: ProductionFile[]) {
+    if (files.length === 0) {
+      return
+    }
+
+    setProductionFilesModal({ productName, files })
+  }
+
   async function deleteProductionFile(id: string) {
     const response = await fetch(`/api/production/files/${id}`, {
       method: 'DELETE',
@@ -1492,18 +2594,20 @@ function App() {
     })
   }
 
-  function markChatNotificationsSeen(chatUserId: string) {
-    setChatUsers((current) =>
-      current.map((item) => (item.id === chatUserId ? { ...item, unreadCount: 0 } : item)),
+  function markChatNotificationsSeen(chatType: 'user' | 'group', chatId: string) {
+    setChatThreads((current) =>
+      current.map((item) =>
+        item.type === chatType && item.id === chatId ? { ...item, unreadCount: 0 } : item,
+      ),
     )
   }
 
   function markVisibleNotificationsSeen() {
     markTaskNotificationsSeen('new', unseenNewProductionTasks.map((task) => task.id))
     markTaskNotificationsSeen('in-progress', unseenInProgressProductionTasks.map((task) => task.id))
-    chatUsers
+    chatThreads
       .filter((item) => (item.unreadCount ?? 0) > 0)
-      .forEach((item) => markChatNotificationsSeen(item.id))
+      .forEach((item) => markChatNotificationsSeen(item.type, item.id))
   }
 
   async function loadProductionTasks() {
@@ -1540,6 +2644,52 @@ function App() {
     setTaskStatus(data.length ? `Задач: ${data.length}` : 'Задач пока нет')
   }
 
+  function resetTaskForm() {
+    setDraftTaskItems([])
+    setTaskIsUrgent(false)
+    setSelectedTaskProductId('')
+    setTaskQuantity('')
+    setEditingTaskId(null)
+  }
+
+  function openCreateTaskModal() {
+    resetTaskForm()
+    setShowCreateTaskModal(true)
+    if (ozonProducts.length === 0) {
+      void loadOzonProducts()
+    }
+    void loadSupplies()
+  }
+
+  function closeTaskFormModal() {
+    setShowCreateTaskModal(false)
+    resetTaskForm()
+  }
+
+  function openEditTaskModal(task: ProductionTask) {
+    if (task.status !== 'New') {
+      return
+    }
+
+    setEditingTaskId(task.id)
+    setTaskIsUrgent(task.isUrgent)
+    setDraftTaskItems(
+      getProductionTaskItems(task).map((item) => ({
+        tempId: createTempId(),
+        ozonProductId: item.ozonProductId,
+        offerId: item.offerId,
+        productName: item.productName,
+        imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
+        requiredQuantity: item.requiredQuantity,
+        enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+      })),
+    )
+    setSelectedTaskProductId('')
+    setTaskQuantity('')
+    setShowCreateTaskModal(true)
+    void loadSupplies()
+  }
+
   function addDraftTaskItem() {
     const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
     const quantity = Number(taskQuantity)
@@ -1558,6 +2708,7 @@ function App() {
         productName: product.name,
         imageUrl: product.imageUrl,
         requiredQuantity: quantity,
+        enforceMinimumQuantity: false,
       },
     ])
     setSelectedTaskProductId('')
@@ -1565,36 +2716,43 @@ function App() {
     setTaskStatus('Товар добавлен в задачу')
   }
 
-  async function createProductionTasksFromDraft() {
+  async function saveTaskFromDraft() {
     if (draftTaskItems.length === 0) {
       setTaskStatus('Добавьте хотя бы один товар')
       return
     }
 
-    const response = await fetch('/api/production/tasks', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+    const payload = {
+      isUrgent: taskIsUrgent,
+      items: draftTaskItems.map((item) => ({
+        ozonProductId: item.ozonProductId,
+        offerId: item.offerId,
+        productName: item.productName,
+        requiredQuantity: item.requiredQuantity,
+        enforceMinimumQuantity: item.enforceMinimumQuantity,
+      })),
+    }
+
+    const response = await fetch(
+      editingTaskId ? `/api/production/tasks/${editingTaskId}` : '/api/production/tasks',
+      {
+        method: editingTaskId ? 'PUT' : 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       },
-      body: JSON.stringify({
-        items: draftTaskItems.map((item) => ({
-          ozonProductId: item.ozonProductId,
-          offerId: item.offerId,
-          productName: item.productName,
-          requiredQuantity: item.requiredQuantity,
-        })),
-      }),
-    })
+    )
 
     if (!response.ok) {
-      setTaskStatus('Не удалось создать задачу')
+      setTaskStatus(editingTaskId ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу')
       return
     }
 
-    setDraftTaskItems([])
-    setShowCreateTaskModal(false)
-    setTaskStatus('Задача создана')
+    const wasEdit = Boolean(editingTaskId)
+    closeTaskFormModal()
+    setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
     await loadProductionTasks()
   }
 
@@ -1615,20 +2773,34 @@ function App() {
     await loadProductionTasks()
   }
 
-  async function deferProductionTask(id: string) {
-    const response = await fetch(`/api/production/tasks/${id}/defer`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setTaskStatus('Не удалось отложить задачу')
+  async function cancelProductionTask() {
+    if (!cancelTaskId || user?.role !== 'Admin') {
       return
     }
 
-    setTaskStatus('Задача отложена')
+    const comment = cancelTaskComment.trim()
+    if (comment.length < 3) {
+      setTaskStatus('Укажите причину отмены (минимум 3 символа)')
+      return
+    }
+
+    const response = await fetch(`/api/production/tasks/${cancelTaskId}/cancel`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ comment }),
+    })
+
+    if (!response.ok) {
+      setTaskStatus('Не удалось отменить задачу')
+      return
+    }
+
+    setCancelTaskId(null)
+    setCancelTaskComment('')
+    setTaskStatus('Задача отменена')
     await loadProductionTasks()
   }
 
@@ -1646,6 +2818,14 @@ function App() {
     ) {
       setTaskStatus('Укажите фактическое количество по каждому товару')
       return
+    }
+
+    for (const item of taskItems) {
+      const actualQuantity = Number(actualQuantities[item.id])
+      if (item.enforceMinimumQuantity && actualQuantity < item.requiredQuantity) {
+        setTaskStatus(`По «${item.productName}» факт не может быть меньше ${item.requiredQuantity}`)
+        return
+      }
     }
 
     const actualQuantity = completedItems.reduce((sum, item) => sum + item.actualQuantity, 0)
@@ -1690,6 +2870,24 @@ function App() {
     }
 
     setTaskStatus('Задача отправлена в архив')
+    await loadProductionTasks()
+  }
+
+  async function restoreProductionTask(id: string) {
+    const response = await fetch(`/api/production/tasks/${id}/restore`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setTaskStatus(message || 'Не удалось вернуть задачу в новые')
+      return
+    }
+
+    setTaskStatus('Задача возвращена в новые')
     await loadProductionTasks()
   }
 
@@ -1763,6 +2961,7 @@ function App() {
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
+        imageUrl: product.imageUrl,
         quantity,
         isReserve: false,
       },
@@ -1776,7 +2975,7 @@ function App() {
     const quantity = Number(reserveQuantity)
 
     if (!reserveProductName.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Укажите название резервного товара и количество')
+      setSupplyStatus('Укажите название нового товара и количество')
       return
     }
 
@@ -1792,7 +2991,7 @@ function App() {
     ])
     setReserveProductName('')
     setReserveQuantity('')
-    setSupplyStatus('Резервный товар добавлен')
+    setSupplyStatus('Новый товар добавлен')
   }
 
   async function createSupply() {
@@ -1932,12 +3131,12 @@ function App() {
     })
 
     if (!response.ok) {
-      setSupplyStatus('Не удалось заменить резервный товар')
+      setSupplyStatus('Не удалось заменить новый товар')
       return
     }
 
     setReplaceProducts((current) => ({ ...current, [itemId]: '' }))
-    setSupplyStatus('Резервный товар заменен на постоянный')
+    setSupplyStatus('Новый товар заменен на постоянный')
     await loadSupplies()
     await loadSupplyAnalytics()
   }
@@ -1951,6 +3150,14 @@ function App() {
         ozonProductId: item.ozonProductId,
         offerId: item.offerId,
         productName: item.productName,
+        imageUrl: getSupplyItemImageUrl(ozonProducts, {
+          tempId: item.id,
+          ozonProductId: item.ozonProductId,
+          offerId: item.offerId,
+          productName: item.productName,
+          quantity: item.quantity,
+          isReserve: item.isReserve,
+        }),
         quantity: item.quantity,
         isReserve: item.isReserve,
       })),
@@ -1986,6 +3193,7 @@ function App() {
         ozonProductId: product.productId,
         offerId: product.offerId,
         productName: product.name,
+        imageUrl: product.imageUrl,
         quantity,
         isReserve: false,
       },
@@ -1998,7 +3206,7 @@ function App() {
     const quantity = Number(editReserveQuantity)
 
     if (!editReserveProductName.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Укажите название резервного товара и количество')
+      setSupplyStatus('Укажите название нового товара и количество')
       return
     }
 
@@ -2144,7 +3352,9 @@ function App() {
           <div className="notification-menu">
             <button
               type="button"
-              className="notification-button"
+              className="notification-bell-button"
+              aria-label="Уведомления"
+              title="Уведомления"
               onClick={() => {
                 if (showNotifications) {
                   markVisibleNotificationsSeen()
@@ -2152,8 +3362,12 @@ function App() {
                 setShowNotifications((current) => !current)
               }}
             >
-              Уведомления
-              {notificationTotal > 0 && <span className="tab-badge">{notificationTotal}</span>}
+              <svg className="notification-bell-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 22a2.2 2.2 0 0 0 2.1-1.5H9.9A2.2 2.2 0 0 0 12 22Zm6.3-5.5V11a6.3 6.3 0 0 0-5-6.1V4a1.5 1.5 0 1 0-3 0v.9A6.3 6.3 0 0 0 5.7 11v5.5L4 18.2V19h16v-.8l-1.7-1.7Z" />
+              </svg>
+              {notificationTotal > 0 && (
+                <span className="notification-badge">{notificationTotal > 99 ? '99+' : notificationTotal}</span>
+              )}
             </button>
             {showNotifications && (
               <div className="notification-panel">
@@ -2164,8 +3378,8 @@ function App() {
                     onClick={() => {
                       setShowNotifications(false)
                       if (item.target === 'chat') {
-                        setSelectedChatUserId(item.userId)
-                        markChatNotificationsSeen(item.userId)
+                        selectChatThread(item.chatType, item.chatId)
+                        markChatNotificationsSeen(item.chatType, item.chatId)
                         setActiveTab('chats')
                       } else if (item.target === 'tasks') {
                         markTaskNotificationsSeen('new', allNewProductionTasks.map((task) => task.id))
@@ -2190,7 +3404,7 @@ function App() {
             <strong>{user?.displayName || user?.userName}</strong>
             {user?.position && <small>{user.position}</small>}
           </span>
-          <button type="button" className="profile-button" onClick={() => setShowProfileModal(true)}>
+          <button type="button" className="profile-button" onClick={() => user && openUserProfile(user)}>
             {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : 'Профиль'}
           </button>
           <button type="button" className="logout-button" onClick={confirmLogout}>
@@ -2199,51 +3413,300 @@ function App() {
         </div>
       </header>
 
-      {showProfileModal && (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal-card" role="dialog" aria-modal="true">
-            <div className="modal-title-row">
-              <h3>Моя карточка</h3>
-              <button type="button" onClick={() => setShowProfileModal(false)}>
-                Закрыть
-              </button>
-            </div>
-            <div className="profile-card">
-              <label className="profile-avatar profile-avatar-upload">
-                {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>Загрузить фото</span>}
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => setProfileAvatar(event.target.files?.[0] ?? null)}
-                />
-              </label>
-              <span>
-                <strong>{user?.displayName || user?.userName}</strong>
-                <small>{user?.position || 'Должность указывает администратор'}</small>
-                {profileAvatar && <small>Выбрано: {profileAvatar.name}</small>}
-              </span>
-            </div>
-            <form className="profile-form" onSubmit={saveProfile}>
-              <input
-                placeholder="Имя"
-                value={profileForm.displayName}
-                onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })}
-                required
-              />
-              <span className="profile-actions">
-                <button type="submit">Сохранить имя</button>
-                <button type="button" onClick={uploadProfileAvatar}>
-                  Сохранить фото
-                </button>
-              </span>
-            </form>
-            {profileStatus && <p className="modal-status">{profileStatus}</p>}
-          </div>
-        </div>
+      {profileModalUser && (
+        <UserProfileModal
+          profileUser={profileModalUser}
+          isOwnProfile={profileModalUser.id === user?.id}
+          profileForm={profileForm}
+          setProfileForm={setProfileForm}
+          profileAvatar={profileAvatar}
+          setProfileAvatar={setProfileAvatar}
+          profileStatus={profileStatus}
+          onClose={closeUserProfile}
+          onSaveProfile={saveProfile}
+          onUploadAvatar={uploadProfileAvatar}
+        />
+      )}
+
+      {productionFilesModal && (
+        <ProductionFilesModal
+          productName={productionFilesModal.productName}
+          files={productionFilesModal.files}
+          onClose={() => setProductionFilesModal(null)}
+          onDownload={downloadProductionFile}
+        />
       )}
 
       <div className="app-content">
         <section className="workspace">
+          {activeTab === 'home' && (
+            <section className="tab-panel home-dashboard">
+              <div className="section-title">
+                <div>
+                  <h2>Главная</h2>
+                  <p>Обзор производства, аналитики, поставок и товаров</p>
+                </div>
+              </div>
+
+              <div className="home-blocks">
+                {hasFeature('production') && (
+                  <article className="home-block">
+                    <div className="home-block-head">
+                      <div>
+                        <h3>Производство</h3>
+                        <p>
+                          {homeProductionStats.urgent > 0
+                            ? `${homeProductionStats.urgent} срочных · `
+                            : ''}
+                          {homeProductionStats.total} активных задач
+                        </p>
+                      </div>
+                      <button type="button" className="home-block-link" onClick={() => openTab('production', { production: 'tasks' })}>
+                        Открыть
+                      </button>
+                    </div>
+                    <div className="home-metrics">
+                      <div className="home-metric">
+                        <span>Новые</span>
+                        <strong>{homeProductionStats.new}</strong>
+                      </div>
+                      <div className="home-metric home-metric-urgent">
+                        <span>Срочные</span>
+                        <strong>{homeProductionStats.urgent}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>В работе</span>
+                        <strong>{homeProductionStats.inProgress}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Отменённые</span>
+                        <strong>{homeProductionStats.cancelled}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Выполненные</span>
+                        <strong>{homeProductionStats.completed}</strong>
+                      </div>
+                    </div>
+                    <div className="home-block-actions">
+                      {hasSubFeature('production.tasks', 'production') && (
+                        <button type="button" onClick={() => openTab('production', { production: 'tasks' })}>
+                          Задачи
+                        </button>
+                      )}
+                      {hasSubFeature('production.tasks', 'production') && homeProductionStats.urgent > 0 && (
+                        <button
+                          type="button"
+                          className="home-block-urgent"
+                          onClick={() => openTab('production', { production: 'tasks', taskUrgency: 'urgent' })}
+                        >
+                          Срочные
+                        </button>
+                      )}
+                      {hasSubFeature('production.inProgress', 'production') && (
+                        <button type="button" onClick={() => openTab('production', { production: 'inProgress' })}>
+                          В работе
+                        </button>
+                      )}
+                      {hasSubFeature('production.cancelled', 'production') && (
+                        <button type="button" onClick={() => openTab('production', { production: 'cancelled' })}>
+                          Отменённые
+                        </button>
+                      )}
+                      {hasSubFeature('production.completed', 'production') && (
+                        <button type="button" onClick={() => openTab('production', { production: 'completed' })}>
+                          Выполненные
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                )}
+
+                {hasFeature('analytics') && (
+                  <article className="home-block">
+                    <div className="home-block-head">
+                      <div>
+                        <h3>Аналитика</h3>
+                        <p>За текущий месяц · {homeMonthPeriodLabel}</p>
+                        {homeAnalyticsStatus && <small className="home-block-status">{homeAnalyticsStatus}</small>}
+                      </div>
+                      <button type="button" className="home-block-link" onClick={() => openTab('analytics', { analytics: 'summary' })}>
+                        Открыть
+                      </button>
+                    </div>
+                    <div className="home-metrics">
+                      <div className="home-metric">
+                        <span>Продажи</span>
+                        <strong>{homeAnalytics?.salesTotalCount ?? '—'}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Выручка</span>
+                        <strong>
+                          {homeAnalytics ? formatMoney(homeAnalytics.revenueTotal, 'KZT') : '—'}
+                        </strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Баланс Ozon</span>
+                        <strong>
+                          {homeAnalytics?.accountBalance === null || homeAnalytics?.accountBalance === undefined
+                            ? '—'
+                            : formatMoney(homeAnalytics.accountBalance, homeAnalytics.accountBalanceCurrency || 'KZT')}
+                        </strong>
+                      </div>
+                      <div className="home-metric home-metric-loss">
+                        <span>Комиссия Ozon</span>
+                        <strong>
+                          {homeAnalytics ? formatLossMoney(homeAnalytics.commissionTotal, 'KZT') : '—'}
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="home-metrics home-metrics-secondary">
+                      <div className="home-metric">
+                        <span>Собираются</span>
+                        <strong>{homeAnalytics?.awaitingDeliverCount ?? '—'}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Едут</span>
+                        <strong>{homeAnalytics?.inTransitCount ?? '—'}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Доставлены</span>
+                        <strong>{homeAnalytics?.deliveredProductCount ?? '—'}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Отменены</span>
+                        <strong>{homeAnalytics?.cancelledCount ?? '—'}</strong>
+                      </div>
+                    </div>
+                    <div className="home-block-actions">
+                      {hasSubFeature('analytics.summary', 'analytics') && (
+                        <button type="button" onClick={() => openTab('analytics', { analytics: 'summary' })}>
+                          Общая аналитика
+                        </button>
+                      )}
+                      {hasSubFeature('analytics.topProducts', 'analytics') && (
+                        <button type="button" onClick={() => openTab('analytics', { analytics: 'topProducts' })}>
+                          Топ товары
+                        </button>
+                      )}
+                      {hasSubFeature('analytics.noSales', 'analytics') && (
+                        <button type="button" onClick={() => openTab('analytics', { analytics: 'noSales' })}>
+                          Без продаж
+                        </button>
+                      )}
+                      <button type="button" className="home-block-refresh" onClick={loadHomeAnalytics}>
+                        Обновить
+                      </button>
+                    </div>
+                  </article>
+                )}
+
+                {hasFeature('supplies') && (
+                  <article className="home-block">
+                    <div className="home-block-head">
+                      <div>
+                        <h3>Поставки</h3>
+                        <p>{homeSupplyStats.total} активных поставок</p>
+                      </div>
+                      <button type="button" className="home-block-link" onClick={() => openTab('supplies', { supply: 'all' })}>
+                        Открыть
+                      </button>
+                    </div>
+                    <div className="home-metrics">
+                      <div className="home-metric">
+                        <span>Создано</span>
+                        <strong>{homeSupplyStats.created}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Отправлено</span>
+                        <strong>{homeSupplyStats.sent}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Принято</span>
+                        <strong>{homeSupplyStats.accepted}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Всего</span>
+                        <strong>{homeSupplyStats.total}</strong>
+                      </div>
+                    </div>
+                    <div className="home-block-actions">
+                      {hasSubFeature('supplies.create', 'supplies') && (
+                        <button type="button" onClick={() => openTab('supplies', { supply: 'create' })}>
+                          Создать
+                        </button>
+                      )}
+                      {hasSubFeature('supplies.all', 'supplies') && (
+                        <button type="button" onClick={() => openTab('supplies', { supply: 'all' })}>
+                          Все поставки
+                        </button>
+                      )}
+                      {hasSubFeature('supplies.editor', 'supplies') && (
+                        <button type="button" onClick={() => openTab('supplies', { supply: 'editor' })}>
+                          Редактор
+                        </button>
+                      )}
+                      {hasSubFeature('supplies.analytics', 'supplies') && (
+                        <button type="button" onClick={() => openTab('supplies', { supply: 'analytics' })}>
+                          Аналитика поставок
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                )}
+
+                {hasFeature('products') && (
+                  <article className="home-block">
+                    <div className="home-block-head">
+                      <div>
+                        <h3>Товары</h3>
+                        <p>{homeProductStats.total} товаров на Ozon</p>
+                        {ozonStatus && <small className="home-block-status">{ozonStatus}</small>}
+                      </div>
+                      <button type="button" className="home-block-link" onClick={() => openTab('products')}>
+                        Открыть
+                      </button>
+                    </div>
+                    <div className="home-metrics">
+                      <div className="home-metric">
+                        <span>Всего</span>
+                        <strong>{homeProductStats.total}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Готов к продаже</span>
+                        <strong>{homeProductStats.ready}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>В архиве</span>
+                        <strong>{homeProductStats.archived}</strong>
+                      </div>
+                      <div className="home-metric">
+                        <span>Продается</span>
+                        <strong>{homeProductStats.selling}</strong>
+                      </div>
+                    </div>
+                    <div className="home-block-actions">
+                      <button type="button" onClick={() => openTab('products')}>
+                        Каталог товаров
+                      </button>
+                      <button type="button" className="home-block-refresh" onClick={loadOzonProducts}>
+                        Обновить
+                      </button>
+                    </div>
+                  </article>
+                )}
+              </div>
+
+              {!hasFeature('production') &&
+                !hasFeature('analytics') &&
+                !hasFeature('supplies') &&
+                !hasFeature('products') && (
+                <div className="empty-state">
+                  <strong>Нет доступных блоков для главной страницы.</strong>
+                </div>
+              )}
+            </section>
+          )}
+
           {activeTab === 'production' && (
             <section className="tab-panel">
               <div className="section-title">
@@ -2267,6 +3730,38 @@ function App() {
                   </button>
                 </span>
               </div>
+
+              {cancelTaskId && user?.role === 'Admin' && (
+                <div className="modal-backdrop" role="presentation">
+                  <div className="modal-card" role="dialog" aria-modal="true">
+                    <div className="modal-title-row">
+                      <h3>Отменить задачу</h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCancelTaskId(null)
+                          setCancelTaskComment('')
+                        }}
+                      >
+                        Закрыть
+                      </button>
+                    </div>
+                    <p>Укажите причину отмены. Создатель задачи получит уведомление от системы.</p>
+                    <textarea
+                      className="cancel-comment-input"
+                      rows={4}
+                      placeholder="Почему задача отменена?"
+                      value={cancelTaskComment}
+                      onChange={(event) => setCancelTaskComment(event.target.value)}
+                    />
+                    <div className="supply-actions">
+                      <button type="button" className="danger" onClick={cancelProductionTask}>
+                        Отменить задачу
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="inner-tabs">
                 <button
@@ -2304,11 +3799,11 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  className={productionSubTab === 'deferred' ? 'active' : ''}
-                  onClick={() => setProductionSubTab('deferred')}
-                  hidden={!hasSubFeature('production.deferred', 'production')}
+                  className={productionSubTab === 'cancelled' ? 'active' : ''}
+                  onClick={() => setProductionSubTab('cancelled')}
+                  hidden={!hasSubFeature('production.cancelled', 'production')}
                 >
-                  Отложенные
+                  Отменённые
                 </button>
                 <button
                   type="button"
@@ -2328,6 +3823,19 @@ function App() {
                     value={taskSearch}
                     onChange={(event) => setTaskSearch(event.target.value)}
                   />
+                  {productionSubTab === 'tasks' && (
+                    <select
+                      className="toolbar-select"
+                      value={taskUrgencyFilter}
+                      onChange={(event) =>
+                        setTaskUrgencyFilter(event.target.value as 'all' | 'urgent' | 'normal')
+                      }
+                    >
+                      <option value="all">Все задачи</option>
+                      <option value="urgent">Срочные</option>
+                      <option value="normal">Обычные</option>
+                    </select>
+                  )}
                 </div>
               )}
 
@@ -2342,11 +3850,11 @@ function App() {
                       }}
                     >
                       <input
-                        placeholder="Поиск по любому полю товара или файла"
+                        placeholder="Поиск по названию или артикулу"
                         value={productionSearch}
                         onChange={(event) => setProductionSearch(event.target.value)}
                       />
-                      <button type="submit">Найти</button>
+                      <button type="submit">Найти файлы</button>
                     </form>
                   </div>
 
@@ -2376,21 +3884,32 @@ function App() {
                               isSelected ? 'selected-row' : ''
                             }`}
                           >
-                            <span>
-                              <strong>{item.name}</strong>
-                              <small>{item.status}</small>
+                            <span className="unsold-product-name">
+                              {item.imageUrl ? (
+                                <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
+                                  <ProductThumb imageUrl={item.imageUrl} name={item.name} />
+                                </ProductImageHoverPreview>
+                              ) : (
+                                <ProductThumb name={item.name} />
+                              )}
+                              <span>
+                                <strong>{item.name}</strong>
+                                <small>{item.status}</small>
+                              </span>
                             </span>
                             <span>{item.offerId}</span>
                             <span>
-                              {itemFiles.map((file) => (
+                              {itemFiles.length > 0 ? (
                                 <button
                                   type="button"
-                                  key={file.id}
-                                  onClick={() => downloadProductionFile(file.id)}
+                                  className="production-files-trigger"
+                                  onClick={() => openProductionFilesModal(item.name, itemFiles)}
                                 >
-                                  {file.fileName}
+                                  Файлы ({itemFiles.length})
                                 </button>
-                              ))}
+                              ) : (
+                                '—'
+                              )}
                             </span>
                             <span>
                               {item.productUrl ? (
@@ -2435,7 +3954,7 @@ function App() {
                 <>
                   {user?.role === 'Admin' && hasSubFeature('production.createTask', 'production') && (
                     <div className="supply-create-bar">
-                      <button type="button" onClick={() => setShowCreateTaskModal(true)}>
+                      <button type="button" onClick={openCreateTaskModal}>
                         Создать задачу
                       </button>
                     </div>
@@ -2445,8 +3964,8 @@ function App() {
                     <div className="modal-backdrop" role="presentation">
                       <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
                         <div className="modal-title-row">
-                          <h3>Создать задачу</h3>
-                          <button type="button" onClick={() => setShowCreateTaskModal(false)}>
+                          <h3>{editingTaskId ? 'Редактировать задачу' : 'Создать задачу'}</h3>
+                          <button type="button" onClick={closeTaskFormModal}>
                             Закрыть
                           </button>
                         </div>
@@ -2458,17 +3977,49 @@ function App() {
                             selectedProductId={selectedTaskProductId}
                             onProductIdChange={setSelectedTaskProductId}
                             placeholder="Начните писать название или артикул"
+                            hideInlinePreview
+                            showClearButton
                           />
-                          <input
-                            type="number"
-                            min="1"
-                            placeholder="Нужно сделать, шт."
-                            value={taskQuantity}
-                            onChange={(event) => setTaskQuantity(event.target.value)}
-                          />
-                          <button type="button" onClick={addDraftTaskItem}>
-                            Добавить
-                          </button>
+                          <div className="task-form-modal-compose">
+                            {(() => {
+                              const selectedTaskProduct = ozonProducts.find(
+                                (item) => String(item.productId) === selectedTaskProductId,
+                              )
+                              const supplyHint = selectedTaskProduct
+                                ? formatProductSupplyHint(
+                                    getProductSupplySummary(
+                                      selectedTaskProduct.productId,
+                                      selectedTaskProduct.offerId,
+                                      supplies,
+                                    ),
+                                  )
+                                : ''
+
+                              return selectedTaskProduct ? (
+                                <div className="task-form-modal-preview-wrap">
+                                  <TaskProductPreview product={selectedTaskProduct} />
+                                  {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
+                                </div>
+                              ) : (
+                                <div className="task-form-modal-preview task-form-modal-preview-empty">
+                                  <span>Выберите товар для превью</span>
+                                </div>
+                              )
+                            })()}
+                            <div className="task-form-modal-actions">
+                              <input
+                                className="task-quantity-input task-form-modal-qty"
+                                type="number"
+                                min="1"
+                                placeholder="Кол-во"
+                                value={taskQuantity}
+                                onChange={(event) => setTaskQuantity(event.target.value)}
+                              />
+                              <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
+                                Добавить
+                              </button>
+                            </div>
+                          </div>
                         </div>
 
                         <div className="data-table modal-table">
@@ -2476,18 +4027,64 @@ function App() {
                             <span>Товар</span>
                             <span>Артикул</span>
                             <span>Количество</span>
+                            <span>Мин. план</span>
                             <span></span>
                           </div>
-                          {draftTaskItems.map((item) => (
+                          {draftTaskItems.map((item) => {
+                            const draftSupplyHint = formatProductSupplyHint(
+                              getProductSupplySummary(item.ozonProductId, item.offerId, supplies),
+                            )
+
+                            return (
                             <div className="table-row task-draft-row" key={item.tempId}>
-                              <span className="product-mini">
-                                <ProductThumb imageUrl={item.imageUrl} name={item.productName} />
+                              <span className="product-mini task-draft-product-mini">
+                                <ProductThumb imageUrl={item.imageUrl} name={item.productName} large />
                                 <span>
                                   <strong>{item.productName}</strong>
+                                  {draftSupplyHint && (
+                                    <small className="task-product-supply-hint-inline">{draftSupplyHint}</small>
+                                  )}
                                 </span>
                               </span>
                               <span>{item.offerId}</span>
-                              <span>{item.requiredQuantity}</span>
+                              <span>
+                                <input
+                                  className="task-quantity-input"
+                                  type="number"
+                                  min="1"
+                                  value={item.requiredQuantity}
+                                  onChange={(event) =>
+                                    setDraftTaskItems((current) =>
+                                      current.map((entry) =>
+                                        entry.tempId === item.tempId
+                                          ? {
+                                              ...entry,
+                                              requiredQuantity: Number(event.target.value) || 0,
+                                            }
+                                          : entry,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </span>
+                              <span>
+                                <label className="task-minimum-toggle" title="Факт не может быть меньше плана">
+                                  <input
+                                    type="checkbox"
+                                    checked={item.enforceMinimumQuantity}
+                                    onChange={(event) =>
+                                      setDraftTaskItems((current) =>
+                                        current.map((entry) =>
+                                          entry.tempId === item.tempId
+                                            ? { ...entry, enforceMinimumQuantity: event.target.checked }
+                                            : entry,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                  Не меньше
+                                </label>
+                              </span>
                               <span>
                                 <button
                                   type="button"
@@ -2502,7 +4099,8 @@ function App() {
                                 </button>
                               </span>
                             </div>
-                          ))}
+                            )
+                          })}
                           {draftTaskItems.length === 0 && (
                             <div className="empty-state">
                               <strong>Добавьте товары в задачу.</strong>
@@ -2510,23 +4108,36 @@ function App() {
                           )}
                         </div>
 
-                        <div className="supply-actions">
-                          <button type="button" onClick={createProductionTasksFromDraft}>
-                            Сохранить
+                        <div className="supply-actions task-form-modal-footer">
+                          <button type="button" onClick={saveTaskFromDraft}>
+                            {editingTaskId ? 'Сохранить' : 'Создать'}
                           </button>
+                          <label className="task-urgent-toggle">
+                            <input
+                              type="checkbox"
+                              checked={taskIsUrgent}
+                              onChange={(event) => setTaskIsUrgent(event.target.checked)}
+                            />
+                            Срочно
+                          </label>
                         </div>
                       </div>
                     </div>
                   )}
 
                   <ProductionTaskTable
-                    tasks={newProductionTasks}
+                    tasks={filteredNewProductionTasks}
                     products={ozonProducts}
+                    productionFiles={productionFiles}
                     actualQuantities={actualQuantities}
                     setActualQuantities={setActualQuantities}
+                    currentUserId={user?.id}
+                    isAdmin={user?.role === 'Admin'}
                     onStart={startProductionTask}
-                    onDefer={deferProductionTask}
+                    onCancelRequest={setCancelTaskId}
                     onComplete={completeProductionTask}
+                    onOpenFiles={openProductionFilesModal}
+                    onEdit={user?.role === 'Admin' ? openEditTaskModal : undefined}
                   />
                 </>
               )}
@@ -2535,24 +4146,34 @@ function App() {
                 <ProductionTaskTable
                   tasks={inProgressProductionTasks}
                   products={ozonProducts}
+                  productionFiles={productionFiles}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
+                  currentUserId={user?.id}
+                  isAdmin={user?.role === 'Admin'}
                   onStart={startProductionTask}
-                  onDefer={deferProductionTask}
+                  onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
+                  onOpenFiles={openProductionFilesModal}
                 />
               )}
 
-              {productionSubTab === 'deferred' && (
+              {productionSubTab === 'cancelled' && (
                 <ProductionTaskTable
-                  tasks={deferredProductionTasks}
+                  tasks={cancelledProductionTasks}
                   products={ozonProducts}
+                  productionFiles={productionFiles}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
+                  currentUserId={user?.id}
+                  isAdmin={user?.role === 'Admin'}
                   onStart={startProductionTask}
-                  onDefer={deferProductionTask}
+                  onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
-                  deferred
+                  onOpenFiles={openProductionFilesModal}
+                  onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
+                  onRestore={user?.role === 'Admin' ? restoreProductionTask : undefined}
+                  cancelled
                 />
               )}
 
@@ -2566,12 +4187,30 @@ function App() {
               )}
 
               {productionSubTab === 'archive' && (
-                <ProductionTaskArchiveTable
-                  tasks={archivedProductionTasks}
-                  products={ozonProducts}
-                  onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
-                  emptyText="В архиве задач пока нет."
-                />
+                <>
+                  <div className="subtabs-placeholder archive-task-filters">
+                    <label>
+                      <span>Статус</span>
+                      <select
+                        value={archiveTaskStatusFilter}
+                        onChange={(event) =>
+                          setArchiveTaskStatusFilter(event.target.value as 'all' | 'Completed' | 'Cancelled')
+                        }
+                      >
+                        <option value="all">Все</option>
+                        <option value="Completed">Завершена</option>
+                        <option value="Cancelled">Отменена</option>
+                      </select>
+                    </label>
+                  </div>
+                  <ProductionTaskArchiveTable
+                    tasks={filteredArchivedProductionTasks}
+                    products={ozonProducts}
+                    archiveView
+                    onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
+                    emptyText="В архиве задач пока нет."
+                  />
+                </>
               )}
             </section>
           )}
@@ -2589,6 +4228,12 @@ function App() {
                     Обновить товары Ozon
                   </button>
                 )}
+                <input
+                  className="toolbar-search"
+                  placeholder="Поиск по артикулу, названию или SKU"
+                  value={productSearch}
+                  onChange={(event) => setProductSearch(event.target.value)}
+                />
               </div>
 
               {ozonStatus && (
@@ -2606,20 +4251,24 @@ function App() {
                 <div className="table-row ozon-product-row table-head">
                   <span>Товар</span>
                   <span>Артикул</span>
+                  <span>Статус</span>
                   <span>Фото</span>
                   <span>Цена</span>
                   <span>Ссылка</span>
                 </div>
-                {ozonProducts.map((item) => (
+                {filteredCatalogProducts.map((item) => (
                   <div className="table-row ozon-product-row" key={item.productId}>
                     <span>
                       <strong>{item.name}</strong>
                       <small>{item.productId}</small>
                     </span>
                     <span>{item.offerId}</span>
+                    <span>{translateProductStatus(item.status)}</span>
                     <span>
                       {item.imageUrl ? (
-                        <img className="product-thumb" src={item.imageUrl} alt="" />
+                        <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
+                          <ProductThumb imageUrl={item.imageUrl} name={item.name} />
+                        </ProductImageHoverPreview>
                       ) : (
                         '-'
                       )}
@@ -2663,84 +4312,210 @@ function App() {
                 >
                   Топ товары
                 </button>
-              </div>
-              <div className="subtabs-placeholder">
-                <button type="button" onClick={loadAnalytics}>
-                  Обновить аналитику
+                <button
+                  type="button"
+                  className={analyticsSubTab === 'noSales' ? 'active' : ''}
+                  onClick={() => setAnalyticsSubTab('noSales')}
+                  hidden={!hasSubFeature('analytics.noSales', 'analytics')}
+                >
+                  Без продаж
                 </button>
+              </div>
+              <div className="subtabs-placeholder analytics-toolbar">
+                {analyticsSubTab === 'summary' && (
+                  <div className="date-filter">
+                    <label>
+                      <span>С</span>
+                      <input
+                        type="date"
+                        value={analyticsDateFrom}
+                        onChange={(event) => setAnalyticsDateFrom(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>По</span>
+                      <input
+                        type="date"
+                        value={analyticsDateTo}
+                        onChange={(event) => setAnalyticsDateTo(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                )}
+                <div className="analytics-toolbar-actions">
+                  <button type="button" onClick={loadAnalytics}>
+                    Обновить аналитику
+                  </button>
+                </div>
               </div>
               {analyticsSubTab === 'summary' && (
                 <>
-                  <div className="analytics-grid">
-                    <div>
-                      <span>Товары Ozon</span>
-                      <strong>{ozonProducts.length || '-'}</strong>
+                  <div className="analytics-dashboard">
+                    <div className="analytics-grid analytics-grid-main">
+                      <div>
+                        <span>Товары Ozon</span>
+                        <strong>{ozonProducts.length || '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Продается</span>
+                        <strong>{analytics?.sellingProductsCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Готово к продаже</span>
+                        <strong>{analytics?.readyForSaleProductsCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Баланс Ozon</span>
+                        <strong>
+                          {analytics?.accountBalance === null || analytics?.accountBalance === undefined
+                            ? '-'
+                            : formatMoney(analytics.accountBalance, analytics.accountBalanceCurrency || 'KZT')}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Выкуплено, шт.</span>
+                        <strong>{analytics?.deliveredProductCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Всего продаж</span>
+                        <strong>{analytics?.salesTotalCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Выручка</span>
+                        <strong>{analytics ? formatMoney(analytics.revenueTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Заказано на сумму</span>
+                        <strong>{analytics ? formatMoney(analytics.salesAmountTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div>
+                        <span>К выплате</span>
+                        <strong>{analytics ? formatMoney(analytics.payoutTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Собираются</span>
+                        <strong>{analytics?.awaitingDeliverCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Едут</span>
+                        <strong>{analytics?.inTransitCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Доставлены</span>
+                        <strong>{analytics?.deliveredProductCount ?? '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Едет на сумму</span>
+                        <strong>{analytics ? formatMoney(analytics.inTransitAmount, 'KZT') : '-'}</strong>
+                      </div>
+                      <div>
+                        <span>Доставлено на сумму</span>
+                        <strong>{analytics ? formatMoney(analytics.deliveredAmount, 'KZT') : '-'}</strong>
+                      </div>
                     </div>
-                    <div>
-                      <span>Продано, шт.</span>
-                      <strong>{analytics?.orderedUnitsTotal ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Выручка</span>
-                      <strong>{analytics ? formatMoney(analytics.revenueTotal, 'KZT') : '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Комиссия Ozon</span>
-                      <strong>{analytics ? formatMoney(analytics.commissionTotal, 'KZT') : '-'}</strong>
-                    </div>
-                    <div>
-                      <span>К выплате</span>
-                      <strong>{analytics ? formatMoney(analytics.payoutTotal, 'KZT') : '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Логистика</span>
-                      <strong>{analytics ? formatMoney(analytics.logisticsTotal, 'KZT') : '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Прочие услуги</span>
-                      <strong>{analytics ? formatMoney(analytics.servicesTotal, 'KZT') : '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Собираются</span>
-                      <strong>{analytics?.awaitingDeliverCount ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Едут</span>
-                      <strong>{analytics?.deliveringCount ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span>Доставлены</span>
-                      <strong>{analytics?.deliveredCount ?? '-'}</strong>
+                    <div className="analytics-grid analytics-grid-losses">
+                      <div className="analytics-grid-loss">
+                        <span>В архиве</span>
+                        <strong>{analytics?.archivedProductsCount ?? '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Комиссия Ozon</span>
+                        <strong>{analytics ? formatLossMoney(analytics.commissionTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Логистика</span>
+                        <strong>{analytics ? formatLossMoney(analytics.logisticsTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Прочие услуги</span>
+                        <strong>{analytics ? formatLossMoney(analytics.servicesTotal, 'KZT') : '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Отменено</span>
+                        <strong>{analytics?.cancelledCount ?? '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Упущенная выручка</span>
+                        <strong>{analytics ? formatLossMoney(analytics.cancelledAmount, 'KZT') : '-'}</strong>
+                      </div>
+                      <div className="analytics-grid-loss">
+                        <span>Логистика отменённых</span>
+                        <strong>
+                          {analytics ? formatLossMoney(analytics.cancelledLogisticsTotal, 'KZT') : '-'}
+                        </strong>
+                      </div>
                     </div>
                   </div>
-                  <div className="data-table">
-                    <div className="table-row analytics-row table-head">
-                      <span>Артикул</span>
-                      <span>Товар</span>
-                      <span>Статус</span>
-                      <span>Шт.</span>
-                      <span>Выручка</span>
-                      <span>Комиссия</span>
-                      <span>Логистика</span>
-                      <span>К выплате</span>
+                  <div className="analytics-table-toolbar">
+                    <input
+                      className="toolbar-search"
+                      placeholder="Поиск по товару, артикулу или SKU"
+                      value={analyticsRowSearch}
+                      onChange={(event) => setAnalyticsRowSearch(event.target.value)}
+                    />
+                    <span className="analytics-table-meta">
+                      {filteredGroupedAnalyticsProducts.length} товаров · {filteredAnalyticsOrderRows.length} заказов
+                      {analyticsRowSearch.trim() || analyticsStatusFilter !== 'all'
+                        ? ` из ${groupedAnalyticsProducts.length}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div className="analytics-status-filters-bar">
+                    <div className="analytics-status-filters">
+                      {(
+                        [
+                          ['all', 'Все'],
+                          ['awaiting_deliver', 'Собираются'],
+                          ['delivering', 'Едут'],
+                          ['delivered', 'Доставлены'],
+                          ['cancelled', 'Отменены'],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={analyticsStatusFilter === value ? 'active' : ''}
+                          onClick={() => setAnalyticsStatusFilter(value)}
+                        >
+                          {label}
+                          <small>{analyticsStatusCounts[value] ?? 0}</small>
+                        </button>
+                      ))}
                     </div>
-                    {analytics?.rows.map((row) => (
-                      <div className="table-row analytics-row" key={`${row.postingNumber}-${row.sku}`}>
-                        <span>
-                          <strong>{row.offerId}</strong>
-                          <small>{row.sku}</small>
-                        </span>
-                        <span>{row.productName}</span>
-                        <span>{translateStatus(row.status)}</span>
-                        <span>{row.quantity}</span>
-                        <span>{formatMoney(row.revenue, row.currencyCode || 'KZT')}</span>
-                        <span>
-                          {row.commissionPercent}% / {formatMoney(row.commissionAmount, row.currencyCode || 'KZT')}
-                        </span>
-                        <span>{formatMoney(row.logisticsAmount, row.currencyCode || 'KZT')}</span>
-                        <span>{formatMoney(row.payout, row.currencyCode || 'KZT')}</span>
-                      </div>
+                    <button
+                      type="button"
+                      className="analytics-export-button"
+                      title="Выгрузить Excel по выбранному фильтру"
+                      onClick={exportCurrentAnalyticsExcel}
+                    >
+                      Excel
+                    </button>
+                  </div>
+                  <div className="analytics-products-list">
+                    {filteredGroupedAnalyticsProducts.map((group) => (
+                      <AnalyticsProductGroupCard
+                        key={group.key}
+                        group={group}
+                        imageUrl={getAnalyticsProductImageUrl(analyticsProductImages, group)}
+                        expanded={expandedAnalyticsProductKeys[group.key] ?? false}
+                        onToggle={() =>
+                          setExpandedAnalyticsProductKeys((current) => ({
+                            ...current,
+                            [group.key]: !current[group.key],
+                          }))
+                        }
+                        onExport={() => exportAnalyticsProductExcel(group)}
+                      />
                     ))}
+                    {filteredGroupedAnalyticsProducts.length === 0 && (
+                      <div className="empty-state">
+                        <strong>
+                          {analyticsRowSearch.trim() || analyticsStatusFilter !== 'all'
+                            ? 'По вашему запросу ничего не найдено.'
+                            : 'Данных по заказам пока нет.'}
+                        </strong>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -2748,7 +4523,7 @@ function App() {
                 <>
                   <div className="ozon-status">
                     <strong>Все продажи без фильтра по статусу доставки</strong>
-                    <span>Сортировка по количеству продаж</span>
+                    <span>Сортировка по количеству заказов</span>
                   </div>
                   <div className="data-table">
                     <div className="table-row top-products-row table-head">
@@ -2756,24 +4531,110 @@ function App() {
                       <span>Товар</span>
                       <span>Артикул</span>
                       <span>SKU</span>
-                      <span>Продано</span>
+                      <span>Заказано</span>
+                      <span>Остаток</span>
                       <span>Сумма заказов</span>
                     </div>
-                    {topAnalyticsProducts.map((row, index) => (
+                    {topAnalyticsProducts.map((row, index) => {
+                      const imageUrl = getAnalyticsProductImageUrl(analyticsProductImages, row)
+
+                      return (
                       <div className="table-row top-products-row" key={row.key}>
                         <span>{index + 1}</span>
-                        <span>
+                        <span className="unsold-product-name">
+                          {imageUrl ? (
+                            <ProductImageHoverPreview imageUrl={imageUrl} name={row.productName}>
+                              <ProductThumb imageUrl={imageUrl} name={row.productName} />
+                            </ProductImageHoverPreview>
+                          ) : (
+                            <ProductThumb name={row.productName} />
+                          )}
                           <strong>{row.productName}</strong>
                         </span>
                         <span>{row.offerId || '-'}</span>
                         <span>{row.sku || '-'}</span>
                         <span>{row.quantity}</span>
+                        <span>{row.stockTotal}</span>
                         <span>{formatMoney(row.revenue, row.currencyCode)}</span>
                       </div>
-                    ))}
+                      )
+                    })}
                     {topAnalyticsProducts.length === 0 && (
                       <div className="empty-state">
-                        <strong>Проданных товаров пока нет.</strong>
+                        <strong>Заказанных товаров пока нет.</strong>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {analyticsSubTab === 'noSales' && (
+                <>
+                  <div className="ozon-status">
+                    <strong>Товары без единой продажи</strong>
+                    <span>
+                      Сравнение каталога Ozon с заказами за последние 2 года · найдено:{' '}
+                      {filteredUnsoldAnalyticsProducts.length}
+                      {unsoldProductStatusFilter !== 'all'
+                        ? ` из ${unsoldAnalyticsProducts.length}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div className="analytics-status-filters-bar unsold-status-filters-bar">
+                    <div className="analytics-status-filters">
+                      {(
+                        [
+                          ['all', 'Все'],
+                          ['selling', 'Продается'],
+                          ['ready', 'Готов к продаже'],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={unsoldProductStatusFilter === value ? 'active' : ''}
+                          onClick={() => setUnsoldProductStatusFilter(value)}
+                        >
+                          {label}
+                          <small>{unsoldProductStatusCounts[value] ?? 0}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="data-table">
+                    <div className="table-row unsold-products-row table-head">
+                      <span>Товар</span>
+                      <span>Артикул</span>
+                      <span>SKU</span>
+                      <span>Статус</span>
+                      <span>Остаток</span>
+                      <span>Цена</span>
+                    </div>
+                    {filteredUnsoldAnalyticsProducts.map((row) => (
+                      <div className="table-row unsold-products-row" key={row.key}>
+                        <span className="unsold-product-name">
+                          {row.imageUrl ? (
+                            <ProductImageHoverPreview imageUrl={row.imageUrl} name={row.productName}>
+                              <ProductThumb imageUrl={row.imageUrl} name={row.productName} />
+                            </ProductImageHoverPreview>
+                          ) : (
+                            <ProductThumb name={row.productName} />
+                          )}
+                          <strong>{row.productName}</strong>
+                        </span>
+                        <span>{row.offerId || '-'}</span>
+                        <span>{row.sku || '-'}</span>
+                        <span>{translateProductStatus(row.status)}</span>
+                        <span>{row.stockTotal}</span>
+                        <span>{formatMoney(row.price, row.currencyCode)}</span>
+                      </div>
+                    ))}
+                    {filteredUnsoldAnalyticsProducts.length === 0 && (
+                      <div className="empty-state">
+                        <strong>
+                          {unsoldAnalyticsProducts.length === 0
+                            ? 'Все товары из каталога уже имели продажи.'
+                            : 'Нет товаров с выбранным статусом.'}
+                        </strong>
                       </div>
                     )}
                   </div>
@@ -2799,11 +4660,26 @@ function App() {
                   onChange={(event) => setStockSearch(event.target.value)}
                 />
                 <span className="sort-actions stock-sort-actions">
-                  <button type="button" onClick={() => setStockSortDirection('desc')}>
+                  <button
+                    type="button"
+                    className={stockSortDirection === 'desc' ? 'active' : ''}
+                    onClick={() => setStockSortDirection('desc')}
+                  >
                     По убыванию
                   </button>
-                  <button type="button" onClick={() => setStockSortDirection('asc')}>
+                  <button
+                    type="button"
+                    className={stockSortDirection === 'asc' ? 'active' : ''}
+                    onClick={() => setStockSortDirection('asc')}
+                  >
                     По возрастанию
+                  </button>
+                  <button
+                    type="button"
+                    className={stockSortDirection === null ? 'active' : ''}
+                    onClick={() => setStockSortDirection(null)}
+                  >
+                    По артикулу
                   </button>
                 </span>
               </div>
@@ -2944,7 +4820,7 @@ function App() {
                       <div className="modal-card" role="dialog" aria-modal="true">
                         <h3>Создание поставки</h3>
                         <p>
-                          Добавьте товары из списка Ozon или резервные товары, если товара еще
+                          Добавьте товары из списка Ozon или новые товары, если товара еще
                           нет в продаже. После сохранения поставка появится в статусе "Создано";
                           статус "Отправлено" ставится отдельно.
                         </p>
@@ -2956,103 +4832,25 @@ function App() {
                   )}
 
                   {showCreateSupplyModal && (
-                    <div className="modal-backdrop" role="presentation">
-                      <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
-                        <div className="modal-title-row">
-                          <h3>Создать поставку</h3>
-                          <button
-                            type="button"
-                            onClick={() => setShowCreateSupplyModal(false)}
-                          >
-                            Закрыть
-                          </button>
-                        </div>
-
-                        <div className="supply-forms">
-                          <div className="supply-form-block">
-                            <strong>Товар из Ozon</strong>
-                            <ProductSearchInput
-                              listId="supply-products"
-                              products={ozonProducts}
-                              selectedProductId={supplyProductId}
-                              onProductIdChange={setSupplyProductId}
-                              placeholder="Начните писать название или артикул"
-                            />
-                            <input
-                              type="number"
-                              min="1"
-                              placeholder="Количество"
-                              value={supplyQuantity}
-                              onChange={(event) => setSupplyQuantity(event.target.value)}
-                            />
-                            <button type="button" onClick={addSupplyProduct}>
-                              Добавить
-                            </button>
-                          </div>
-
-                          <div className="supply-form-block">
-                            <strong>Резервный товар</strong>
-                            <input
-                              placeholder="Название резервного товара"
-                              value={reserveProductName}
-                              onChange={(event) => setReserveProductName(event.target.value)}
-                            />
-                            <input
-                              type="number"
-                              min="1"
-                              placeholder="Количество"
-                              value={reserveQuantity}
-                              onChange={(event) => setReserveQuantity(event.target.value)}
-                            />
-                            <button type="button" onClick={addReserveSupplyProduct}>
-                              Создать резервный товар
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="data-table modal-table">
-                          <div className="table-row supply-item-row table-head">
-                            <span>Товар в новой поставке</span>
-                            <span>Артикул</span>
-                            <span>Количество</span>
-                            <span>Тип</span>
-                            <span></span>
-                          </div>
-                          {draftSupplyItems.map((item) => (
-                            <div className="table-row supply-item-row" key={item.tempId}>
-                              <span>{item.productName}</span>
-                              <span>{item.offerId || '-'}</span>
-                              <span>{item.quantity}</span>
-                              <span>{item.isReserve ? 'Резервный' : 'Постоянный'}</span>
-                              <span>
-                                <button
-                                  type="button"
-                                  className="danger"
-                                  onClick={() =>
-                                    setDraftSupplyItems((current) =>
-                                      current.filter((draft) => draft.tempId !== item.tempId),
-                                    )
-                                  }
-                                >
-                                  Убрать
-                                </button>
-                              </span>
-                            </div>
-                          ))}
-                          {draftSupplyItems.length === 0 && (
-                            <div className="empty-state">
-                              <strong>Добавьте товары в поставку.</strong>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="supply-actions">
-                          <button type="button" onClick={createSupply}>
-                            Сохранить
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                    <SupplyItemsModal
+                      title="Создать поставку"
+                      listIdPrefix="supply-products"
+                      ozonProducts={ozonProducts}
+                      items={draftSupplyItems}
+                      setItems={setDraftSupplyItems}
+                      productId={supplyProductId}
+                      setProductId={setSupplyProductId}
+                      quantity={supplyQuantity}
+                      setQuantity={setSupplyQuantity}
+                      reserveProductName={reserveProductName}
+                      setReserveProductName={setReserveProductName}
+                      reserveQuantity={reserveQuantity}
+                      setReserveQuantity={setReserveQuantity}
+                      onAddProduct={addSupplyProduct}
+                      onAddReserve={addReserveSupplyProduct}
+                      onSave={createSupply}
+                      onClose={() => setShowCreateSupplyModal(false)}
+                    />
                   )}
 
                   <SupplyTable
@@ -3061,27 +4859,13 @@ function App() {
                     replaceProducts={replaceProducts}
                     setReplaceProducts={setReplaceProducts}
                     editingSupplyId={editingSupplyId}
-                    editSupplyItems={editSupplyItems}
-                    setEditSupplyItems={setEditSupplyItems}
-                    editSupplyProductId={editSupplyProductId}
-                    setEditSupplyProductId={setEditSupplyProductId}
-                    editSupplyQuantity={editSupplyQuantity}
-                    setEditSupplyQuantity={setEditSupplyQuantity}
-                    editReserveProductName={editReserveProductName}
-                    setEditReserveProductName={setEditReserveProductName}
-                    editReserveQuantity={editReserveQuantity}
-                    setEditReserveQuantity={setEditReserveQuantity}
                     onStartEdit={startEditSupply}
-                    onCancelEdit={cancelEditSupply}
-                    onAddEditProduct={addEditSupplyProduct}
-                    onAddEditReserve={addEditReserveSupplyProduct}
-                  onSaveEdit={saveSupplyEdit}
-                  onDeleteSupply={deleteSupply}
-                  onArchiveSupply={archiveSupply}
-                  onStatusChange={updateSupplyStatus}
-                  onReplaceReserve={replaceReserveItem}
-                  userRole={user?.role}
-                />
+                    onDeleteSupply={deleteSupply}
+                    onArchiveSupply={archiveSupply}
+                    onStatusChange={updateSupplyStatus}
+                    onReplaceReserve={replaceReserveItem}
+                    userRole={user?.role}
+                  />
                 </>
               )}
 
@@ -3092,27 +4876,12 @@ function App() {
                   replaceProducts={replaceProducts}
                   setReplaceProducts={setReplaceProducts}
                   editingSupplyId={editingSupplyId}
-                  editSupplyItems={editSupplyItems}
-                  setEditSupplyItems={setEditSupplyItems}
-                  editSupplyProductId={editSupplyProductId}
-                  setEditSupplyProductId={setEditSupplyProductId}
-                  editSupplyQuantity={editSupplyQuantity}
-                  setEditSupplyQuantity={setEditSupplyQuantity}
-                  editReserveProductName={editReserveProductName}
-                  setEditReserveProductName={setEditReserveProductName}
-                  editReserveQuantity={editReserveQuantity}
-                  setEditReserveQuantity={setEditReserveQuantity}
                   onStartEdit={startEditSupply}
-                  onCancelEdit={cancelEditSupply}
-                  onAddEditProduct={addEditSupplyProduct}
-                  onAddEditReserve={addEditReserveSupplyProduct}
-                  onSaveEdit={saveSupplyEdit}
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
-                  hideItemsUntilEdit
                 />
               )}
 
@@ -3125,28 +4894,13 @@ function App() {
                   replaceProducts={replaceProducts}
                   setReplaceProducts={setReplaceProducts}
                   editingSupplyId={editingSupplyId}
-                  editSupplyItems={editSupplyItems}
-                  setEditSupplyItems={setEditSupplyItems}
-                  editSupplyProductId={editSupplyProductId}
-                  setEditSupplyProductId={setEditSupplyProductId}
-                  editSupplyQuantity={editSupplyQuantity}
-                  setEditSupplyQuantity={setEditSupplyQuantity}
-                  editReserveProductName={editReserveProductName}
-                  setEditReserveProductName={setEditReserveProductName}
-                  editReserveQuantity={editReserveQuantity}
-                  setEditReserveQuantity={setEditReserveQuantity}
                   onStartEdit={startEditSupply}
-                  onCancelEdit={cancelEditSupply}
-                  onAddEditProduct={addEditSupplyProduct}
-                  onAddEditReserve={addEditReserveSupplyProduct}
-                  onSaveEdit={saveSupplyEdit}
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
                   archiveMode
-                  hideItemsUntilEdit
                 />
               )}
 
@@ -3191,6 +4945,30 @@ function App() {
                   <SupplyAnalyticsTable rows={filteredSupplyAnalytics} />
                 </>
               )}
+
+              {editingSupplyId && (
+                <SupplyItemsModal
+                  title="Редактировать поставку"
+                  listIdPrefix={`edit-supply-${editingSupplyId}`}
+                  ozonProducts={ozonProducts}
+                  items={editSupplyItems}
+                  setItems={setEditSupplyItems}
+                  productId={editSupplyProductId}
+                  setProductId={setEditSupplyProductId}
+                  quantity={editSupplyQuantity}
+                  setQuantity={setEditSupplyQuantity}
+                  reserveProductName={editReserveProductName}
+                  setReserveProductName={setEditReserveProductName}
+                  reserveQuantity={editReserveQuantity}
+                  setReserveQuantity={setEditReserveQuantity}
+                  onAddProduct={addEditSupplyProduct}
+                  onAddReserve={addEditReserveSupplyProduct}
+                  onSave={() => saveSupplyEdit(editingSupplyId)}
+                  onClose={cancelEditSupply}
+                  allowReserveNameEdit
+                  itemsTableTitle="Товар в поставке"
+                />
+              )}
             </section>
           )}
 
@@ -3199,62 +4977,306 @@ function App() {
               <div className="section-title">
                 <div>
                   <h2>Чаты</h2>
-                  <p>{chatStatus || 'Обмен сообщениями между пользователями'}</p>
+                  <p>{chatStatus || 'Личные сообщения и групповые беседы'}</p>
                 </div>
-                <button type="button" className="header-action" onClick={loadChatUsers}>
-                  Обновить
-                </button>
+                <span className="section-actions">
+                  <button type="button" className="header-action" onClick={() => {
+                    setCreateGroupHint('')
+                    setShowCreateGroupModal(true)
+                  }}>
+                    Создать группу
+                  </button>
+                  <button type="button" className="header-action" onClick={loadChatThreads}>
+                    Обновить
+                  </button>
+                </span>
               </div>
+
+              {showCreateGroupModal && (
+                <div className="modal-backdrop" role="presentation">
+                  <div className="modal-card modal-card-wide chat-modal" role="dialog" aria-modal="true">
+                    <div className="modal-title-row">
+                      <h3>Создать группу</h3>
+                      <button type="button" className="chat-modal-btn secondary" onClick={() => {
+                        setCreateGroupHint('')
+                        setShowCreateGroupModal(false)
+                      }}>
+                        Закрыть
+                      </button>
+                    </div>
+                    <label className="chat-field-label">
+                      Название группы
+                      <input
+                        className="chat-group-name-input"
+                        placeholder="Например: Склад и производство"
+                        value={newGroupName}
+                        onChange={(event) => {
+                          setCreateGroupHint('')
+                          setNewGroupName(event.target.value)
+                        }}
+                      />
+                    </label>
+                    <div className="group-member-picker-section">
+                      <strong>Участники</strong>
+                      <p className="group-member-picker-hint">
+                        Нажмите на пользователя, чтобы добавить или убрать. Минимум 3 участника: вы и ещё двое.
+                      </p>
+                      {newGroupMemberIds.length < 2 && (
+                        <p className="group-create-hint">
+                          Выбрано участников: {newGroupMemberIds.length}. Нужно минимум 2 — вместе с вами получится
+                          группа из 3 человек.
+                        </p>
+                      )}
+                      <div className="group-member-picker-list">
+                        {chatPickerUsers.map((item) => (
+                          <button
+                            type="button"
+                            key={item.id}
+                            className={`group-member-option ${newGroupMemberIds.some((id) => isSameUserId(id, item.id)) ? 'selected' : ''}`}
+                            onClick={() => toggleNewGroupMember(item.id)}
+                          >
+                            <span>{item.displayName || item.userName}</span>
+                            <small>{item.position || 'Должность не указана'}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {createGroupHint && (
+                      <p className="group-create-hint group-create-hint-error" role="alert">
+                        {createGroupHint}
+                      </p>
+                    )}
+                    <div className="chat-modal-actions">
+                      <button type="button" className="chat-modal-btn" onClick={createChatGroup}>
+                        Создать
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showGroupMembersModal && selectedChatType === 'group' && (
+                <div className="modal-backdrop" role="presentation">
+                  <div className="modal-card modal-card-wide chat-modal" role="dialog" aria-modal="true">
+                    <div className="modal-title-row">
+                      <h3>Участники</h3>
+                      <div className="modal-title-actions">
+                        {isSameUserId(
+                          groupMembersModalState?.detail?.createdByUserId ||
+                            selectedChatThread?.createdByUserId,
+                          user?.id,
+                        ) && (
+                          <button type="button" className="chat-modal-btn danger compact" onClick={deleteChatGroup}>
+                            Удалить группу
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="chat-modal-btn secondary"
+                          onClick={() => {
+                            setShowGroupMembersModal(false)
+                            setGroupMembersModalState(null)
+                          }}
+                        >
+                          Закрыть
+                        </button>
+                      </div>
+                    </div>
+                    {groupMembersModalState?.loading ? (
+                      <div className="empty-state">
+                        <strong>Загрузка участников...</strong>
+                      </div>
+                    ) : groupMembersModalState?.error ? (
+                      <div className="empty-state">
+                        <strong>{groupMembersModalState.error}</strong>
+                      </div>
+                    ) : groupMembersModalState?.detail ? (
+                      <>
+                        <div className="group-member-picker">
+                          <strong>В группе · {groupMembersModalState.detail.members.length}</strong>
+                          {groupMembersModalState.detail.members.map((member) => {
+                            const groupDetail = groupMembersModalState.detail!
+                            const isCreator = isSameUserId(
+                              groupDetail.createdByUserId || selectedChatThread?.createdByUserId,
+                              user?.id,
+                            )
+                            const isSelf = isSameUserId(member.userId, user?.id)
+                            const canRemoveOther = isCreator && !isSelf
+                            const canLeaveSelf = isSelf
+                            return (
+                              <div key={member.userId} className="group-member-row">
+                                <button
+                                  type="button"
+                                  className="group-member-profile-btn"
+                                  onClick={() => openUserProfileFromMember(member)}
+                                >
+                                  <strong>{member.displayName || member.userName}</strong>
+                                  <small>{member.position || 'Должность не указана'}</small>
+                                </button>
+                                {canRemoveOther && (
+                                  <button
+                                    type="button"
+                                    className="chat-modal-btn danger compact"
+                                    onClick={() => removeMemberFromGroup(member.userId)}
+                                  >
+                                    Удалить
+                                  </button>
+                                )}
+                                {canLeaveSelf && (
+                                  <button
+                                    type="button"
+                                    className="chat-modal-btn secondary compact"
+                                    onClick={() => removeMemberFromGroup(member.userId)}
+                                  >
+                                    Выйти
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {groupMembersModalState.detail.members.some((member) =>
+                          isSameUserId(member.userId, user?.id),
+                        ) && (
+                          <div className="group-member-picker">
+                            <strong>Добавить</strong>
+                            {chatPickerUsers
+                              .filter(
+                                (item) =>
+                                  !groupMembersModalState.detail?.members.some((member) =>
+                                    isSameUserId(member.userId, item.id),
+                                  ),
+                              )
+                              .map((item) => (
+                                <button
+                                  type="button"
+                                  key={item.id}
+                                  className="group-member-option"
+                                  onClick={() => addSingleMemberToGroup(item.id)}
+                                >
+                                  <span>{item.displayName || item.userName}</span>
+                                  <small>{item.position || 'Должность не указана'}</small>
+                                </button>
+                              ))}
+                            {chatPickerUsers.filter(
+                              (item) =>
+                                !groupMembersModalState.detail?.members.some((member) =>
+                                  isSameUserId(member.userId, item.id),
+                                ),
+                            ).length === 0 && (
+                              <div className="empty-state">
+                                <strong>Все пользователи уже в группе.</strong>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="empty-state">
+                        <strong>Участники не найдены.</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="chat-layout">
                 <aside className="chat-users">
-                  {chatUsers.map((item) => (
-                    <button
-                      type="button"
-                      className={selectedChatUserId === item.id ? 'active' : ''}
-                      onClick={() => setSelectedChatUserId(item.id)}
-                      key={item.id}
-                    >
-                      <span className="chat-avatar">
-                        {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <span>Фото</span>}
-                      </span>
-                      <span>
-                        <strong>{item.displayName || item.userName}</strong>
-                        <small>{item.position || 'Должность не указана'}</small>
-                      </span>
-                      <b className={item.isOnline ? 'online-dot' : 'offline-dot'}>
-                        {item.isOnline ? 'В сети' : 'Не в сети'}
-                      </b>
-                      {(item.unreadCount ?? 0) > 0 && (
-                        <span className="tab-badge">{item.unreadCount}</span>
+                  {chatThreads.map((item) => {
+                    const isActive =
+                      isSameChatId(selectedChatId, item.id) && selectedChatType === item.type
+
+                    return (
+                    <div className={`chat-thread-item ${isActive ? 'active' : ''}`} key={`${item.type}-${item.id}`}>
+                      {item.type === 'user' ? (
+                        <button
+                          type="button"
+                          className="chat-thread-avatar-btn"
+                          title="Открыть карточку"
+                          onClick={() => openUserProfileFromThread(item)}
+                        >
+                          <span className="chat-avatar">
+                            <UserAvatarPreview
+                              avatarUrl={item.avatarUrl}
+                              displayName={item.title}
+                              nested
+                            />
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="chat-thread-avatar-static">
+                          <span className="chat-avatar group-avatar">
+                            <span>ГР</span>
+                          </span>
+                        </span>
                       )}
-                    </button>
-                  ))}
-                  {chatUsers.length === 0 && (
+                      <button
+                        type="button"
+                        className="chat-thread-main"
+                        onClick={() => selectChatThread(item.type, item.id)}
+                      >
+                        <span>
+                          <strong>{item.title}</strong>
+                          <small>{item.subtitle || (item.type === 'group' ? 'Группа' : 'Пользователь')}</small>
+                        </span>
+                        {item.type === 'user' && (
+                          <b className={item.isOnline ? 'online-dot' : 'offline-dot'}>
+                            {item.isOnline ? 'В сети' : 'Не в сети'}
+                          </b>
+                        )}
+                        {(item.unreadCount ?? 0) > 0 && (
+                          <span className="tab-badge">{item.unreadCount}</span>
+                        )}
+                      </button>
+                    </div>
+                    )
+                  })}
+                  {chatThreads.length === 0 && (
                     <div className="empty-state">
-                      <strong>Пока нет других пользователей для переписки.</strong>
+                      <strong>Пока нет чатов. Создайте группу или дождитесь других пользователей.</strong>
                     </div>
                   )}
                 </aside>
 
                 <section className="chat-window">
-                  {selectedChatUser ? (
+                  {selectedChatThread ? (
                     <>
                       <div className="chat-window-head">
-                        <span className="chat-avatar">
-                          {selectedChatUser.avatarUrl ? (
-                            <img src={selectedChatUser.avatarUrl} alt="" />
+                      <button
+                        type="button"
+                        className="chat-window-profile-btn"
+                        onClick={() =>
+                          selectedChatType === 'user' && selectedChatThread
+                            ? openUserProfileFromThread(selectedChatThread)
+                            : undefined
+                        }
+                        disabled={selectedChatType !== 'user'}
+                      >
+                        <span className={`chat-avatar ${selectedChatType === 'group' ? 'group-avatar' : ''}`}>
+                          {selectedChatType === 'group' ? (
+                            <span>ГР</span>
                           ) : (
-                            <span>Фото</span>
+                            <UserAvatarPreview
+                              avatarUrl={selectedChatThread.avatarUrl}
+                              displayName={selectedChatThread.title}
+                              nested
+                            />
                           )}
                         </span>
-                        <span>
-                          <strong>{selectedChatUser.displayName || selectedChatUser.userName}</strong>
+                        <span className="chat-window-profile-text">
+                          <strong>{selectedChatThread.title}</strong>
                           <small>
-                            {selectedChatUser.position || 'Должность не указана'} |{' '}
-                            {selectedChatUser.isOnline ? 'В сети' : 'Не в сети'}
+                            {selectedChatType === 'group'
+                              ? `${chatGroupDetail?.members.length ?? selectedChatThread.memberCount} участников`
+                              : `${selectedChatThread.subtitle || 'Должность не указана'} | ${selectedChatThread.isOnline ? 'В сети' : 'Не в сети'}`}
                           </small>
                         </span>
+                      </button>
+                        {selectedChatType === 'group' && (
+                          <button type="button" className="chat-modal-btn compact chat-participants-btn" onClick={openGroupMembersModal}>
+                            Участники
+                          </button>
+                        )}
                       </div>
 
                       <div className="chat-messages">
@@ -3263,21 +5285,34 @@ function App() {
                             className={`chat-message ${message.isOwn ? 'own' : 'incoming'}`}
                             key={message.id}
                           >
-                            {message.text && <p>{message.text}</p>}
-                            {message.hasAttachment && (
+                            {selectedChatType === 'group' && !message.isOwn && (
                               <button
                                 type="button"
-                                className="chat-attachment"
-                                onClick={() => downloadChatAttachment(message)}
+                                className="chat-message-author"
+                                onClick={() =>
+                                  openUserProfileFromSender(message.senderId, message.senderDisplayName)
+                                }
                               >
-                                <span>{isImageAttachment(message) ? 'Скриншот' : 'Файл'}</span>
-                                <strong>{message.attachmentFileName}</strong>
+                                {message.senderDisplayName || 'Пользователь'}
                               </button>
                             )}
-                            <span>
-                              {formatDateTime(message.createdAt)}
-                              {(message.isOwn || user?.role === 'Admin') && (
-                                <button type="button" onClick={() => deleteChatMessage(message.id)}>
+                            {message.text && <p>{message.text}</p>}
+                            {message.hasAttachment && (
+                              <ChatAttachmentPreview
+                                message={message}
+                                token={token}
+                                onDownload={downloadChatAttachment}
+                              />
+                            )}
+                            <span className="chat-message-meta">
+                              <time>{formatDateTime(message.createdAt)}</time>
+                              {message.isOwn && (
+                                <button
+                                  type="button"
+                                  className="chat-message-delete"
+                                  onClick={() => deleteChatMessage(message)}
+                                  title="Удалить у себя"
+                                >
                                   Удалить
                                 </button>
                               )}
@@ -3328,7 +5363,7 @@ function App() {
                     </>
                   ) : (
                     <div className="empty-state">
-                      <strong>Выберите пользователя слева.</strong>
+                      <strong>Выберите чат слева.</strong>
                     </div>
                   )}
                 </section>
@@ -3390,7 +5425,9 @@ function App() {
                     <option value="Admin">Admin</option>
                   </select>
                 </label>
-                <button type="submit">Добавить</button>
+                <button type="submit" className="user-form-submit">
+                  Добавить
+                </button>
                 <div className="feature-checks user-form-features">
                   {featureGroups.map((group) => (
                     <fieldset key={group.title}>
@@ -3423,18 +5460,19 @@ function App() {
                   const edit = userSettingsEdits[item.id] ?? item
                   return (
                   <li key={item.id}>
-                    <span>
+                    <button type="button" className="user-card-open" onClick={() => openUserProfile(item)}>
                       <span className="user-card-head">
-                        <span className="chat-avatar">
-                          {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <span>Фото</span>}
-                        </span>
-                        <span>
+                        <UserAvatarPreview
+                          avatarUrl={item.avatarUrl}
+                          displayName={item.displayName || item.userName}
+                        />
+                        <span className="user-card-info">
                           <strong>{item.displayName || item.userName}</strong>
                           <small>Логин: {item.userName}</small>
                           <small>{item.position || 'Должность не указана'}</small>
                         </span>
                       </span>
-                    </span>
+                    </button>
                     <b>{item.role}</b>
                     <span className={`online-status ${item.isOnline ? 'is-online' : 'is-offline'}`}>
                       {item.isOnline ? 'В сети' : 'Не в сети'}
@@ -3698,6 +5736,81 @@ function App() {
   )
 }
 
+function normalizeUserId(value?: string | null) {
+  return (value ?? '').trim().toLowerCase()
+}
+
+function normalizeApiUser(raw: User & { Id?: string }): User {
+  return {
+    ...raw,
+    id: String(raw.id ?? raw.Id ?? ''),
+  }
+}
+
+function normalizeApiGroupMember(raw: ChatGroupMember & { UserId?: string }): ChatGroupMember {
+  return {
+    ...raw,
+    userId: String(raw.userId ?? raw.UserId ?? ''),
+  }
+}
+
+function normalizeApiThread(raw: ChatThread & { Id?: string; CreatedByUserId?: string; Members?: ChatGroupMember[] }): ChatThread {
+  return {
+    ...raw,
+    id: String(raw.id ?? raw.Id ?? ''),
+    createdByUserId: raw.createdByUserId ?? raw.CreatedByUserId
+      ? String(raw.createdByUserId ?? raw.CreatedByUserId)
+      : undefined,
+    members: raw.members ?? raw.Members
+      ? (raw.members ?? raw.Members ?? []).map(normalizeApiGroupMember)
+      : undefined,
+  }
+}
+
+function isSameUserId(left?: string | null, right?: string | null) {
+  const normalizedLeft = normalizeUserId(left)
+  const normalizedRight = normalizeUserId(right)
+  return normalizedLeft !== '' && normalizedLeft === normalizedRight
+}
+
+function isSameChatId(left?: string | null, right?: string | null) {
+  return isSameUserId(left, right)
+}
+
+function getSupplyItemImageUrl(ozonProducts: OzonProduct[], item: DraftSupplyItem) {
+  if (item.imageUrl) {
+    return item.imageUrl
+  }
+
+  if (item.ozonProductId) {
+    return ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl
+  }
+
+  if (item.offerId) {
+    return ozonProducts.find((product) => product.offerId === item.offerId)?.imageUrl
+  }
+
+  return undefined
+}
+
+function getAnalyticsProductImageUrl(
+  productImages: Map<string, string>,
+  product: { sku: number; offerId: string },
+) {
+  if (product.sku) {
+    const bySku = productImages.get(`sku:${product.sku}`)
+    if (bySku) {
+      return bySku
+    }
+  }
+
+  if (product.offerId) {
+    return productImages.get(`offer:${product.offerId}`)
+  }
+
+  return undefined
+}
+
 function getTaskNotificationStorageKey(userId: string, kind: 'new' | 'in-progress') {
   return `lshop:${userId}:seen-production-${kind}-tasks`
 }
@@ -3712,8 +5825,526 @@ function readStringListFromStorage(key: string) {
   }
 }
 
+function parseApiErrorMessage(raw: string) {
+  const text = raw.trim()
+  if (!text) {
+    return ''
+  }
+
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const direct =
+      parsed.detail ?? parsed.title ?? parsed.message ?? parsed.error ?? parsed.Error
+
+    if (typeof direct === 'string' && direct.trim()) {
+      return direct.trim()
+    }
+  } catch {
+    // Plain text response from Results.BadRequest("...").
+  }
+
+  return text
+}
+
 function isImageAttachment(message: ChatMessage) {
-  return message.attachmentContentType.toLowerCase().startsWith('image/')
+  if (message.attachmentContentType.toLowerCase().startsWith('image/')) {
+    return true
+  }
+
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(message.attachmentFileName)
+}
+
+const chatAttachmentUrlCache = new Map<string, string>()
+
+function ChatAttachmentPreview({
+  message,
+  token,
+  onDownload,
+}: {
+  message: ChatMessage
+  token: string
+  onDownload: (message: ChatMessage) => void
+}) {
+  const [src, setSrc] = useState<string | null>(() => chatAttachmentUrlCache.get(message.id) ?? null)
+  const [loading, setLoading] = useState(isImageAttachment(message) && !chatAttachmentUrlCache.has(message.id))
+
+  useEffect(() => {
+    if (!isImageAttachment(message) || !token) {
+      return
+    }
+
+    const cached = chatAttachmentUrlCache.get(message.id)
+    if (cached) {
+      setSrc(cached)
+      setLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setLoading(true)
+
+    fetch(`/api/chat/messages/${message.id}/attachment`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('attachment load failed')
+        }
+
+        return response.blob()
+      })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+
+        const url = URL.createObjectURL(blob)
+        chatAttachmentUrlCache.set(message.id, url)
+        setSrc(url)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSrc(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [message.id, token])
+
+  if (isImageAttachment(message)) {
+    return (
+      <button
+        type="button"
+        className="chat-image-attachment"
+        onClick={() => {
+          if (src) {
+            window.open(src, '_blank', 'noopener,noreferrer')
+          }
+        }}
+        disabled={!src}
+        title={message.attachmentFileName || 'Открыть изображение'}
+      >
+        {src ? (
+          <img src={src} alt={message.attachmentFileName || 'Изображение в чате'} />
+        ) : (
+          <span>{loading ? 'Загрузка…' : 'Не удалось показать изображение'}</span>
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <button type="button" className="chat-attachment" onClick={() => onDownload(message)}>
+      <span>Файл</span>
+      <strong>{message.attachmentFileName}</strong>
+    </button>
+  )
+}
+
+function getProductSupplySummary(
+  ozonProductId: number,
+  offerId: string,
+  supplies: Supply[],
+) {
+  let createdQuantity = 0
+  let sentQuantity = 0
+
+  for (const supply of supplies) {
+    if (supply.isArchived || (supply.status !== 'Created' && supply.status !== 'Sent')) {
+      continue
+    }
+
+    for (const item of supply.items) {
+      if (item.isReserve) {
+        continue
+      }
+
+      const matchesProduct =
+        (item.ozonProductId != null && item.ozonProductId === ozonProductId) ||
+        (item.offerId.trim() !== '' &&
+          offerId.trim() !== '' &&
+          item.offerId.trim().toLowerCase() === offerId.trim().toLowerCase())
+
+      if (!matchesProduct) {
+        continue
+      }
+
+      if (supply.status === 'Created') {
+        createdQuantity += item.quantity
+      } else {
+        sentQuantity += item.quantity
+      }
+    }
+  }
+
+  return { createdQuantity, sentQuantity }
+}
+
+function formatProductSupplyHint(summary: { createdQuantity: number; sentQuantity: number }) {
+  const parts: string[] = []
+
+  if (summary.createdQuantity > 0) {
+    parts.push(`${summary.createdQuantity} шт. собирается на отправку`)
+  }
+
+  if (summary.sentQuantity > 0) {
+    parts.push(`${summary.sentQuantity} шт. уже в пути`)
+  }
+
+  return parts.join(', ')
+}
+
+function buildAnalyticsExportRows(rows: OzonAnalytics['orderRows']) {
+  const header = [
+    'Товар',
+    'Артикул',
+    'SKU',
+    'Статус',
+    'Номер отправления',
+    'Кол-во',
+    'Выручка',
+    'Комиссия %',
+    'Комиссия',
+    'К выплате',
+    'Логистика',
+    'Валюта',
+    'Дата',
+  ]
+
+  const data = rows.map((row) => [
+    row.productName,
+    row.offerId,
+    row.sku ? String(row.sku) : '',
+    translateStatus(normalizeOrderStatus(row.status)),
+    row.postingNumber,
+    String(row.quantity),
+    String(row.revenue),
+    String(row.commissionPercent),
+    String(row.commissionAmount),
+    String(row.payout),
+    String(row.logisticsAmount),
+    row.currencyCode,
+    row.operationDate ? formatDateTime(row.operationDate) : '',
+  ])
+
+  return [header, ...data]
+}
+
+function getAnalyticsProductKey(row: OzonAnalytics['rows'][number]) {
+  return row.sku ? `sku:${row.sku}` : `name:${row.productName}`
+}
+
+type AnalyticsProductGroup = {
+  key: string
+  sku: number
+  offerId: string
+  productName: string
+  status: string
+  isCancelledOnly: boolean
+  quantity: number
+  revenue: number
+  commissionPercent: number
+  commissionAmount: number
+  logisticsAmount: number
+  payout: number
+  currencyCode: string
+  ordersCount: number
+  byDate: Array<{
+    date: string
+    quantity: number
+    revenue: number
+    commissionAmount: number
+    logisticsAmount: number
+    payout: number
+    rows: OzonAnalytics['rows']
+  }>
+}
+
+function groupAnalyticsProducts(rows: OzonAnalytics['rows']): AnalyticsProductGroup[] {
+  const groups = new Map<string, OzonAnalytics['rows']>()
+
+  for (const row of rows) {
+    const key = getAnalyticsProductKey(row)
+    const list = groups.get(key) ?? []
+    list.push(row)
+    groups.set(key, list)
+  }
+
+  return Array.from(groups.entries())
+    .map(([key, productRows]) => {
+      const first = productRows[0]
+      const revenue = productRows.reduce((sum, row) => sum + row.revenue, 0)
+      const commissionAmount = productRows.reduce((sum, row) => sum + row.commissionAmount, 0)
+      const logisticsAmount = productRows.reduce((sum, row) => sum + row.logisticsAmount, 0)
+      const payout = productRows.reduce((sum, row) => sum + row.payout, 0)
+      const quantity = productRows.reduce((sum, row) => sum + row.quantity, 0)
+      const byDateMap = new Map<string, OzonAnalytics['rows']>()
+
+      for (const row of productRows) {
+        const dateKey = getAnalyticsRowDateKey(row)
+        const dateRows = byDateMap.get(dateKey) ?? []
+        dateRows.push(row)
+        byDateMap.set(dateKey, dateRows)
+      }
+
+      const byDate = Array.from(byDateMap.entries())
+        .sort(([leftDate], [rightDate]) => rightDate.localeCompare(leftDate))
+        .map(([date, dateRows]) => ({
+          date,
+          quantity: dateRows.reduce((sum, row) => sum + row.quantity, 0),
+          revenue: dateRows.reduce((sum, row) => sum + row.revenue, 0),
+          commissionAmount: dateRows.reduce((sum, row) => sum + row.commissionAmount, 0),
+          logisticsAmount: dateRows.reduce((sum, row) => sum + row.logisticsAmount, 0),
+          payout: dateRows.reduce((sum, row) => sum + row.payout, 0),
+          rows: dateRows.sort((left, right) => right.operationDate.localeCompare(left.operationDate)),
+        }))
+
+      return {
+        key,
+        sku: first.sku,
+        offerId: first.offerId,
+        productName: first.productName,
+        isCancelledOnly: productRows.every((row) => normalizeOrderStatus(row.status) === 'cancelled'),
+        status: (() => {
+          const statuses = [...new Set(productRows.map((row) => normalizeOrderStatus(row.status)))]
+          if (statuses.length === 1) {
+            return translateStatus(statuses[0])
+          }
+
+          return statuses.map((status) => translateStatus(status)).join(' · ')
+        })(),
+        quantity,
+        revenue,
+        commissionPercent: resolveCommissionPercent(productRows, commissionAmount),
+        commissionAmount,
+        logisticsAmount,
+        payout,
+        currencyCode: first.currencyCode || 'KZT',
+        ordersCount: productRows.length,
+        byDate,
+      }
+    })
+    .sort((left, right) => right.revenue - left.revenue)
+}
+
+function getAnalyticsRowDateKey(row: OzonAnalytics['rows'][number]) {
+  const normalized = row.operationDate?.trim().slice(0, 10)
+  return normalized && normalized !== '—' ? normalized : 'unknown'
+}
+
+function getAnalyticsRevenueLabel(isCancelled: boolean) {
+  return isCancelled ? 'Упущенная сумма заказа' : 'Сумма заказа'
+}
+
+function resolveCommissionPercent(rows: OzonAnalytics['rows'], commissionAmount: number) {
+  const commissionedRows = rows.filter((row) => row.commissionAmount > 0)
+  if (commissionedRows.length === 0) {
+    return 0
+  }
+
+  const withApiPercent = commissionedRows.filter((row) => row.commissionPercent > 0)
+  if (withApiPercent.length > 0) {
+    const uniquePercents = [...new Set(withApiPercent.map((row) => row.commissionPercent))]
+    if (uniquePercents.length === 1) {
+      return uniquePercents[0]
+    }
+
+    const weightedTotal = withApiPercent.reduce(
+      (sum, row) => sum + row.commissionPercent * row.commissionAmount,
+      0,
+    )
+    const totalCommission = withApiPercent.reduce((sum, row) => sum + row.commissionAmount, 0)
+    if (totalCommission > 0) {
+      return Math.round((weightedTotal / totalCommission) * 100) / 100
+    }
+
+    return withApiPercent[0].commissionPercent
+  }
+
+  const commissionedRevenue = commissionedRows.reduce((sum, row) => sum + row.revenue, 0)
+  if (commissionedRevenue > 0 && commissionAmount > 0) {
+    return Math.round((commissionAmount / commissionedRevenue) * 10000) / 100
+  }
+
+  return 0
+}
+
+function formatCommissionDisplay(amount: number, percent: number, currency: string) {
+  if (amount <= 0) {
+    return '—'
+  }
+
+  const formattedAmount = formatLossMoney(amount, currency)
+  return percent > 0 ? `${percent}% · ${formattedAmount}` : formattedAmount
+}
+
+function AnalyticsProductGroupCard({
+  group,
+  imageUrl,
+  expanded,
+  onToggle,
+  onExport,
+}: {
+  group: AnalyticsProductGroup
+  imageUrl?: string
+  expanded: boolean
+  onToggle: () => void
+  onExport: () => void
+}) {
+  const revenueLabel = getAnalyticsRevenueLabel(group.isCancelledOnly)
+
+  return (
+    <section className={`analytics-product-card ${expanded ? 'expanded' : ''}`}>
+      <div className="analytics-product-card-head">
+        <button type="button" className="analytics-product-card-toggle" onClick={onToggle}>
+        <div className="analytics-product-card-main">
+          <span className="analytics-product-chevron" aria-hidden="true">
+            {expanded ? '▾' : '▸'}
+          </span>
+          {imageUrl && (
+            <ProductImageHoverPreview imageUrl={imageUrl} name={group.productName}>
+              <ProductThumb imageUrl={imageUrl} name={group.productName} />
+            </ProductImageHoverPreview>
+          )}
+          <div className="analytics-product-info">
+            <strong className="analytics-product-title">{group.productName}</strong>
+            <small>
+              SKU {group.sku || '—'}
+              {group.offerId ? ` · ${group.offerId}` : ''}
+              {' · '}
+              {group.ordersCount} заказ(ов) · {group.quantity} шт.
+              {' · '}
+              {group.status}
+            </small>
+          </div>
+        </div>
+        <div className="analytics-product-metrics">
+          <div className="analytics-metric">
+            <span>{revenueLabel}</span>
+            <strong>{formatMoney(group.revenue, group.currencyCode)}</strong>
+          </div>
+          <div className="analytics-metric analytics-metric-loss">
+            <span>Комиссия</span>
+            <strong>
+              {formatCommissionDisplay(group.commissionAmount, group.commissionPercent, group.currencyCode)}
+            </strong>
+          </div>
+          <div className="analytics-metric analytics-metric-loss">
+            <span>Логистика</span>
+            <strong>{formatLossMoney(group.logisticsAmount, group.currencyCode)}</strong>
+          </div>
+          <div className="analytics-metric">
+            <span>К выплате</span>
+            <strong>{formatMoney(group.payout, group.currencyCode)}</strong>
+          </div>
+        </div>
+        </button>
+      </div>
+      {expanded && (
+        <div className="analytics-product-card-body">
+          <div className="analytics-card-export-row">
+            <button
+              type="button"
+              className="analytics-card-export"
+              title="Выгрузить Excel по товару"
+              onClick={onExport}
+            >
+              Excel
+            </button>
+          </div>
+          {group.byDate.map((dateGroup) => {
+            const dateGroupCancelledOnly = dateGroup.rows.every(
+              (row) => normalizeOrderStatus(row.status) === 'cancelled',
+            )
+            const dateRevenueLabel = getAnalyticsRevenueLabel(dateGroupCancelledOnly)
+
+            return (
+            <div className="analytics-date-group" key={`${group.key}-${dateGroup.date}`}>
+              <div className="analytics-date-group-head">
+                <strong>{formatAnalyticsDate(dateGroup.date)}</strong>
+                <span>
+                  {dateGroup.rows.length} заказ(ов) · {dateGroup.quantity} шт. ·{' '}
+                  {formatMoney(dateGroup.revenue, group.currencyCode)}
+                  {' · '}
+                  комиссия{' '}
+                  {formatCommissionDisplay(
+                    dateGroup.commissionAmount,
+                    resolveCommissionPercent(dateGroup.rows, dateGroup.commissionAmount),
+                    group.currencyCode,
+                  )}
+                </span>
+              </div>
+              <div className="analytics-order-list-head">
+                <span>Заказ</span>
+                <span>{dateRevenueLabel}</span>
+                <span>Комиссия</span>
+                <span>Логистика</span>
+                <span>К выплате</span>
+              </div>
+              <div className="analytics-order-list">
+                {dateGroup.rows.map((row) => {
+                  const rowCancelled = normalizeOrderStatus(row.status) === 'cancelled'
+                  const rowCommissionPercent =
+                    row.commissionPercent > 0
+                      ? row.commissionPercent
+                      : row.revenue > 0 && row.commissionAmount > 0
+                        ? Math.round((row.commissionAmount / row.revenue) * 10000) / 100
+                        : 0
+
+                  return (
+                  <div className="analytics-order-row" key={`${row.postingNumber}-${row.sku}-${row.operationDate}`}>
+                    <div className="analytics-order-main">
+                      <strong>{row.postingNumber || 'Без номера'}</strong>
+                      <small>
+                        <span className={`analytics-status-badge status-${normalizeOrderStatus(row.status)}`}>
+                          {translateStatus(normalizeOrderStatus(row.status))}
+                        </span>
+                        {' · '}
+                        {row.quantity} шт.
+                      </small>
+                    </div>
+                    <div className="analytics-order-metric">
+                      <span>{getAnalyticsRevenueLabel(rowCancelled)}</span>
+                      <strong>{formatMoney(row.revenue, row.currencyCode || 'KZT')}</strong>
+                    </div>
+                    <div className="analytics-order-metric analytics-metric-loss">
+                      <span>Комиссия</span>
+                      <strong>
+                        {formatCommissionDisplay(
+                          row.commissionAmount,
+                          rowCommissionPercent,
+                          row.currencyCode || 'KZT',
+                        )}
+                      </strong>
+                    </div>
+                    <div className="analytics-order-metric analytics-metric-loss">
+                      <span>Логистика</span>
+                      <strong>{formatLossMoney(row.logisticsAmount, row.currencyCode || 'KZT')}</strong>
+                    </div>
+                    <div className="analytics-order-metric">
+                      <span>К выплате</span>
+                      <strong>{formatMoney(row.payout, row.currencyCode || 'KZT')}</strong>
+                    </div>
+                  </div>
+                  )
+                })}
+              </div>
+            </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
 }
 
 function ProductSearchInput({
@@ -3723,6 +6354,9 @@ function ProductSearchInput({
   onProductIdChange,
   placeholder,
   required = false,
+  largePreview = false,
+  hideInlinePreview = false,
+  showClearButton = false,
 }: {
   listId: string
   products: OzonProduct[]
@@ -3730,11 +6364,16 @@ function ProductSearchInput({
   onProductIdChange: (productId: string) => void
   placeholder: string
   required?: boolean
+  largePreview?: boolean
+  hideInlinePreview?: boolean
+  showClearButton?: boolean
 }) {
   const selectedProduct = products.find((product) => String(product.productId) === selectedProductId)
   const selectedLabel = selectedProduct ? formatProductSelectedLabel(selectedProduct) : ''
   const [query, setQuery] = useState(selectedLabel)
   const [isOpen, setIsOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
+  const controlRef = useRef<HTMLDivElement>(null)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProducts = normalizedQuery
     ? products
@@ -3756,6 +6395,36 @@ function ProductSearchInput({
     setQuery(selectedLabel)
   }, [selectedLabel])
 
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+
+    function updateMenuPosition() {
+      const input = controlRef.current?.querySelector('.product-search-input')
+      if (!(input instanceof HTMLInputElement)) {
+        return
+      }
+
+      const rect = input.getBoundingClientRect()
+      setMenuStyle({
+        position: 'fixed',
+        top: `${rect.bottom + 6}px`,
+        left: `${rect.left}px`,
+        width: `${Math.min(rect.width, 680)}px`,
+        zIndex: 2000,
+      })
+    }
+
+    updateMenuPosition()
+    window.addEventListener('resize', updateMenuPosition)
+    window.addEventListener('scroll', updateMenuPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition)
+      window.removeEventListener('scroll', updateMenuPosition, true)
+    }
+  }, [isOpen, query, products.length])
+
   function handleChange(value: string) {
     setQuery(value)
     setIsOpen(true)
@@ -3774,41 +6443,76 @@ function ProductSearchInput({
     setIsOpen(false)
   }
 
+  function clearSelection() {
+    onProductIdChange('')
+    setQuery('')
+    setIsOpen(false)
+  }
+
   return (
     <div className="product-search-wrap">
-      <div className="product-search-control">
-        <input
-          className="product-search-input"
-          placeholder={placeholder}
-          value={query}
-          onChange={(event) => handleChange(event.target.value)}
-          onFocus={() => setIsOpen(true)}
-          onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
-          required={required}
-        />
-        {selectedProduct && <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />}
-        {isOpen && filteredProducts.length > 0 && (
-          <div className="product-search-menu" id={_listId}>
-            {filteredProducts.map((product) => (
-              <button
-                type="button"
-                key={product.productId}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectProduct(product)}
-              >
-                <ProductThumb imageUrl={product.imageUrl} name={product.name} />
-                <span>
-                  <strong>{product.offerId}</strong>
-                  <small>{product.name}</small>
-                </span>
-              </button>
-            ))}
-          </div>
+      <div
+        className={`product-search-control-row ${showClearButton && selectedProduct ? 'has-outside-clear' : ''}`}
+      >
+        <div
+          ref={controlRef}
+          className={`product-search-control ${selectedProduct && !showClearButton ? 'has-inline-thumb' : ''}`}
+        >
+          <input
+            className="product-search-input"
+            placeholder={placeholder}
+            value={query}
+            onChange={(event) => handleChange(event.target.value)}
+            onFocus={() => setIsOpen(true)}
+            onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
+            required={required}
+          />
+          {selectedProduct && !showClearButton && (
+            <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />
+          )}
+          {isOpen && filteredProducts.length > 0 && (
+            <div className="product-search-menu product-search-menu-fixed" id={_listId} style={menuStyle}>
+              {filteredProducts.map((product) => (
+                <button
+                  type="button"
+                  key={product.productId}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectProduct(product)}
+                >
+                  <ProductThumb imageUrl={product.imageUrl} name={product.name} />
+                  <span>
+                    <strong>{product.offerId}</strong>
+                    <small>{product.name}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {isOpen && filteredProducts.length === 0 && (
+            <div className="product-search-menu product-search-menu-fixed product-search-menu-empty" style={menuStyle}>
+              <span>
+                {products.length === 0
+                  ? 'Список товаров пуст. Подождите загрузку или откройте вкладку «Товары».'
+                  : 'По вашему запросу ничего не найдено.'}
+              </span>
+            </div>
+          )}
+        </div>
+        {showClearButton && selectedProduct && (
+          <button
+            type="button"
+            className="product-search-clear-outside"
+            aria-label="Очистить выбор"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={clearSelection}
+          >
+            ×
+          </button>
         )}
       </div>
-      {selectedProduct && (
-        <div className="selected-product-card">
-          <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />
+      {selectedProduct && !hideInlinePreview && (
+        <div className={`selected-product-card ${largePreview ? 'selected-product-card-large' : ''}`}>
+          <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} large={largePreview} />
           <span>
             <strong>{selectedProduct.name}</strong>
             <small>
@@ -3832,11 +6536,279 @@ function formatProductSelectedLabel(product: OzonProduct) {
   return `${product.offerId} | ${name}`
 }
 
-function ProductThumb({ imageUrl, name }: { imageUrl?: string; name: string }) {
+function UserAvatarPreview({
+  avatarUrl,
+  displayName,
+  nested = false,
+  className = 'chat-avatar',
+}: {
+  avatarUrl?: string
+  displayName: string
+  nested?: boolean
+  className?: string
+}) {
+  const content = avatarUrl ? (
+    <img src={avatarUrl} alt={displayName} />
+  ) : (
+    <span>Фото</span>
+  )
+
+  const avatar = nested ? (
+    content
+  ) : (
+    <span className={className}>{content}</span>
+  )
+
+  if (!avatarUrl) {
+    return avatar
+  }
+
   return (
-    <span className="product-thumb">
+    <ProductImageHoverPreview imageUrl={avatarUrl} name={displayName}>
+      {avatar}
+    </ProductImageHoverPreview>
+  )
+}
+
+function UserProfileModal({
+  profileUser,
+  isOwnProfile,
+  profileForm,
+  setProfileForm,
+  profileAvatar,
+  setProfileAvatar,
+  profileStatus,
+  onClose,
+  onSaveProfile,
+  onUploadAvatar,
+}: {
+  profileUser: User
+  isOwnProfile: boolean
+  profileForm: { displayName: string; position: string }
+  setProfileForm: Dispatch<SetStateAction<{ displayName: string; position: string }>>
+  profileAvatar: File | null
+  setProfileAvatar: Dispatch<SetStateAction<File | null>>
+  profileStatus: string
+  onClose: () => void
+  onSaveProfile: (event: FormEvent<HTMLFormElement>) => void
+  onUploadAvatar: () => void
+}) {
+  const displayName = profileUser.displayName || profileUser.userName
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal-card user-profile-modal"
+        role="dialog"
+        aria-modal="true"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-title-row">
+          <h3>{isOwnProfile ? 'Моя карточка' : 'Карточка пользователя'}</h3>
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+        <div className="profile-card">
+          {isOwnProfile ? (
+            <label className="profile-avatar profile-avatar-upload">
+              {profileUser.avatarUrl ? (
+                <ProductImageHoverPreview imageUrl={profileUser.avatarUrl} name={displayName}>
+                  <img src={profileUser.avatarUrl} alt={displayName} />
+                </ProductImageHoverPreview>
+              ) : (
+                <span>Загрузить фото</span>
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => setProfileAvatar(event.target.files?.[0] ?? null)}
+              />
+            </label>
+          ) : (
+            <UserAvatarPreview
+              avatarUrl={profileUser.avatarUrl}
+              displayName={displayName}
+              className="profile-avatar profile-avatar-readonly"
+            />
+          )}
+          <div className="profile-card-info">
+            <strong>{displayName}</strong>
+            <small>
+              {profileUser.position ||
+                (isOwnProfile ? 'Должность указывает администратор' : 'Должность не указана')}
+            </small>
+            <small className="profile-card-meta">Логин: {profileUser.userName}</small>
+            {!isOwnProfile && (
+              <small className="profile-card-meta">
+                {profileUser.isOnline
+                  ? 'В сети'
+                  : profileUser.lastSeenAt
+                    ? `Был: ${formatDateTime(profileUser.lastSeenAt)}`
+                    : 'Не в сети'}
+              </small>
+            )}
+            {profileAvatar && isOwnProfile && <small>Выбрано: {profileAvatar.name}</small>}
+          </div>
+        </div>
+        {isOwnProfile ? (
+          <>
+            <form className="profile-form" onSubmit={onSaveProfile}>
+              <input
+                placeholder="Имя"
+                value={profileForm.displayName}
+                onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })}
+                required
+              />
+              <span className="profile-actions">
+                <button type="submit">Сохранить имя</button>
+                <button type="button" onClick={onUploadAvatar}>
+                  Сохранить фото
+                </button>
+              </span>
+            </form>
+            {profileStatus && <p className="modal-status">{profileStatus}</p>}
+          </>
+        ) : (
+          <p className="profile-readonly-note">Редактировать может только сам пользователь или администратор.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ProductThumb({ imageUrl, name, large = false }: { imageUrl?: string; name: string; large?: boolean }) {
+  return (
+    <span className={`product-thumb ${large ? 'product-thumb-large' : ''}`}>
       {imageUrl ? <img src={imageUrl} alt={name} loading="lazy" /> : <span>Фото</span>}
     </span>
+  )
+}
+
+function ProductImageHoverPreview({
+  imageUrl,
+  name,
+  children,
+}: {
+  imageUrl?: string
+  name: string
+  children: ReactNode
+}) {
+  const [visible, setVisible] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+
+  if (!imageUrl) {
+    return <>{children}</>
+  }
+
+  function updatePosition(clientX: number, clientY: number) {
+    const popupWidth = 296
+    const popupHeight = 296
+    const offset = 16
+    const maxLeft = window.innerWidth - popupWidth - 12
+    const maxTop = window.innerHeight - popupHeight - 12
+
+    setPosition({
+      x: Math.max(12, Math.min(clientX + offset, maxLeft)),
+      y: Math.max(12, Math.min(clientY + offset, maxTop)),
+    })
+  }
+
+  return (
+    <>
+      <span
+        className="product-image-hover-trigger"
+        onMouseEnter={(event) => {
+          setVisible(true)
+          updatePosition(event.clientX, event.clientY)
+        }}
+        onMouseLeave={() => setVisible(false)}
+        onMouseMove={(event) => updatePosition(event.clientX, event.clientY)}
+      >
+        {children}
+      </span>
+      {visible && (
+        <div className="product-image-hover-popup" style={{ left: position.x, top: position.y }}>
+          <img src={imageUrl} alt={name} />
+        </div>
+      )}
+    </>
+  )
+}
+
+function TaskProductPreview({ product }: { product: OzonProduct }) {
+  return (
+    <div className="task-form-modal-preview selected-product-card selected-product-card-large">
+      <ProductImageHoverPreview imageUrl={product.imageUrl} name={product.name}>
+        <ProductThumb imageUrl={product.imageUrl} name={product.name} large />
+      </ProductImageHoverPreview>
+      <span>
+        <strong>{product.name}</strong>
+        <small>
+          {product.offerId}
+          {product.sku ? ` | SKU ${product.sku}` : ''}
+        </small>
+        {product.productUrl && (
+          <a className="task-product-ozon-link" href={product.productUrl} target="_blank" rel="noreferrer">
+            Открыть на Ozon
+          </a>
+        )}
+      </span>
+    </div>
+  )
+}
+
+function ProductionFilesModal({
+  productName,
+  files,
+  onClose,
+  onDownload,
+}: {
+  productName: string
+  files: ProductionFile[]
+  onClose: () => void
+  onDownload: (id: string) => void
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal-card modal-card-wide production-files-modal"
+        role="dialog"
+        aria-modal="true"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-title-row">
+          <h3>Файлы производства</h3>
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+        <p className="production-files-modal-product">{productName}</p>
+        <div className="data-table modal-table">
+          <div className="table-row file-row table-head">
+            <span>Файл</span>
+            <span>Дата</span>
+            <span>Действия</span>
+          </div>
+          {files.map((file) => (
+            <div className="table-row file-row" key={file.id}>
+              <span>{file.fileName}</span>
+              <span>{new Date(file.createdAt).toLocaleDateString('ru-RU')}</span>
+              <span className="file-actions">
+                <button type="button" onClick={() => onDownload(file.id)}>
+                  Скачать
+                </button>
+              </span>
+            </div>
+          ))}
+          {files.length === 0 && (
+            <div className="empty-state">
+              <strong>Для этого товара еще нет файлов производства.</strong>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -3932,25 +6904,39 @@ function ProductDetail({
 function ProductionTaskTable({
   tasks,
   products,
+  productionFiles,
   actualQuantities,
   setActualQuantities,
+  currentUserId,
+  isAdmin,
   onStart,
-  onDefer,
+  onCancelRequest,
   onComplete,
+  onOpenFiles,
   onDelete,
+  onArchive,
+  onRestore,
+  onEdit,
   completed = false,
-  deferred = false,
+  cancelled = false,
 }: {
   tasks: ProductionTask[]
   products: OzonProduct[]
+  productionFiles: ProductionFile[]
   actualQuantities: Record<string, string>
   setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
+  currentUserId?: string
+  isAdmin?: boolean
   onStart: (id: string) => void
-  onDefer: (id: string) => void
+  onCancelRequest: (id: string) => void
   onComplete: (id: string) => void
+  onOpenFiles: (productName: string, files: ProductionFile[]) => void
   onDelete?: (id: string) => void
+  onArchive?: (id: string) => void
+  onRestore?: (id: string) => void
+  onEdit?: (task: ProductionTask) => void
   completed?: boolean
-  deferred?: boolean
+  cancelled?: boolean
 }) {
   return (
     <div className="data-table">
@@ -3960,30 +6946,41 @@ function ProductionTaskTable({
         <span>Нужно</span>
         <span>Факт</span>
         <span>Статус</span>
+        <span>Создатель</span>
         <span>Исполнитель</span>
         <span></span>
       </div>
       {tasks.map((task) => {
         const taskItems = getProductionTaskItems(task)
-        const isStaleDeferred =
-          task.status === 'Deferred' &&
-          task.deferredAt &&
-          Date.now() - new Date(task.deferredAt).getTime() > 2 * 24 * 60 * 60 * 1000
         const isStaleNew =
           task.status === 'New' &&
           Date.now() - new Date(task.createdAt).getTime() > 4 * 60 * 60 * 1000
+        const isCreator = Boolean(currentUserId && task.createdByUserId === currentUserId)
+        const hasMinimumViolations =
+          task.status === 'InProgress' &&
+          !completed &&
+          !cancelled &&
+          taskItems.some((item) => {
+            if (!item.enforceMinimumQuantity) {
+              return false
+            }
+            const actualValue = actualQuantities[item.id] ?? ''
+            const actualNumber = Number(actualValue)
+            return actualValue !== '' && Number.isFinite(actualNumber) && actualNumber < item.requiredQuantity
+          })
 
         return (
         <details
-          className={`task-details-row ${isStaleDeferred ? 'deferred-stale' : ''} ${isStaleNew ? 'task-stale-new' : ''}`}
+          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''}`}
           key={task.id}
         >
           <summary className="table-row task-row">
           <span>
             <strong>{getProductionTaskSummary(task)}</strong>
             <small>
-              {task.status === 'Deferred' && task.deferredAt
-                ? `Отложена: ${new Date(task.deferredAt).toLocaleDateString('ru-RU')}`
+              {task.isUrgent ? 'Срочно · ' : ''}
+              {task.status === 'Cancelled' && task.cancelledAt
+                ? `Отменена: ${new Date(task.cancelledAt).toLocaleDateString('ru-RU')}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
                 : new Date(task.createdAt).toLocaleDateString('ru-RU')}
             </small>
           </span>
@@ -3992,14 +6989,25 @@ function ProductionTaskTable({
           <span>
             {completed ? (
               getProductionTaskActualTotal(task)
-            ) : (
+            ) : task.status === 'InProgress' ? (
               <small>По товарам</small>
+            ) : (
+              <small>—</small>
             )}
           </span>
-          <span>{translateProductionTaskStatus(task.status)}</span>
+          <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>
+          <span>{task.createdByDisplayName || '-'}</span>
           <span>{task.assignedUserName || '-'}</span>
           <span className="task-actions">
-            {!completed && task.status === 'New' && (
+            {!completed && !cancelled && task.status === 'New' && isAdmin && onEdit && (
+              <button type="button" onClick={(event) => {
+                event.preventDefault()
+                onEdit(task)
+              }}>
+                Редактировать
+              </button>
+            )}
+            {!completed && !cancelled && task.status === 'New' && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
                 onStart(task.id)
@@ -4007,28 +7015,40 @@ function ProductionTaskTable({
                 В работу
               </button>
             )}
-            {!completed && task.status !== 'Deferred' && (
-              <button type="button" onClick={(event) => {
+            {!completed && !cancelled && isAdmin && task.status === 'New' && (
+              <button type="button" className="danger" onClick={(event) => {
                 event.preventDefault()
-                onDefer(task.id)
+                onCancelRequest(task.id)
               }}>
-                Отложить
+                Отменить
               </button>
             )}
-            {deferred && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                onStart(task.id)
-              }}>
-                В работу
-              </button>
-            )}
-            {!completed && (
-              <button type="button" onClick={(event) => {
+            {!completed && !cancelled && task.status === 'InProgress' && (
+              <button
+                type="button"
+                className={hasMinimumViolations ? 'task-complete-blocked' : ''}
+                title={hasMinimumViolations ? 'Исправьте количество: факт не может быть меньше плана' : undefined}
+                onClick={(event) => {
                 event.preventDefault()
                 onComplete(task.id)
               }}>
                 Завершить
+              </button>
+            )}
+            {cancelled && isAdmin && onRestore && (
+              <button type="button" onClick={(event) => {
+                event.preventDefault()
+                onRestore(task.id)
+              }}>
+                В новые
+              </button>
+            )}
+            {cancelled && isAdmin && onArchive && (
+              <button type="button" onClick={(event) => {
+                event.preventDefault()
+                onArchive(task.id)
+              }}>
+                В архив
               </button>
             )}
             {completed && onDelete && (
@@ -4041,19 +7061,51 @@ function ProductionTaskTable({
             )}
           </span>
           </summary>
+          {cancelled && (task.cancellationComment || task.cancelledByDisplayName) && (
+            <div className={`task-cancel-comment ${isCreator ? 'task-cancel-comment-creator' : ''}`}>
+              {task.cancelledByDisplayName && (
+                <p className="task-cancelled-by">
+                  <strong>Отменил:</strong> {task.cancelledByDisplayName}
+                </p>
+              )}
+              {task.cancellationComment && (
+                <>
+                  <strong>{isCreator ? 'Ваша задача отменена. Причина:' : 'Причина отмены:'}</strong>
+                  <p>{task.cancellationComment}</p>
+                </>
+              )}
+            </div>
+          )}
           <div className="task-items-table">
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
               <span>Артикул</span>
               <span>План</span>
               <span>Факт</span>
+              <span>Файлы</span>
             </div>
-            {taskItems.map((item) => (
-              <div className="table-row task-item-table-row" key={item.id}>
+            {taskItems.map((item) => {
+              const actualValue = actualQuantities[item.id] ?? ''
+              const actualNumber = Number(actualValue)
+              const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+              const isBelowMinimum =
+                !completed &&
+                !cancelled &&
+                task.status === 'InProgress' &&
+                item.enforceMinimumQuantity &&
+                actualValue !== '' &&
+                Number.isFinite(actualNumber) &&
+                actualNumber < item.requiredQuantity
+
+              return (
+              <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <ProductThumb imageUrl={getTaskItemImageUrl(item, products)} name={item.productName} />
+                  <TaskItemThumb item={item} products={products} />
                   <span>
                     <strong>{item.productName}</strong>
+                    {item.enforceMinimumQuantity && !completed && !cancelled && (
+                      <small className="task-minimum-badge">Факт не меньше {item.requiredQuantity}</small>
+                    )}
                   </span>
                 </span>
                 <span>{item.offerId || '-'}</span>
@@ -4061,23 +7113,50 @@ function ProductionTaskTable({
                 <span>
                   {completed ? (
                     item.actualQuantity ?? 0
+                  ) : task.status === 'InProgress' ? (
+                    <span className="task-actual-input-wrap">
+                      <input
+                        className={isBelowMinimum ? 'task-quantity-invalid' : ''}
+                        type="number"
+                        min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
+                        placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
+                        value={actualValue}
+                        onChange={(event) =>
+                          setActualQuantities((current) => ({
+                            ...current,
+                            [item.id]: event.target.value,
+                          }))
+                        }
+                      />
+                      {isBelowMinimum && (
+                        <small className="task-minimum-error">
+                          Нельзя меньше {item.requiredQuantity}
+                        </small>
+                      )}
+                      {item.enforceMinimumQuantity && actualValue === '' && (
+                        <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
+                      )}
+                    </span>
                   ) : (
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="Факт"
-                      value={actualQuantities[item.id] ?? ''}
-                      onChange={(event) =>
-                        setActualQuantities((current) => ({
-                          ...current,
-                          [item.id]: event.target.value,
-                        }))
-                      }
-                    />
+                    '—'
+                  )}
+                </span>
+                <span className="task-item-files">
+                  {itemFiles.length > 0 ? (
+                    <button
+                      type="button"
+                      className="production-files-trigger"
+                      onClick={() => onOpenFiles(item.productName, itemFiles)}
+                    >
+                      Файлы ({itemFiles.length})
+                    </button>
+                  ) : (
+                    '—'
                   )}
                 </span>
               </div>
-            ))}
+              )
+            })}
           </div>
         </details>
         )
@@ -4098,11 +7177,32 @@ function getProductionTaskItems(task: ProductionTask) {
     productName: task.productName,
     requiredQuantity: task.requiredQuantity,
     actualQuantity: task.actualQuantity,
+    enforceMinimumQuantity: false,
   }]
 }
 
 function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) {
   return products.find((product) => product.productId === item.ozonProductId)?.imageUrl
+}
+
+function TaskItemThumb({
+  item,
+  products,
+}: {
+  item: ProductionTaskItem
+  products: OzonProduct[]
+}) {
+  const imageUrl = getTaskItemImageUrl(item, products)
+
+  if (imageUrl) {
+    return (
+      <ProductImageHoverPreview imageUrl={imageUrl} name={item.productName}>
+        <ProductThumb imageUrl={imageUrl} name={item.productName} />
+      </ProductImageHoverPreview>
+    )
+  }
+
+  return <ProductThumb name={item.productName} />
 }
 
 function getProductionTaskRequiredTotal(task: ProductionTask) {
@@ -4111,6 +7211,27 @@ function getProductionTaskRequiredTotal(task: ProductionTask) {
 
 function getProductionTaskActualTotal(task: ProductionTask) {
   return getProductionTaskItems(task).reduce((sum, item) => sum + (item.actualQuantity ?? 0), 0)
+}
+
+function sortProductionTasksByUrgency(tasks: ProductionTask[]) {
+  return [...tasks].sort((left, right) => {
+    if (left.isUrgent !== right.isUrgent) {
+      return left.isUrgent ? -1 : 1
+    }
+
+    return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  })
+}
+
+function getProductionFilesForTaskItem(
+  item: { offerId: string; ozonProductId: number },
+  files: ProductionFile[],
+) {
+  return files.filter(
+    (file) =>
+      (item.offerId && file.offerId === item.offerId) ||
+      (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId),
+  )
 }
 
 function getProductionTaskSummary(task: ProductionTask) {
@@ -4124,6 +7245,10 @@ function matchesProductionTask(task: ProductionTask, search: string) {
     task.productName,
     task.status,
     task.assignedUserName,
+    task.createdByDisplayName,
+    task.cancelledByDisplayName,
+    task.cancellationComment,
+    task.isUrgent ? 'срочно' : '',
     task.requiredQuantity,
     task.actualQuantity,
     ...getProductionTaskItems(task).flatMap((item) => [
@@ -4148,7 +7273,7 @@ function matchesSupply(supply: Supply, search: string) {
       item.offerId,
       item.productName,
       item.quantity,
-      item.isReserve ? 'резервный' : 'постоянный',
+      item.isReserve ? 'новый' : 'постоянный',
     ]),
   ]
     .filter((value) => value !== undefined && value !== null)
@@ -4173,39 +7298,54 @@ function ProductionTaskArchiveTable({
   products,
   onArchive,
   onDelete,
+  archiveView = false,
   emptyText = 'В архиве задач пока нет.',
 }: {
   tasks: ProductionTask[]
   products: OzonProduct[]
   onArchive?: (id: string) => void
   onDelete?: (id: string) => void
+  archiveView?: boolean
   emptyText?: string
 }) {
   return (
     <div className="data-table">
-      <div className="table-row task-archive-row table-head">
+      <div className={`table-row task-archive-row table-head ${archiveView ? 'task-archive-row-extended' : ''}`}>
         <span>Что было в задаче</span>
         <span>Артикул</span>
         <span>План</span>
         <span>Факт</span>
+        {archiveView && <span>Статус</span>}
         <span>Кто выполнял</span>
         <span>Взял в работу</span>
-        <span>Завершил</span>
+        <span>{archiveView ? 'Завершена / отменена' : 'Завершил'}</span>
         <span></span>
       </div>
       {tasks.map((task) => (
         <details className="task-details-row" key={task.id}>
-          <summary className="table-row task-archive-row">
+          <summary className={`table-row task-archive-row ${archiveView ? 'task-archive-row-extended' : ''}`}>
           <span>
             <strong>{getProductionTaskSummary(task)}</strong>
-            <small>Создана: {formatDateTime(task.createdAt)}</small>
+            <small>
+              Создана: {formatDateTime(task.createdAt)}
+              {task.isUrgent ? ' · Срочно' : ''}
+            </small>
           </span>
           <span>{getProductionTaskItems(task).map((item) => item.offerId || '-').join(', ')}</span>
           <span>{getProductionTaskRequiredTotal(task)}</span>
-          <span>{getProductionTaskActualTotal(task)}</span>
+          <span>{task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}</span>
+          {archiveView && <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>}
           <span>{task.assignedUserName || '-'}</span>
           <span>{task.startedAt ? formatDateTime(task.startedAt) : '-'}</span>
-          <span>{task.completedAt ? formatDateTime(task.completedAt) : '-'}</span>
+          <span>
+            {task.status === 'Cancelled'
+              ? task.cancelledAt
+                ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
+                : '-'
+              : task.completedAt
+                ? formatDateTime(task.completedAt)
+                : '-'}
+          </span>
           <span className="task-actions">
             {onArchive && (
               <button type="button" onClick={(event) => {
@@ -4225,6 +7365,12 @@ function ProductionTaskArchiveTable({
             )}
           </span>
           </summary>
+          {archiveView && task.status === 'Cancelled' && task.cancellationComment && (
+            <div className="task-cancel-comment">
+              <strong>Причина отмены:</strong>
+              <p>{task.cancellationComment}</p>
+            </div>
+          )}
           <div className="task-items-table">
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
@@ -4235,7 +7381,7 @@ function ProductionTaskArchiveTable({
             {getProductionTaskItems(task).map((item) => (
               <div className="table-row task-item-table-row" key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <ProductThumb imageUrl={getTaskItemImageUrl(item, products)} name={item.productName} />
+                  <TaskItemThumb item={item} products={products} />
                   <span>
                     <strong>{item.productName}</strong>
                   </span>
@@ -4257,33 +7403,218 @@ function ProductionTaskArchiveTable({
   )
 }
 
+function SupplyItemsModal({
+  title,
+  listIdPrefix,
+  ozonProducts,
+  items,
+  setItems,
+  productId,
+  setProductId,
+  quantity,
+  setQuantity,
+  reserveProductName,
+  setReserveProductName,
+  reserveQuantity,
+  setReserveQuantity,
+  onAddProduct,
+  onAddReserve,
+  onSave,
+  onClose,
+  allowReserveNameEdit = false,
+  itemsTableTitle = 'Товар в новой поставке',
+}: {
+  title: string
+  listIdPrefix: string
+  ozonProducts: OzonProduct[]
+  items: DraftSupplyItem[]
+  setItems: Dispatch<SetStateAction<DraftSupplyItem[]>>
+  productId: string
+  setProductId: Dispatch<SetStateAction<string>>
+  quantity: string
+  setQuantity: Dispatch<SetStateAction<string>>
+  reserveProductName: string
+  setReserveProductName: Dispatch<SetStateAction<string>>
+  reserveQuantity: string
+  setReserveQuantity: Dispatch<SetStateAction<string>>
+  onAddProduct: () => void
+  onAddReserve: () => void
+  onSave: () => void
+  onClose: () => void
+  allowReserveNameEdit?: boolean
+  itemsTableTitle?: string
+}) {
+  const selectedProduct = ozonProducts.find((item) => String(item.productId) === productId)
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
+        <div className="modal-title-row">
+          <h3>{title}</h3>
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+
+        <div className="supply-forms">
+          <div className="supply-form-block supply-form-block-ozon">
+            <strong>Товар из Ozon</strong>
+            <ProductSearchInput
+              listId={listIdPrefix}
+              products={ozonProducts}
+              selectedProductId={productId}
+              onProductIdChange={setProductId}
+              placeholder="Начните писать название или артикул"
+              hideInlinePreview
+              showClearButton
+            />
+            <div className="task-form-modal-compose supply-form-compose">
+              {selectedProduct ? (
+                <TaskProductPreview product={selectedProduct} />
+              ) : (
+                <div className="task-form-modal-preview task-form-modal-preview-empty">
+                  <span>Выберите товар для превью</span>
+                </div>
+              )}
+              <div className="task-form-modal-actions">
+                <input
+                  className="task-form-modal-qty"
+                  type="number"
+                  min="1"
+                  placeholder="Количество"
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                />
+                <button type="button" onClick={onAddProduct}>
+                  Добавить
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="supply-form-block">
+            <strong>Новый товар</strong>
+            <input
+              placeholder="Название нового товара"
+              value={reserveProductName}
+              onChange={(event) => setReserveProductName(event.target.value)}
+            />
+            <input
+              type="number"
+              min="1"
+              placeholder="Количество"
+              value={reserveQuantity}
+              onChange={(event) => setReserveQuantity(event.target.value)}
+            />
+            <button type="button" onClick={onAddReserve}>
+              Создать новый товар
+            </button>
+          </div>
+        </div>
+
+        <div className="data-table modal-table">
+          <div className="table-row supply-item-row table-head">
+            <span>{itemsTableTitle}</span>
+            <span>Артикул</span>
+            <span>Количество</span>
+            <span>Тип</span>
+            <span></span>
+          </div>
+          {items.map((item) => {
+            const imageUrl = getSupplyItemImageUrl(ozonProducts, item)
+
+            return (
+              <div className="table-row supply-item-row" key={item.tempId}>
+                <span className="unsold-product-name">
+                  {imageUrl ? (
+                    <ProductImageHoverPreview imageUrl={imageUrl} name={item.productName}>
+                      <ProductThumb imageUrl={imageUrl} name={item.productName} />
+                    </ProductImageHoverPreview>
+                  ) : (
+                    <ProductThumb name={item.productName} />
+                  )}
+                  {allowReserveNameEdit && item.isReserve ? (
+                    <input
+                      value={item.productName}
+                      onChange={(event) =>
+                        setItems((current) =>
+                          current.map((draft) =>
+                            draft.tempId === item.tempId
+                              ? { ...draft, productName: event.target.value }
+                              : draft,
+                          ),
+                        )
+                      }
+                    />
+                  ) : (
+                    <strong>{item.productName}</strong>
+                  )}
+                </span>
+                <span>{item.offerId || '-'}</span>
+                <span>
+                  <input
+                    className="supply-item-quantity-input"
+                    type="number"
+                    min="1"
+                    value={item.quantity}
+                    onChange={(event) => {
+                      const nextQuantity = Number(event.target.value)
+                      if (!Number.isFinite(nextQuantity) || nextQuantity <= 0) {
+                        return
+                      }
+
+                      setItems((current) =>
+                        current.map((draft) =>
+                          draft.tempId === item.tempId ? { ...draft, quantity: nextQuantity } : draft,
+                        ),
+                      )
+                    }}
+                  />
+                </span>
+                <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
+                <span>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() =>
+                      setItems((current) => current.filter((draft) => draft.tempId !== item.tempId))
+                    }
+                  >
+                    Убрать
+                  </button>
+                </span>
+              </div>
+            )
+          })}
+          {items.length === 0 && (
+            <div className="empty-state">
+              <strong>Добавьте товары в поставку.</strong>
+            </div>
+          )}
+        </div>
+
+        <div className="supply-actions">
+          <button type="button" onClick={onSave}>
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SupplyTable({
   supplies,
   ozonProducts,
   replaceProducts,
   setReplaceProducts,
   editingSupplyId,
-  editSupplyItems,
-  setEditSupplyItems,
-  editSupplyProductId,
-  setEditSupplyProductId,
-  editSupplyQuantity,
-  setEditSupplyQuantity,
-  editReserveProductName,
-  setEditReserveProductName,
-  editReserveQuantity,
-  setEditReserveQuantity,
   onStartEdit,
-  onCancelEdit,
-  onAddEditProduct,
-  onAddEditReserve,
-  onSaveEdit,
   onDeleteSupply,
   onArchiveSupply,
   onStatusChange,
   onReplaceReserve,
   userRole,
-  hideItemsUntilEdit = false,
   archiveMode = false,
 }: {
   supplies: Supply[]
@@ -4291,27 +7622,12 @@ function SupplyTable({
   replaceProducts: Record<string, string>
   setReplaceProducts: Dispatch<SetStateAction<Record<string, string>>>
   editingSupplyId: string | null
-  editSupplyItems: DraftSupplyItem[]
-  setEditSupplyItems: Dispatch<SetStateAction<DraftSupplyItem[]>>
-  editSupplyProductId: string
-  setEditSupplyProductId: Dispatch<SetStateAction<string>>
-  editSupplyQuantity: string
-  setEditSupplyQuantity: Dispatch<SetStateAction<string>>
-  editReserveProductName: string
-  setEditReserveProductName: Dispatch<SetStateAction<string>>
-  editReserveQuantity: string
-  setEditReserveQuantity: Dispatch<SetStateAction<string>>
   onStartEdit: (supply: Supply) => void
-  onCancelEdit: () => void
-  onAddEditProduct: () => void
-  onAddEditReserve: () => void
-  onSaveEdit: (id: string) => void
   onDeleteSupply: (id: string) => void
   onArchiveSupply: (id: string) => void
   onStatusChange: (id: string, status: SupplyStatus) => void
   onReplaceReserve: (itemId: string) => void
   userRole?: string
-  hideItemsUntilEdit?: boolean
   archiveMode?: boolean
 }) {
   const [expandedArchiveSupplyIds, setExpandedArchiveSupplyIds] = useState<Record<string, boolean>>({})
@@ -4322,18 +7638,24 @@ function SupplyTable({
         const isEditing = editingSupplyId === supply.id
         const canEdit = !archiveMode && (userRole === 'Admin' || supply.status === 'Created')
         const isArchiveExpanded = expandedArchiveSupplyIds[supply.id] ?? false
-        const showItems = (archiveMode && isArchiveExpanded) || isEditing || (!archiveMode && !hideItemsUntilEdit)
-        const rows: DraftSupplyItem[] = isEditing
-          ? editSupplyItems
-          : supply.items.map((item) => ({
-              tempId: item.id,
-              id: item.id,
-              ozonProductId: item.ozonProductId,
-              offerId: item.offerId,
-              productName: item.productName,
-              quantity: item.quantity,
-              isReserve: item.isReserve,
-            }))
+        const showItems = !archiveMode || isArchiveExpanded
+        const rows: DraftSupplyItem[] = supply.items.map((item) => ({
+          tempId: item.id,
+          id: item.id,
+          ozonProductId: item.ozonProductId,
+          offerId: item.offerId,
+          productName: item.productName,
+          imageUrl: getSupplyItemImageUrl(ozonProducts, {
+            tempId: item.id,
+            ozonProductId: item.ozonProductId,
+            offerId: item.offerId,
+            productName: item.productName,
+            quantity: item.quantity,
+            isReserve: item.isReserve,
+          }),
+          quantity: item.quantity,
+          isReserve: item.isReserve,
+        }))
 
         return (
           <section className="supply-card" key={supply.id}>
@@ -4345,7 +7667,7 @@ function SupplyTable({
                   {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
                 </small>
               </span>
-              <span className="status-pill">{translateSupplyStatus(supply.status)}</span>
+              <span className="status-pill">{formatSupplyDisplayStatus(supply)}</span>
               {(canEdit || archiveMode) && (
                 <span className="supply-status-actions">
                   {!archiveMode && supply.status === 'Created' && (
@@ -4354,22 +7676,11 @@ function SupplyTable({
                     </button>
                   )}
                   {userRole === 'Admin' && !archiveMode && (
-                    <>
-                      <button type="button" onClick={() => onStatusChange(supply.id, 'Accepted')}>
-                        Принято
-                      </button>
-                    </>
+                    <button type="button" onClick={() => onStatusChange(supply.id, 'Accepted')}>
+                      Принято
+                    </button>
                   )}
-                  {isEditing ? (
-                    <>
-                      <button type="button" onClick={() => onSaveEdit(supply.id)}>
-                        Сохранить
-                      </button>
-                      <button type="button" onClick={onCancelEdit}>
-                        Отмена
-                      </button>
-                    </>
-                  ) : (
+                  {canEdit && !isEditing && (
                     <button type="button" onClick={() => onStartEdit(supply)}>
                       Редактировать
                     </button>
@@ -4405,73 +7716,6 @@ function SupplyTable({
               )}
             </div>
 
-            {userRole === 'Admin' && (
-              <details className="supply-history">
-                <summary>История изменений</summary>
-                <div className="supply-history-list">
-                  {supply.history?.map((item) => (
-                    <div className="supply-history-row" key={item.id}>
-                      <span>
-                        <strong>{item.action}</strong>
-                        <small>{item.details || '-'}</small>
-                      </span>
-                      <span>
-                        <strong>{item.displayName || item.userName || '-'}</strong>
-                        <small>{formatDateTime(item.createdAt)}</small>
-                      </span>
-                    </div>
-                  ))}
-                  {(!supply.history || supply.history.length === 0) && (
-                    <div className="empty-state">Истории по этой поставке пока нет.</div>
-                  )}
-                </div>
-              </details>
-            )}
-
-            {isEditing && (
-              <div className="supply-edit-tools">
-                <div className="supply-form-block">
-                  <strong>Добавить товар из Ozon</strong>
-                  <ProductSearchInput
-                    listId={`edit-supply-products-${supply.id}`}
-                    products={ozonProducts}
-                    selectedProductId={editSupplyProductId}
-                    onProductIdChange={setEditSupplyProductId}
-                    placeholder="Начните писать название или артикул"
-                  />
-                  <input
-                    type="number"
-                    min="1"
-                    placeholder="Количество"
-                    value={editSupplyQuantity}
-                    onChange={(event) => setEditSupplyQuantity(event.target.value)}
-                  />
-                  <button type="button" onClick={onAddEditProduct}>
-                    Добавить
-                  </button>
-                </div>
-
-                <div className="supply-form-block">
-                  <strong>Добавить резервный товар</strong>
-                  <input
-                    placeholder="Название"
-                    value={editReserveProductName}
-                    onChange={(event) => setEditReserveProductName(event.target.value)}
-                  />
-                  <input
-                    type="number"
-                    min="1"
-                    placeholder="Количество"
-                    value={editReserveQuantity}
-                    onChange={(event) => setEditReserveQuantity(event.target.value)}
-                  />
-                  <button type="button" onClick={onAddEditReserve}>
-                    Добавить резерв
-                  </button>
-                </div>
-              </div>
-            )}
-
             {showItems && (
               <div className="data-table">
                 <div className="table-row supply-item-row table-head">
@@ -4479,138 +7723,52 @@ function SupplyTable({
                   <span>Артикул</span>
                   <span>Количество</span>
                   <span>Тип</span>
-                  <span>{isEditing ? 'Действия' : 'Замена'}</span>
+                  <span>Замена</span>
                 </div>
-                {rows.map((item) => (
-                  <div className="table-row supply-item-row" key={isEditing ? item.tempId : item.id}>
-                    <span>
-                      {isEditing && item.isReserve ? (
-                        <input
-                          value={item.productName}
-                          onChange={(event) =>
-                            setEditSupplyItems((current) =>
-                              current.map((row) =>
-                                row.tempId === item.tempId
-                                  ? { ...row, productName: event.target.value }
-                                  : row,
-                              ),
-                            )
-                          }
-                        />
-                      ) : (
-                        item.productName
-                      )}
-                    </span>
-                    <span>{item.offerId || '-'}</span>
-                    <span>
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          min="1"
-                          value={item.quantity}
-                          onChange={(event) =>
-                            setEditSupplyItems((current) =>
-                              current.map((row) =>
-                                row.tempId === item.tempId
-                                  ? { ...row, quantity: Number(event.target.value) }
-                                  : row,
-                              ),
-                            )
-                          }
-                        />
-                      ) : (
-                        item.quantity
-                      )}
-                    </span>
-                    <span>{item.isReserve ? 'Резервный' : 'Постоянный'}</span>
-                    <span className="reserve-replace">
-                      {isEditing ? (
-                        <>
-                          {item.isReserve && (
-                            <>
-                              <ProductSearchInput
-                                listId={`edit-replace-products-${item.tempId}`}
-                                products={ozonProducts}
-                                selectedProductId={replaceProducts[item.tempId] ?? ''}
-                                onProductIdChange={(productId) =>
-                                  setReplaceProducts((current) => ({
-                                    ...current,
-                                    [item.tempId]: productId,
-                                  }))
-                                }
-                                placeholder="Найти постоянный товар"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const product = ozonProducts.find(
-                                    (product) =>
-                                      String(product.productId) === replaceProducts[item.tempId],
-                                  )
+                {rows.map((item) => {
+                  const imageUrl = getSupplyItemImageUrl(ozonProducts, item)
 
-                                  if (!product) {
-                                    return
-                                  }
-
-                                  setEditSupplyItems((current) =>
-                                    current.map((row) =>
-                                      row.tempId === item.tempId
-                                        ? {
-                                            ...row,
-                                            ozonProductId: product.productId,
-                                            offerId: product.offerId,
-                                            productName: product.name,
-                                            isReserve: false,
-                                          }
-                                        : row,
-                                    ),
-                                  )
-                                  setReplaceProducts((current) => ({
-                                    ...current,
-                                    [item.tempId]: '',
-                                  }))
-                                }}
-                              >
-                                Заменить
-                              </button>
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            className="danger"
-                            onClick={() =>
-                              setEditSupplyItems((current) =>
-                                current.filter((row) => row.tempId !== item.tempId),
-                              )
-                            }
-                          >
-                            Удалить строку
-                          </button>
-                        </>
-                      ) : item.isReserve && userRole === 'Admin' ? (
-                        <>
-                          <ProductSearchInput
-                            listId={`replace-products-${item.id}`}
-                            products={ozonProducts}
-                            selectedProductId={replaceProducts[item.id ?? ''] ?? ''}
-                            onProductIdChange={(productId) =>
-                              setReplaceProducts((current) => ({
-                                ...current,
-                                [item.id ?? '']: productId,
-                              }))
-                            }
-                            placeholder="Найти постоянный товар"
-                          />
-                          <button type="button" onClick={() => item.id && onReplaceReserve(item.id)}>
-                            Заменить
-                          </button>
-                        </>
-                      ) : (
-                        '-'
-                      )}
-                    </span>
-                  </div>
-                ))}
+                  return (
+                    <div className="table-row supply-item-row" key={item.id}>
+                      <span className="unsold-product-name">
+                        {imageUrl ? (
+                          <ProductImageHoverPreview imageUrl={imageUrl} name={item.productName}>
+                            <ProductThumb imageUrl={imageUrl} name={item.productName} />
+                          </ProductImageHoverPreview>
+                        ) : (
+                          <ProductThumb name={item.productName} />
+                        )}
+                        <strong>{item.productName}</strong>
+                      </span>
+                      <span>{item.offerId || '-'}</span>
+                      <span>{item.quantity}</span>
+                      <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
+                      <span className="reserve-replace">
+                        {item.isReserve && userRole === 'Admin' ? (
+                          <>
+                            <ProductSearchInput
+                              listId={`replace-products-${item.id}`}
+                              products={ozonProducts}
+                              selectedProductId={replaceProducts[item.id ?? ''] ?? ''}
+                              onProductIdChange={(nextProductId) =>
+                                setReplaceProducts((current) => ({
+                                  ...current,
+                                  [item.id ?? '']: nextProductId,
+                                }))
+                              }
+                              placeholder="Найти постоянный товар"
+                            />
+                            <button type="button" onClick={() => item.id && onReplaceReserve(item.id)}>
+                              Заменить
+                            </button>
+                          </>
+                        ) : (
+                          '-'
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
                 {rows.length === 0 && (
                   <div className="empty-state">
                     <strong>В поставке нет товаров.</strong>
@@ -4646,11 +7804,11 @@ function SupplyAnalyticsTable({ rows }: { rows: SupplyAnalyticsItem[] }) {
         <div className="table-row supply-analytics-row" key={`${row.supplyId}-${row.id}`}>
           <span>
             <strong>{row.productName}</strong>
-            <small>{row.isReserve ? 'Резервный товар' : 'Постоянный товар'}</small>
+            <small>{row.isReserve ? 'Новый товар' : 'Постоянный товар'}</small>
           </span>
           <span>{row.offerId || '-'}</span>
           <span>{row.quantity}</span>
-          <span>{translateSupplyStatus(row.status)}</span>
+          <span>{formatSupplyDisplayStatus(row)}</span>
           <span>{formatDateTime(row.createdAt)}</span>
           <span>{row.sentAt ? formatDateTime(row.sentAt) : '-'}</span>
           <span>{row.acceptedAt ? formatDateTime(row.acceptedAt) : '-'}</span>
@@ -4681,7 +7839,7 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
                   {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
                 </small>
               </span>
-              <span className="status-pill">{translateSupplyStatus(supply.status)}</span>
+              <span className="status-pill">{formatSupplyDisplayStatus(supply)}</span>
               <span>
                 <strong>{totalQuantity}</strong>
                 <small>шт. всего</small>
@@ -4700,7 +7858,7 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
                   <span>{item.productName}</span>
                   <span>{item.offerId || '-'}</span>
                   <span>{item.quantity}</span>
-                  <span>{item.isReserve ? 'Резервный' : 'Постоянный'}</span>
+                  <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
                 </div>
               ))}
             </div>
@@ -4731,13 +7889,20 @@ function StockRow({
 }) {
   return (
     <div className="table-row stock-row">
-      <span data-label="Товар">
-        <strong>{item.name}</strong>
-        {item.productUrl && (
-          <a href={item.productUrl} target="_blank" rel="noreferrer">
-            Открыть Ozon
-          </a>
+      <span data-label="Товар" className="stock-product-cell">
+        {item.imageUrl && (
+          <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
+            <ProductThumb imageUrl={item.imageUrl} name={item.name} />
+          </ProductImageHoverPreview>
         )}
+        <span>
+          <strong>{item.name}</strong>
+          {item.productUrl && (
+            <a href={item.productUrl} target="_blank" rel="noreferrer">
+              Открыть Ozon
+            </a>
+          )}
+        </span>
       </span>
       <span data-label="Артикул">{item.offerId}</span>
       <span data-label="FBO">{item.fboPresent}</span>
@@ -4780,22 +7945,116 @@ function formatMoney(value: number, currency: string) {
   }).format(value)
 }
 
+function formatLossMoney(value: number, currency: string) {
+  return formatMoney(-Math.abs(value), currency || 'KZT')
+}
+
+function formatAnalyticsDate(value: string) {
+  if (!value || value === '—' || value === 'unknown') {
+    return 'Без даты'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value.slice(0, 10)
+  }
+
+  return date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function normalizeOrderStatus(status: string) {
+  const value = status.trim().toLowerCase()
+
+  if (value.includes('cancel') || value === 'отмен') {
+    return 'cancelled'
+  }
+
+  if (value === 'delivered' || value.includes('доставлен')) {
+    return 'delivered'
+  }
+
+  if (value === 'delivering' || value.includes('delivery') || value.includes('доставк')) {
+    return 'delivering'
+  }
+
+  if (value === 'awaiting_deliver' || value.includes('awaiting_deliver') || value.includes('собир')) {
+    return 'awaiting_deliver'
+  }
+
+  if (value === 'awaiting_packaging' || value.includes('packaging') || value.includes('упаков')) {
+    return 'awaiting_deliver'
+  }
+
+  return value.replace(/\s+/g, '_')
+}
+
 function translateStatus(status: string) {
+  const normalized = normalizeOrderStatus(status)
   const statuses: Record<string, string> = {
+    awaiting_registration: 'Ожидает регистрации',
     awaiting_deliver: 'Собирается',
     delivering: 'Едет',
     delivered: 'Доставлен',
     cancelled: 'Отменен',
   }
 
-  return statuses[status] ?? status
+  return statuses[normalized] ?? status
 }
 
-function translateProductionTaskStatus(status: ProductionTask['status']) {
+function getProductStatusGroup(status: string): 'selling' | 'ready' | 'archived' | 'unknown' {
+  const normalized = status.trim().toLowerCase()
+
+  if (
+    ['ready_for_sale', 'ready_to_supply', 'готов к продаже', 'готово к продаже'].includes(normalized)
+  ) {
+    return 'ready'
+  }
+
+  if (['archived', 'archive', 'архив', 'в архиве'].includes(normalized)) {
+    return 'archived'
+  }
+
+  if (['visible', 'selling', 'active', 'продается', 'продаётся'].includes(normalized)) {
+    return 'selling'
+  }
+
+  return 'unknown'
+}
+
+function translateProductStatus(status: string) {
+  const normalized = status.trim().toLowerCase()
+  const statuses: Record<string, string> = {
+    ready_for_sale: 'Готов к продаже',
+    ready_to_supply: 'Готов к продаже',
+    'готов к продаже': 'Готов к продаже',
+    'готово к продаже': 'Готов к продаже',
+    visible: 'Продается',
+    selling: 'Продается',
+    active: 'Продается',
+    продается: 'Продается',
+    'продаётся': 'Продается',
+    archived: 'Архив',
+    archive: 'Архив',
+    архив: 'Архив',
+    'в архиве': 'Архив',
+  }
+
+  if (!normalized) {
+    return '-'
+  }
+
+  return statuses[normalized] ?? status
+}
+
+function translateProductionTaskStatus(status: ProductionTask['status'], isUrgent = false) {
   const statuses: Record<ProductionTask['status'], string> = {
-    New: 'Новая',
+    New: isUrgent ? 'Срочно' : 'Новая',
     InProgress: 'В работе',
-    Deferred: 'Отложена',
+    Cancelled: 'Отменена',
     Completed: 'Выполнено',
   }
 
@@ -4810,6 +8069,14 @@ function translateSupplyStatus(status: SupplyStatus) {
   }
 
   return statuses[status] ?? status
+}
+
+function formatSupplyDisplayStatus(item: { status: SupplyStatus; isArchived?: boolean }) {
+  if (item.isArchived) {
+    return 'Архив'
+  }
+
+  return translateSupplyStatus(item.status)
 }
 
 function formatDateTime(value: string) {

@@ -62,6 +62,10 @@ builder.Services
     });
 builder.Services.AddAuthorization();
 builder.Services.AddSignalR();
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+});
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -83,6 +87,7 @@ if (app.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+    await SystemUserBootstrap.EnsureExistsAsync(db);
 }
 
 // Configure the HTTP request pipeline.
@@ -462,6 +467,11 @@ app.MapDelete("/api/admin/users/{id:guid}", async (Guid id, AppDbContext db, Cla
         return Results.BadRequest("Нельзя удалить самого себя.");
     }
 
+    if (id == SystemUser.Id)
+    {
+        return Results.BadRequest("Системного пользователя нельзя удалить.");
+    }
+
     var user = await db.Users.FindAsync(id);
     if (user is null)
     {
@@ -652,6 +662,116 @@ app.MapGet("/api/admin/ozon-status", async (
     }
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
+app.MapGet("/api/chat/threads", async (AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var unreadDirectCounts = await db.ChatMessages
+        .AsNoTracking()
+        .Where(message => message.GroupId == null && message.ReceiverId == userId && message.ReadAt == null)
+        .GroupBy(message => message.SenderId)
+        .Select(group => new { UserId = group.Key, Count = group.Count() })
+        .ToDictionaryAsync(item => item.UserId, item => item.Count);
+
+    var onlineAfter = DateTimeOffset.UtcNow.AddMinutes(-2);
+    var users = await db.Users
+        .AsNoTracking()
+        .Where(user => user.Id != userId && user.Id != SystemUser.Id && user.IsActive)
+        .OrderBy(user => user.DisplayName)
+        .Select(user => new ChatThreadListItem(
+            "user",
+            user.Id,
+            user.DisplayName,
+            user.Position,
+            UserResponses.AvatarUrl(user.AvatarFileName),
+            user.LastSeenAt >= onlineAfter,
+            unreadDirectCounts.GetValueOrDefault(user.Id),
+            0,
+            null,
+            null))
+        .ToListAsync();
+
+    var memberships = await db.ChatGroupMembers
+        .AsNoTracking()
+        .Where(member => member.UserId == userId)
+        .Select(member => new
+        {
+            member.GroupId,
+            member.LastReadAt,
+            member.Group.Name,
+            member.Group.CreatedByUserId,
+            MemberCount = member.Group.Members.Count
+        })
+        .ToListAsync();
+
+    var groupIds = memberships.Select(member => member.GroupId).ToList();
+    var membersByGroup = groupIds.Count == 0
+        ? new Dictionary<Guid, List<ChatGroupMemberListItem>>()
+        : (await db.ChatGroupMembers
+            .AsNoTracking()
+            .Where(member => groupIds.Contains(member.GroupId))
+            .Join(
+                db.Users.AsNoTracking(),
+                member => member.UserId,
+                user => user.Id,
+                (member, user) => new
+                {
+                    member.GroupId,
+                    Member = new ChatGroupMemberListItem(
+                        user.Id,
+                        user.UserName,
+                        user.DisplayName,
+                        user.Position,
+                        UserResponses.AvatarUrl(user.AvatarFileName))
+                })
+            .ToListAsync())
+            .GroupBy(entry => entry.GroupId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(entry => entry.Member).OrderBy(member => member.DisplayName).ToList());
+    var groupMessages = groupIds.Count == 0
+        ? []
+        : await db.ChatMessages
+            .AsNoTracking()
+            .Where(message => message.GroupId != null && groupIds.Contains(message.GroupId.Value))
+            .Select(message => new { message.GroupId, message.SenderId, message.CreatedAt })
+            .ToListAsync();
+
+    var groups = memberships
+        .Select(member =>
+        {
+            var lastReadAt = member.LastReadAt ?? DateTimeOffset.MinValue;
+            var unreadCount = groupMessages.Count(message =>
+                message.GroupId == member.GroupId
+                && message.SenderId != userId
+                && message.CreatedAt > lastReadAt);
+            return new ChatThreadListItem(
+                "group",
+                member.GroupId,
+                member.Name,
+                $"{member.MemberCount} участников",
+                string.Empty,
+                false,
+                unreadCount,
+                member.MemberCount,
+                member.CreatedByUserId,
+                membersByGroup.GetValueOrDefault(member.GroupId));
+        })
+        .OrderBy(thread => thread.Title)
+        .ToList();
+
+    return Results.Ok(users.Concat(groups).OrderByDescending(thread => thread.UnreadCount).ThenBy(thread => thread.Title));
+}).RequireAuthorization();
+
 app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
@@ -667,7 +787,7 @@ app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal)
 
     var unreadCounts = await db.ChatMessages
         .AsNoTracking()
-        .Where(message => message.ReceiverId == userId && message.ReadAt == null)
+        .Where(message => message.GroupId == null && message.ReceiverId == userId && message.ReadAt == null)
         .GroupBy(message => message.SenderId)
         .Select(group => new { UserId = group.Key, Count = group.Count() })
         .ToDictionaryAsync(item => item.UserId, item => item.Count);
@@ -675,7 +795,7 @@ app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal)
     var onlineAfter = DateTimeOffset.UtcNow.AddMinutes(-2);
     var users = await db.Users
         .AsNoTracking()
-        .Where(user => user.Id != userId && user.IsActive)
+        .Where(user => user.Id != userId && user.Id != SystemUser.Id && user.IsActive)
         .OrderBy(user => user.DisplayName)
         .Select(user => new
         {
@@ -702,6 +822,361 @@ app.MapGet("/api/chat/users", async (AppDbContext db, ClaimsPrincipal principal)
         unreadCounts.GetValueOrDefault(user.Id))));
 }).RequireAuthorization();
 
+app.MapPost("/api/chat/groups", async (
+    CreateChatGroupRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var name = request.Name?.Trim() ?? string.Empty;
+    if (name.Length < 2)
+    {
+        return Results.BadRequest("Укажите название группы.");
+    }
+
+    var parsedMemberIds = new List<Guid>();
+    foreach (var rawMemberId in request.MemberIds ?? [])
+    {
+        if (string.IsNullOrWhiteSpace(rawMemberId) || !Guid.TryParse(rawMemberId, out var memberId))
+        {
+            continue;
+        }
+
+        if (memberId != userId && memberId != SystemUser.Id)
+        {
+            parsedMemberIds.Add(memberId);
+        }
+    }
+
+    var memberIds = parsedMemberIds.Distinct().ToList();
+    var validMembers = await db.Users
+        .AsNoTracking()
+        .Where(user => memberIds.Contains(user.Id) && user.IsActive && user.Id != SystemUser.Id)
+        .OrderBy(user => user.DisplayName)
+        .ThenBy(user => user.UserName)
+        .Select(user => new ChatGroupMemberListItem(
+            user.Id,
+            user.UserName,
+            user.DisplayName,
+            user.Position,
+            UserResponses.AvatarUrl(user.AvatarFileName)))
+        .ToListAsync();
+
+    if (validMembers.Count + 1 < 3)
+    {
+        return Results.BadRequest("В группе должно быть минимум 3 участника.");
+    }
+
+    var creatorProfile = await db.Users
+        .AsNoTracking()
+        .Where(user => user.Id == userId && user.IsActive)
+        .Select(user => new ChatGroupMemberListItem(
+            user.Id,
+            user.UserName,
+            user.DisplayName,
+            user.Position,
+            UserResponses.AvatarUrl(user.AvatarFileName)))
+        .FirstOrDefaultAsync();
+
+    if (creatorProfile is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var group = new ChatGroup
+        {
+            Name = name,
+            CreatedByUserId = userId,
+            Members =
+            [
+                new ChatGroupMember { UserId = userId },
+                ..validMembers.Select(member => new ChatGroupMember { UserId = member.UserId })
+            ]
+        };
+
+        db.ChatGroups.Add(group);
+        await db.SaveChangesAsync();
+
+        var responseMembers = new List<ChatGroupMemberListItem> { creatorProfile };
+        responseMembers.AddRange(validMembers);
+
+        var detail = new ChatGroupDetailResponse(
+            group.Id,
+            group.Name,
+            group.CreatedByUserId,
+            responseMembers.Count,
+            responseMembers);
+
+        _ = ChatHub.NotifyThreadsChangedAsync(hub);
+
+        return Results.Ok(detail);
+    }
+    catch (Exception exception)
+    {
+        return Results.BadRequest($"Не удалось создать группу: {exception.Message}");
+    }
+}).RequireAuthorization();
+
+app.MapPost("/api/chat/groups/{id:guid}/members", async (
+    Guid id,
+    UpdateChatGroupMembersRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await ChatAccess.IsGroupMemberAsync(db, id, userId))
+    {
+        return Results.Forbid();
+    }
+
+    var memberIds = request.MemberIds?.Distinct().Where(memberId => memberId != userId).ToList() ?? [];
+    if (memberIds.Count == 0)
+    {
+        return Results.BadRequest("Выберите участников для добавления.");
+    }
+
+    var existingMemberIds = await db.ChatGroupMembers
+        .AsNoTracking()
+        .Where(member => member.GroupId == id)
+        .Select(member => member.UserId)
+        .ToListAsync();
+
+    var newMemberIds = await db.Users
+        .AsNoTracking()
+        .Where(user => memberIds.Contains(user.Id) && user.IsActive && user.Id != SystemUser.Id && !existingMemberIds.Contains(user.Id))
+        .Select(user => user.Id)
+        .ToListAsync();
+
+    if (newMemberIds.Count == 0)
+    {
+        return Results.BadRequest("Новых участников для добавления не найдено.");
+    }
+
+    foreach (var memberId in newMemberIds)
+    {
+        db.ChatGroupMembers.Add(new ChatGroupMember
+        {
+            GroupId = id,
+            UserId = memberId
+        });
+    }
+
+    await db.SaveChangesAsync();
+    await ChatHub.NotifyThreadsChangedAsync(hub);
+
+    var groupDetail = await ChatResponses.BuildGroupDetailAsync(db, id);
+    return groupDetail is null ? Results.NotFound() : Results.Ok(groupDetail);
+}).RequireAuthorization();
+
+app.MapDelete("/api/chat/groups/{id:guid}/members/{memberUserId:guid}", async (
+    Guid id,
+    Guid memberUserId,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await ChatAccess.IsGroupMemberAsync(db, id, userId))
+    {
+        return Results.Forbid();
+    }
+
+    var group = await db.ChatGroups
+        .Include(entry => entry.Members)
+        .FirstOrDefaultAsync(entry => entry.Id == id);
+    if (group is null)
+    {
+        return Results.NotFound();
+    }
+
+    var isSelf = memberUserId == userId;
+    var isCreator = group.CreatedByUserId == userId;
+    if (!isSelf && !isCreator)
+    {
+        return Results.Forbid();
+    }
+
+    var membership = group.Members.FirstOrDefault(member => member.UserId == memberUserId);
+    if (membership is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (group.CreatedByUserId == memberUserId)
+    {
+        db.ChatGroups.Remove(group);
+        await db.SaveChangesAsync();
+        await ChatHub.NotifyThreadsChangedAsync(hub);
+        return Results.Ok(new ChatGroupDeleteMemberResponse(true, id, null));
+    }
+
+    var remainingCount = group.Members.Count - 1;
+    if (remainingCount < 3)
+    {
+        db.ChatGroups.Remove(group);
+        await db.SaveChangesAsync();
+        await ChatHub.NotifyThreadsChangedAsync(hub);
+        return Results.Ok(new ChatGroupDeleteMemberResponse(true, id, null));
+    }
+
+    db.ChatGroupMembers.Remove(membership);
+    await db.SaveChangesAsync();
+    await ChatHub.NotifyThreadsChangedAsync(hub);
+
+    var groupDetail = await ChatResponses.BuildGroupDetailAsync(db, id);
+    return groupDetail is null
+        ? Results.Ok(new ChatGroupDeleteMemberResponse(true, id, null))
+        : Results.Ok(new ChatGroupDeleteMemberResponse(false, id, groupDetail));
+}).RequireAuthorization();
+
+app.MapDelete("/api/chat/groups/{id:guid}", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var groupToDelete = await db.ChatGroups.FirstOrDefaultAsync(entry => entry.Id == id);
+    if (groupToDelete is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (groupToDelete.CreatedByUserId != userId)
+    {
+        return Results.Forbid();
+    }
+
+    if (!await ChatAccess.IsGroupMemberAsync(db, id, userId))
+    {
+        return Results.Forbid();
+    }
+
+    db.ChatGroups.Remove(groupToDelete);
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ChatThreadsChanged");
+
+    return Results.NoContent();
+}).RequireAuthorization();
+
+app.MapGet("/api/chat/groups/{id:guid}", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await ChatAccess.IsGroupMemberAsync(db, id, userId))
+    {
+        return Results.Forbid();
+    }
+
+    var updatedGroupDetail = await ChatResponses.BuildGroupDetailAsync(db, id);
+    return updatedGroupDetail is null ? Results.NotFound() : Results.Ok(updatedGroupDetail);
+}).RequireAuthorization();
+
+app.MapGet("/api/chat/groups/{id:guid}/messages", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var membership = await db.ChatGroupMembers.FirstOrDefaultAsync(member => member.GroupId == id && member.UserId == parsedCurrentUserId);
+    if (membership is null)
+    {
+        return Results.Forbid();
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    membership.LastReadAt = now;
+    await db.SaveChangesAsync();
+
+    var messages = await db.ChatMessages
+        .AsNoTracking()
+        .Where(message => message.GroupId == id)
+        .Where(message => !message.IsHiddenForSender || message.SenderId != parsedCurrentUserId)
+        .OrderBy(message => message.CreatedAt)
+        .Join(
+            db.Users.AsNoTracking(),
+            message => message.SenderId,
+            user => user.Id,
+            (message, user) => new ChatMessageListItem(
+                message.Id,
+                message.GroupId,
+                message.SenderId,
+                user.DisplayName,
+                message.ReceiverId,
+                message.Text,
+                message.AttachmentFileName,
+                message.AttachmentContentType,
+                message.AttachmentContent != null,
+                message.CreatedAt,
+                message.SenderId == parsedCurrentUserId))
+        .ToListAsync();
+
+    return Results.Ok(messages);
+}).RequireAuthorization();
+
 app.MapGet("/api/chat/{userId:guid}/messages", async (
     Guid userId,
     AppDbContext db,
@@ -726,6 +1201,7 @@ app.MapGet("/api/chat/{userId:guid}/messages", async (
 
     var unreadMessages = await db.ChatMessages
         .Where(message =>
+            message.GroupId == null &&
             message.SenderId == userId &&
             message.ReceiverId == parsedCurrentUserId &&
             message.ReadAt == null)
@@ -745,23 +1221,126 @@ app.MapGet("/api/chat/{userId:guid}/messages", async (
     var messages = await db.ChatMessages
         .AsNoTracking()
         .Where(message =>
-            message.SenderId == parsedCurrentUserId && message.ReceiverId == userId ||
-            message.SenderId == userId && message.ReceiverId == parsedCurrentUserId)
+            message.GroupId == null && (
+                message.SenderId == parsedCurrentUserId && message.ReceiverId == userId ||
+                message.SenderId == userId && message.ReceiverId == parsedCurrentUserId))
+        .Where(message => !message.IsHiddenForSender || message.SenderId != parsedCurrentUserId)
         .OrderBy(message => message.CreatedAt)
-        .Select(message => new ChatMessageListItem(
-            message.Id,
-            message.SenderId,
-            message.ReceiverId,
-            message.Text,
-            message.AttachmentFileName,
-            message.AttachmentContentType,
-            message.AttachmentContent != null,
-            message.CreatedAt,
-            message.SenderId == parsedCurrentUserId))
+        .Join(
+            db.Users.AsNoTracking(),
+            message => message.SenderId,
+            user => user.Id,
+            (message, user) => new ChatMessageListItem(
+                message.Id,
+                message.GroupId,
+                message.SenderId,
+                user.DisplayName,
+                message.ReceiverId,
+                message.Text,
+                message.AttachmentFileName,
+                message.AttachmentContentType,
+                message.AttachmentContent != null,
+                message.CreatedAt,
+                message.SenderId == parsedCurrentUserId))
         .ToListAsync();
 
     return Results.Ok(messages);
 }).RequireAuthorization();
+
+app.MapPost("/api/chat/groups/{id:guid}/messages", async (
+    Guid id,
+    HttpRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
+    CancellationToken cancellationToken) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await ChatAccess.IsGroupMemberAsync(db, id, parsedCurrentUserId))
+    {
+        return Results.Forbid();
+    }
+
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest("Ожидается multipart/form-data.");
+    }
+
+    var form = await request.ReadFormAsync(cancellationToken);
+    var text = form["text"].ToString().Trim();
+    var file = form.Files.GetFile("file");
+
+    if (text.Length > 2000)
+    {
+        return Results.BadRequest("Сообщение слишком длинное.");
+    }
+
+    if (file is not null && file.Length > 10 * 1024 * 1024)
+    {
+        return Results.BadRequest("Файл слишком большой. Максимум 10 МБ.");
+    }
+
+    if (string.IsNullOrWhiteSpace(text) && (file is null || file.Length == 0))
+    {
+        return Results.BadRequest("Напишите сообщение или прикрепите файл.");
+    }
+
+    byte[]? attachmentContent = null;
+    var attachmentFileName = string.Empty;
+    var attachmentContentType = string.Empty;
+    if (file is not null && file.Length > 0)
+    {
+        await using var stream = file.OpenReadStream();
+        using var memory = new MemoryStream();
+        await stream.CopyToAsync(memory, cancellationToken);
+        attachmentContent = memory.ToArray();
+        attachmentFileName = Path.GetFileName(file.FileName);
+        attachmentContentType = string.IsNullOrWhiteSpace(file.ContentType)
+            ? "application/octet-stream"
+            : file.ContentType;
+    }
+
+    var message = new ChatMessage
+    {
+        GroupId = id,
+        SenderId = parsedCurrentUserId,
+        Text = text,
+        AttachmentFileName = attachmentFileName,
+        AttachmentContentType = attachmentContentType,
+        AttachmentContent = attachmentContent
+    };
+
+    db.ChatMessages.Add(message);
+    await db.SaveChangesAsync();
+
+    var sender = await db.Users.AsNoTracking().FirstAsync(user => user.Id == parsedCurrentUserId);
+    var result = new ChatMessageListItem(
+        message.Id,
+        message.GroupId,
+        message.SenderId,
+        sender.DisplayName,
+        message.ReceiverId,
+        message.Text,
+        message.AttachmentFileName,
+        message.AttachmentContentType,
+        message.AttachmentContent != null,
+        message.CreatedAt,
+        true);
+
+    await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, null, id);
+
+    return Results.Created($"/api/chat/groups/{id}/messages/{message.Id}", result);
+}).DisableAntiforgery().RequireAuthorization();
 
 app.MapPost("/api/chat/{userId:guid}/messages", async (
     Guid userId,
@@ -845,9 +1424,12 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
     db.ChatMessages.Add(message);
     await db.SaveChangesAsync();
 
+    var sender = await db.Users.AsNoTracking().FirstAsync(user => user.Id == parsedCurrentUserId);
     var result = new ChatMessageListItem(
         message.Id,
+        message.GroupId,
         message.SenderId,
+        sender.DisplayName,
         message.ReceiverId,
         message.Text,
         message.AttachmentFileName,
@@ -856,7 +1438,7 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
         message.CreatedAt,
         true);
 
-    await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, message.ReceiverId);
+    await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, message.ReceiverId, null);
 
     return Results.Created($"/api/chat/{userId}/messages/{message.Id}", result);
 }).DisableAntiforgery().RequireAuthorization();
@@ -884,9 +1466,17 @@ app.MapGet("/api/chat/messages/{id:guid}/attachment", async (
     }
 
     var isAdmin = principal.IsInRole(UserRoles.Admin);
-    if (message.SenderId != parsedCurrentUserId && message.ReceiverId != parsedCurrentUserId && !isAdmin)
+    if (!isAdmin && message.SenderId != parsedCurrentUserId && message.ReceiverId != parsedCurrentUserId)
     {
-        return Results.Forbid();
+        if (message.GroupId is Guid groupId && !await ChatAccess.IsGroupMemberAsync(db, groupId, parsedCurrentUserId))
+        {
+            return Results.Forbid();
+        }
+
+        if (message.GroupId is null)
+        {
+            return Results.Forbid();
+        }
     }
 
     return Results.File(message.AttachmentContent, message.AttachmentContentType, message.AttachmentFileName);
@@ -904,28 +1494,73 @@ app.MapDelete("/api/chat/messages/{id:guid}", async (
     }
 
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
-    if (!Guid.TryParse(currentUserId, out var parsedCurrentUserId))
+    if (!Guid.TryParse(currentUserId, out var userId))
     {
         return Results.Unauthorized();
     }
 
-    var message = await db.ChatMessages.FindAsync(id);
+    var message = await db.ChatMessages.FirstOrDefaultAsync(entry => entry.Id == id);
     if (message is null)
     {
         return Results.NotFound();
     }
 
-    var isAdmin = principal.IsInRole(UserRoles.Admin);
-    if (message.SenderId != parsedCurrentUserId && !isAdmin)
+    if (message.SenderId != userId)
     {
         return Results.Forbid();
     }
 
-    db.ChatMessages.Remove(message);
+    if (message.IsHiddenForSender)
+    {
+        return Results.NoContent();
+    }
+
+    message.IsHiddenForSender = true;
     await db.SaveChangesAsync();
-    await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, message.ReceiverId);
+
+    await hub.Clients.All.SendAsync(
+        "ChatMessagesChanged",
+        message.SenderId,
+        message.ReceiverId,
+        message.GroupId);
 
     return Results.NoContent();
+}).RequireAuthorization();
+
+app.MapPost("/api/ozon/analytics/export", async (
+    AnalyticsExportRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+    {
+        return Results.Forbid();
+    }
+
+    if (request.Rows is not { Count: > 0 })
+    {
+        return Results.BadRequest("Нет данных для выгрузки.");
+    }
+
+    var sheetName = string.IsNullOrWhiteSpace(request.SheetName) ? "Аналитика" : request.SheetName.Trim();
+    var fileName = string.IsNullOrWhiteSpace(request.FileName)
+        ? $"analytics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx"
+        : request.FileName.Trim();
+
+    if (!fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+    {
+        fileName += ".xlsx";
+    }
+
+    var rows = request.Rows
+        .Select(row => row.Select(cell => cell ?? string.Empty).ToArray())
+        .ToList();
+
+    var content = ExcelExport.CreateWorkbook(sheetName, rows);
+    return Results.File(
+        content,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/products", async (AppDbContext db, ClaimsPrincipal principal) =>
@@ -1007,7 +1642,13 @@ app.MapPut("/api/ozon/prices", async (
     }
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
-app.MapGet("/api/ozon/analytics", async (OzonApiClient ozonApi, AppDbContext db, ClaimsPrincipal principal, CancellationToken cancellationToken) =>
+app.MapGet("/api/ozon/analytics", async (
+    string? dateFrom,
+    string? dateTo,
+    OzonApiClient ozonApi,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
     {
@@ -1017,7 +1658,25 @@ app.MapGet("/api/ozon/analytics", async (OzonApiClient ozonApi, AppDbContext db,
     try
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var result = await ozonApi.GetAnalyticsAsync(today.AddDays(-27), today, cancellationToken);
+        var from = new DateOnly(today.Year, today.Month, 1);
+        var to = today;
+
+        if (!string.IsNullOrWhiteSpace(dateFrom) && !DateOnly.TryParse(dateFrom, out from))
+        {
+            return Results.BadRequest("Некорректная дата начала периода.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(dateTo) && !DateOnly.TryParse(dateTo, out to))
+        {
+            return Results.BadRequest("Некорректная дата окончания периода.");
+        }
+
+        if (from > to)
+        {
+            return Results.BadRequest("Дата начала не может быть позже даты окончания.");
+        }
+
+        var result = await ozonApi.GetAnalyticsAsync(from, to, cancellationToken);
         return Results.Ok(result);
     }
     catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
@@ -1160,17 +1819,23 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, Clai
             task.RequiredQuantity,
             task.ActualQuantity,
             task.Status,
+            task.IsUrgent,
             task.AssignedUserName,
+            task.CreatedByUserId,
+            task.CreatedByDisplayName,
             task.CreatedAt,
             task.StartedAt,
-            task.DeferredAt,
+            task.CancelledAt,
+            task.CancelledByUserId,
+            task.CancelledByDisplayName,
+            task.CancellationComment,
             task.CompletedAt,
             task.IsArchived,
             task.ArchivedAt,
             task.Items.Count == 0
                 ? new List<ProductionTaskItemListItem>
                 {
-                    new(task.Id, task.OzonProductId, task.OfferId, task.ProductName, task.RequiredQuantity, task.ActualQuantity)
+                    new(task.Id, task.OzonProductId, task.OfferId, task.ProductName, task.RequiredQuantity, task.ActualQuantity, false)
                 }
                 : task.Items
                     .OrderBy(item => item.ProductName)
@@ -1180,7 +1845,8 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, Clai
                         item.OfferId,
                         item.ProductName,
                         item.RequiredQuantity,
-                        item.ActualQuantity))
+                        item.ActualQuantity,
+                        item.EnforceMinimumQuantity))
                     .ToList()))
         .ToListAsync();
 
@@ -1197,7 +1863,7 @@ app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
         .ToListAsync();
 
     var builder = new StringBuilder();
-    builder.AppendLine("ID задачи;Создана;Взята в работу;Завершена;Архивирована;Исполнитель;Статус;Товар;Артикул;План;Факт");
+    builder.AppendLine("ID задачи;Создана;Создатель;Срочно;Взята в работу;Завершена;Архивирована;Исполнитель;Статус;Товар;Артикул;План;Факт");
 
     foreach (var task in tasks)
     {
@@ -1217,6 +1883,8 @@ app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
             builder.AppendLine(string.Join(';', [
                 CsvExport.Cell(task.Id.ToString()),
                 CsvExport.Cell(task.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
+                CsvExport.Cell(task.CreatedByDisplayName ?? string.Empty),
+                CsvExport.Cell(task.IsUrgent ? "Да" : "Нет"),
                 CsvExport.Cell(task.StartedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
                 CsvExport.Cell(task.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
                 CsvExport.Cell(task.ArchivedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
@@ -1248,7 +1916,8 @@ app.MapPost("/api/production/tasks", async (
             request.OzonProductId,
             request.OfferId,
             request.ProductName,
-            request.RequiredQuantity)];
+            request.RequiredQuantity,
+            false)];
 
     if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
     {
@@ -1256,6 +1925,10 @@ app.MapPost("/api/production/tasks", async (
     }
 
     var firstItem = requestItems[0];
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
+        ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
+        : null;
     var task = new ProductionTask
     {
         OzonProductId = firstItem.OzonProductId,
@@ -1264,12 +1937,18 @@ app.MapPost("/api/production/tasks", async (
             ? firstItem.ProductName.Trim()
             : $"Задача на {requestItems.Count} товаров",
         RequiredQuantity = requestItems.Sum(item => item.RequiredQuantity),
+        IsUrgent = request.IsUrgent,
+        CreatedByUserId = currentUser?.Id,
+        CreatedByDisplayName = currentUser?.DisplayName
+            ?? principal.FindFirstValue("display_name")
+            ?? principal.FindFirstValue(ClaimTypes.Name),
         Items = requestItems.Select(item => new ProductionTaskItem
         {
             OzonProductId = item.OzonProductId,
             OfferId = item.OfferId.Trim(),
             ProductName = item.ProductName.Trim(),
-            RequiredQuantity = item.RequiredQuantity
+            RequiredQuantity = item.RequiredQuantity,
+            EnforceMinimumQuantity = item.EnforceMinimumQuantity
         }).ToList()
     };
 
@@ -1277,32 +1956,66 @@ app.MapPost("/api/production/tasks", async (
     AuditLogWriter.Add(db, principal, "Создание задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
 
-    var result = new ProductionTaskListItem(
-        task.Id,
-        task.OzonProductId,
-        task.OfferId,
-        task.ProductName,
-        task.RequiredQuantity,
-        task.ActualQuantity,
-        task.Status,
-        task.AssignedUserName,
-        task.CreatedAt,
-        task.StartedAt,
-        task.DeferredAt,
-        task.CompletedAt,
-        task.IsArchived,
-        task.ArchivedAt,
-        task.Items.Select(item => new ProductionTaskItemListItem(
-            item.Id,
-            item.OzonProductId,
-            item.OfferId,
-            item.ProductName,
-            item.RequiredQuantity,
-            item.ActualQuantity)).ToList());
+    var result = ProductionTaskResponses.ToListItem(task);
 
     await hub.Clients.All.SendAsync("ProductionTasksChanged", result);
 
     return Results.Created($"/api/production/tasks/{task.Id}", result);
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapPut("/api/production/tasks/{id:guid}", async (
+    Guid id,
+    UpdateProductionTaskRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    var requestItems = request.Items is { Count: > 0 }
+        ? request.Items
+        : [];
+
+    if (requestItems.Count == 0 || requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    {
+        return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
+    }
+
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == id);
+    if (task is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (task.Status != ProductionTaskStatuses.New)
+    {
+        return Results.BadRequest("Редактировать можно только задачу, которая ещё не взята в работу.");
+    }
+
+    var firstItem = requestItems[0];
+    db.ProductionTaskItems.RemoveRange(task.Items);
+    task.Items = requestItems.Select(item => new ProductionTaskItem
+    {
+        ProductionTaskId = task.Id,
+        OzonProductId = item.OzonProductId,
+        OfferId = item.OfferId.Trim(),
+        ProductName = item.ProductName.Trim(),
+        RequiredQuantity = item.RequiredQuantity,
+        EnforceMinimumQuantity = item.EnforceMinimumQuantity
+    }).ToList();
+    task.OzonProductId = firstItem.OzonProductId;
+    task.OfferId = firstItem.OfferId.Trim();
+    task.ProductName = requestItems.Count == 1
+        ? firstItem.ProductName.Trim()
+        : $"Задача на {requestItems.Count} товаров";
+    task.RequiredQuantity = requestItems.Sum(item => item.RequiredQuantity);
+    task.IsUrgent = request.IsUrgent;
+
+    AuditLogWriter.Add(db, principal, "Редактирование задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapPut("/api/production/tasks/{id:guid}/start", async (
@@ -1322,6 +2035,11 @@ app.MapPut("/api/production/tasks/{id:guid}/start", async (
         return Results.BadRequest("Выполненную задачу нельзя взять в работу.");
     }
 
+    if (task.Status == ProductionTaskStatuses.Cancelled)
+    {
+        return Results.BadRequest("Отменённую задачу нельзя взять в работу.");
+    }
+
     task.Status = ProductionTaskStatuses.InProgress;
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
@@ -1339,12 +2057,68 @@ app.MapPut("/api/production/tasks/{id:guid}/start", async (
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPut("/api/production/tasks/{id:guid}/defer", async (
-    Guid id,
+app.MapPut("/api/production/tasks/{taskId:guid}/items/{itemId:guid}", async (
+    Guid taskId,
+    Guid itemId,
+    UpdateProductionTaskItemRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
+    if (request.RequiredQuantity <= 0)
+    {
+        return Results.BadRequest("Количество должно быть больше нуля.");
+    }
+
+    var task = await db.ProductionTasks
+        .Include(task => task.Items)
+        .FirstOrDefaultAsync(task => task.Id == taskId);
+    if (task is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (task.Status is not (ProductionTaskStatuses.New or ProductionTaskStatuses.InProgress))
+    {
+        return Results.BadRequest("Количество можно менять только у новой или активной задачи.");
+    }
+
+    if (task.Items.Count == 0 && task.Id == itemId)
+    {
+        task.RequiredQuantity = request.RequiredQuantity;
+    }
+    else
+    {
+        var item = task.Items.FirstOrDefault(entry => entry.Id == itemId);
+        if (item is null)
+        {
+            return Results.NotFound();
+        }
+
+        item.RequiredQuantity = request.RequiredQuantity;
+        task.RequiredQuantity = task.Items.Sum(entry => entry.RequiredQuantity);
+    }
+
+    AuditLogWriter.Add(db, principal, "Изменение количества в задаче", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. План: {task.RequiredQuantity}");
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    return Results.NoContent();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
+    Guid id,
+    CancelProductionTaskRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    var comment = request.Comment?.Trim() ?? string.Empty;
+    if (comment.Length < 3)
+    {
+        return Results.BadRequest("Укажите причину отмены задачи (минимум 3 символа).");
+    }
+
     var task = await db.ProductionTasks.FindAsync(id);
     if (task is null)
     {
@@ -1353,17 +2127,66 @@ app.MapPut("/api/production/tasks/{id:guid}/defer", async (
 
     if (task.Status == ProductionTaskStatuses.Completed)
     {
-        return Results.BadRequest("Выполненную задачу нельзя отложить.");
+        return Results.BadRequest("Выполненную задачу нельзя отменить.");
     }
 
-    task.Status = ProductionTaskStatuses.Deferred;
-    task.DeferredAt = DateTimeOffset.UtcNow;
-    AuditLogWriter.Add(db, principal, "Задача отложена", "ProductionTask", task.Id.ToString(), task.ProductName);
+    if (task.Status == ProductionTaskStatuses.Cancelled)
+    {
+        return Results.BadRequest("Задача уже отменена.");
+    }
+
+    if (task.Status != ProductionTaskStatuses.New)
+    {
+        return Results.BadRequest("Отменить можно только новую задачу.");
+    }
+
+    if (!principal.IsInRole(UserRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var currentUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == userId);
+    var cancelledByName = currentUser?.DisplayName
+        ?? principal.FindFirstValue("display_name")
+        ?? principal.FindFirstValue(ClaimTypes.Name)
+        ?? "Администратор";
+
+    task.Status = ProductionTaskStatuses.Cancelled;
+    task.CancelledAt = DateTimeOffset.UtcNow;
+    task.CancelledByUserId = userId;
+    task.CancelledByDisplayName = cancelledByName;
+    task.CancellationComment = comment;
+    AuditLogWriter.Add(db, principal, "Задача отменена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Причина: {comment}");
+
+    if (task.CreatedByUserId is Guid creatorId)
+    {
+        var notificationText = $"Задача «{task.ProductName}» отменена пользователем {cancelledByName}.\n\nПричина: {comment}";
+        var message = new ChatMessage
+        {
+            SenderId = SystemUser.Id,
+            ReceiverId = creatorId,
+            Text = notificationText
+        };
+        db.ChatMessages.Add(message);
+    }
+
     await db.SaveChangesAsync();
+
+    if (task.CreatedByUserId is Guid notifiedUserId)
+    {
+        await hub.Clients.All.SendAsync("ChatMessagesChanged", SystemUser.Id, notifiedUserId, null);
+    }
+
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
     return Results.NoContent();
-}).RequireAuthorization();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
 app.MapPut("/api/production/tasks/{id:guid}/complete", async (
     Guid id,
@@ -1385,6 +2208,11 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
         return Results.NotFound();
     }
 
+    if (task.Status != ProductionTaskStatuses.InProgress)
+    {
+        return Results.BadRequest("Завершить можно только задачу, которая уже в работе.");
+    }
+
     if (request.Items is { Count: > 0 })
     {
         var taskItems = task.Items.ToDictionary(item => item.Id);
@@ -1398,6 +2226,15 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
             taskItem.ActualQuantity = requestItem.ActualQuantity;
         }
 
+        foreach (var taskItem in task.Items)
+        {
+            if (taskItem.EnforceMinimumQuantity && (taskItem.ActualQuantity ?? 0) < taskItem.RequiredQuantity)
+            {
+                return Results.BadRequest(
+                    $"Фактическое количество по «{taskItem.ProductName}» не может быть меньше {taskItem.RequiredQuantity}.");
+            }
+        }
+
         task.ActualQuantity = task.Items.Sum(item => item.ActualQuantity ?? 0);
     }
     else
@@ -1405,7 +2242,14 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
         task.ActualQuantity = request.ActualQuantity;
         if (task.Items.Count == 1)
         {
-            task.Items[0].ActualQuantity = request.ActualQuantity;
+            var singleItem = task.Items[0];
+            if (singleItem.EnforceMinimumQuantity && request.ActualQuantity < singleItem.RequiredQuantity)
+            {
+                return Results.BadRequest(
+                    $"Фактическое количество по «{singleItem.ProductName}» не может быть меньше {singleItem.RequiredQuantity}.");
+            }
+
+            singleItem.ActualQuantity = request.ActualQuantity;
         }
     }
 
@@ -1435,14 +2279,58 @@ app.MapPut("/api/production/tasks/{id:guid}/archive", async (
         return Results.NotFound();
     }
 
-    if (task.Status != ProductionTaskStatuses.Completed)
+    if (task.Status != ProductionTaskStatuses.Completed && task.Status != ProductionTaskStatuses.Cancelled)
     {
-        return Results.BadRequest("В архив можно отправить только выполненную задачу.");
+        return Results.BadRequest("В архив можно отправить только выполненную или отменённую задачу.");
     }
 
     task.IsArchived = true;
     task.ArchivedAt = DateTimeOffset.UtcNow;
     AuditLogWriter.Add(db, principal, "Задача архивирована", "ProductionTask", task.Id.ToString(), task.ProductName);
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    return Results.NoContent();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+app.MapPut("/api/production/tasks/{id:guid}/restore", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == id);
+    if (task is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (task.Status != ProductionTaskStatuses.Cancelled)
+    {
+        return Results.BadRequest("Вернуть в новые можно только отменённую задачу.");
+    }
+
+    if (task.IsArchived)
+    {
+        return Results.BadRequest("Архивированную задачу нельзя вернуть в новые.");
+    }
+
+    task.Status = ProductionTaskStatuses.New;
+    task.CancelledAt = null;
+    task.CancelledByUserId = null;
+    task.CancelledByDisplayName = null;
+    task.CancellationComment = null;
+    task.StartedAt = null;
+    task.AssignedUserName = null;
+    task.ActualQuantity = null;
+    foreach (var item in task.Items)
+    {
+        item.ActualQuantity = null;
+    }
+
+    AuditLogWriter.Add(db, principal, "Задача возвращена в новые", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
@@ -1815,8 +2703,8 @@ app.MapPut("/api/supplies/items/{id:guid}/replace-reserve", async (
     item.OfferId = request.OfferId.Trim();
     item.ProductName = request.ProductName.Trim();
     item.IsReserve = false;
-    AuditLogWriter.Add(db, principal, "Замена резервного товара", "SupplyItem", item.Id.ToString(), item.ProductName);
-    AuditLogWriter.Add(db, principal, "Замена резервного товара", "Supply", item.SupplyId.ToString(), item.ProductName);
+    AuditLogWriter.Add(db, principal, "Замена нового товара", "SupplyItem", item.Id.ToString(), item.ProductName);
+    AuditLogWriter.Add(db, principal, "Замена нового товара", "Supply", item.SupplyId.ToString(), item.ProductName);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
@@ -1848,6 +2736,8 @@ app.MapGet("/api/supplies/analytics", async (AppDbContext db, ClaimsPrincipal pr
             item.ProductName,
             item.IsReserve,
             item.Supply.Status,
+            item.Supply.IsArchived,
+            item.Supply.ArchivedAt,
             item.Supply.CreatedAt,
             item.Supply.SentAt,
             item.Supply.AcceptedAt
@@ -1862,6 +2752,8 @@ app.MapGet("/api/supplies/analytics", async (AppDbContext db, ClaimsPrincipal pr
             group.Sum(item => item.Quantity),
             group.Key.IsReserve,
             group.Key.Status,
+            group.Key.IsArchived,
+            group.Key.ArchivedAt,
             group.Key.CreatedAt,
             group.Key.SentAt,
             group.Key.AcceptedAt))
@@ -1885,6 +2777,7 @@ app.MapGet("/api/supplies/analytics/export", async (AppDbContext db) =>
             item.ProductName,
             item.IsReserve,
             item.Supply.Status,
+            item.Supply.IsArchived,
             item.Supply.CreatedAt,
             item.Supply.SentAt,
             item.Supply.AcceptedAt
@@ -1894,14 +2787,14 @@ app.MapGet("/api/supplies/analytics/export", async (AppDbContext db) =>
         .ToList();
 
     var builder = new StringBuilder();
-    builder.AppendLine("Дата создания;Дата отправки;Дата приемки;Статус;Товар;Артикул;Количество;Резервный;ID поставки");
+    builder.AppendLine("Дата создания;Дата отправки;Дата приемки;Статус;Товар;Артикул;Количество;Новый товар;ID поставки");
     foreach (var row in rows)
     {
         builder.AppendLine(string.Join(';', [
             CsvExport.Cell(row.Key.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
             CsvExport.Cell(row.Key.SentAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
             CsvExport.Cell(row.Key.AcceptedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
-            CsvExport.Cell(row.Key.Status),
+            CsvExport.Cell(row.Key.IsArchived ? "Архив" : row.Key.Status),
             CsvExport.Cell(row.Key.ProductName),
             CsvExport.Cell(row.Key.OfferId),
             CsvExport.Cell(row.Sum(item => item.Quantity).ToString()),
@@ -1954,10 +2847,42 @@ record ChatUserListItem(
     DateTimeOffset? LastSeenAt,
     bool IsOnline,
     int UnreadCount);
+record ChatThreadListItem(
+    string Type,
+    Guid Id,
+    string Title,
+    string Subtitle,
+    string AvatarUrl,
+    bool IsOnline,
+    int UnreadCount,
+    int MemberCount,
+    Guid? CreatedByUserId,
+    List<ChatGroupMemberListItem>? Members);
+record ChatGroupDetailResponse(
+    Guid Id,
+    string Name,
+    Guid CreatedByUserId,
+    int MemberCount,
+    List<ChatGroupMemberListItem> Members);
+record ChatGroupDeleteMemberResponse(
+    bool Deleted,
+    Guid GroupId,
+    ChatGroupDetailResponse? Group);
+record ChatGroupMemberListItem(
+    Guid UserId,
+    string UserName,
+    string DisplayName,
+    string Position,
+    string AvatarUrl);
+record AnalyticsExportRequest(string? SheetName, string? FileName, List<List<string>> Rows);
+record CreateChatGroupRequest(string Name, List<string>? MemberIds);
+record UpdateChatGroupMembersRequest(List<Guid>? MemberIds);
 record ChatMessageListItem(
     Guid Id,
+    Guid? GroupId,
     Guid SenderId,
-    Guid ReceiverId,
+    string SenderDisplayName,
+    Guid? ReceiverId,
     string Text,
     string AttachmentFileName,
     string AttachmentContentType,
@@ -1973,8 +2898,11 @@ record ProductionFileListItem(
     string FileName,
     string ContentType,
     DateTimeOffset CreatedAt);
-record CreateProductionTaskRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, List<CreateProductionTaskItemRequest>? Items);
-record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity);
+record CreateProductionTaskRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
+record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity);
+record UpdateProductionTaskRequest(bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
+record UpdateProductionTaskItemRequest(int RequiredQuantity);
+record CancelProductionTaskRequest(string Comment);
 record CompleteProductionTaskRequest(int ActualQuantity, List<CompleteProductionTaskItemRequest>? Items);
 record CompleteProductionTaskItemRequest(Guid Id, int ActualQuantity);
 record ProductionTaskListItem(
@@ -1985,15 +2913,21 @@ record ProductionTaskListItem(
     int RequiredQuantity,
     int? ActualQuantity,
     string Status,
+    bool IsUrgent,
     string? AssignedUserName,
+    Guid? CreatedByUserId,
+    string? CreatedByDisplayName,
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
-    DateTimeOffset? DeferredAt,
+    DateTimeOffset? CancelledAt,
+    Guid? CancelledByUserId,
+    string? CancelledByDisplayName,
+    string? CancellationComment,
     DateTimeOffset? CompletedAt,
     bool IsArchived,
     DateTimeOffset? ArchivedAt,
     List<ProductionTaskItemListItem> Items);
-record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, int? ActualQuantity);
+record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity);
 record CreateSupplyRequest(List<CreateSupplyItemRequest> Items);
 record CreateSupplyItemRequest(long? OzonProductId, string OfferId, string ProductName, int Quantity, bool IsReserve);
 record UpdateSupplyRequest(List<CreateSupplyItemRequest> Items);
@@ -2032,6 +2966,8 @@ record SupplyAnalyticsItem(
     int Quantity,
     bool IsReserve,
     string Status,
+    bool IsArchived,
+    DateTimeOffset? ArchivedAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset? SentAt,
     DateTimeOffset? AcceptedAt);
@@ -2089,6 +3025,112 @@ static class AuditLogWriter
     }
 }
 
+static class ProductionTaskResponses
+{
+    public static ProductionTaskListItem ToListItem(ProductionTask task) =>
+        new(
+            task.Id,
+            task.OzonProductId,
+            task.OfferId,
+            task.ProductName,
+            task.RequiredQuantity,
+            task.ActualQuantity,
+            task.Status,
+            task.IsUrgent,
+            task.AssignedUserName,
+            task.CreatedByUserId,
+            task.CreatedByDisplayName,
+            task.CreatedAt,
+            task.StartedAt,
+            task.CancelledAt,
+            task.CancelledByUserId,
+            task.CancelledByDisplayName,
+            task.CancellationComment,
+            task.CompletedAt,
+            task.IsArchived,
+            task.ArchivedAt,
+            MapItems(task));
+
+    private static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
+        task.Items.Count == 0
+            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, task.RequiredQuantity, task.ActualQuantity, false)]
+            : task.Items
+                .OrderBy(item => item.ProductName)
+                .Select(item => new ProductionTaskItemListItem(
+                    item.Id,
+                    item.OzonProductId,
+                    item.OfferId,
+                    item.ProductName,
+                    item.RequiredQuantity,
+                    item.ActualQuantity,
+                    item.EnforceMinimumQuantity))
+                .ToList();
+}
+
+static class ChatAccess
+{
+    public static async Task<bool> IsGroupMemberAsync(AppDbContext db, Guid groupId, Guid userId) =>
+        await db.ChatGroupMembers.AnyAsync(member => member.GroupId == groupId && member.UserId == userId);
+}
+
+static class ChatResponses
+{
+    public static async Task<List<ChatGroupMemberListItem>> LoadGroupMembersAsync(AppDbContext db, Guid groupId) =>
+        await db.ChatGroupMembers
+            .AsNoTracking()
+            .Where(member => member.GroupId == groupId)
+            .Join(
+                db.Users.AsNoTracking(),
+                member => member.UserId,
+                user => user.Id,
+                (member, user) => new ChatGroupMemberListItem(
+                    user.Id,
+                    user.UserName,
+                    user.DisplayName,
+                    user.Position,
+                    UserResponses.AvatarUrl(user.AvatarFileName)))
+            .OrderBy(member => member.DisplayName)
+            .ThenBy(member => member.UserName)
+            .ToListAsync();
+
+    public static async Task<ChatGroupDetailResponse?> BuildGroupDetailAsync(AppDbContext db, Guid groupId)
+    {
+        var group = await db.ChatGroups
+            .AsNoTracking()
+            .FirstOrDefaultAsync(entry => entry.Id == groupId);
+        if (group is null)
+        {
+            return null;
+        }
+
+        var members = await LoadGroupMembersAsync(db, groupId);
+        return new ChatGroupDetailResponse(group.Id, group.Name, group.CreatedByUserId, members.Count, members);
+    }
+}
+
+static class SystemUserBootstrap
+{
+    public static async Task EnsureExistsAsync(AppDbContext db)
+    {
+        if (await db.Users.AnyAsync(user => user.Id == SystemUser.Id))
+        {
+            return;
+        }
+
+        db.Users.Add(new AppUser
+        {
+            Id = SystemUser.Id,
+            UserName = SystemUser.UserName,
+            DisplayName = SystemUser.DisplayName,
+            PasswordHash = PasswordHasher.Hash(Guid.NewGuid().ToString("N")),
+            Role = UserRoles.User,
+            IsActive = true,
+            AllowedFeatures = string.Empty
+        });
+        await db.SaveChangesAsync();
+    }
+}
+
 static class AppPublicText
 {
     public static string MaskSecret(string? value)
@@ -2126,14 +3168,16 @@ static class FeatureAccess
     public const string Pooling = "pooling";
     public const string Supplies = "supplies";
     public const string Chats = "chats";
+    public const string Home = "home";
 
     public static readonly string[] UserDefaults =
     [
+        Home,
         Production,
         "production.products",
         "production.tasks",
         "production.inProgress",
-        "production.deferred",
+        "production.cancelled",
         "production.completed",
         Products,
         Supplies,
@@ -2144,11 +3188,12 @@ static class FeatureAccess
 
     public static readonly string[] All =
     [
+        Home,
         Production,
         "production.products",
         "production.tasks",
         "production.inProgress",
-        "production.deferred",
+        "production.cancelled",
         "production.completed",
         "production.archive",
         "production.createTask",
@@ -2156,6 +3201,7 @@ static class FeatureAccess
         Analytics,
         "analytics.summary",
         "analytics.topProducts",
+        "analytics.noSales",
         Pooling,
         "pooling.editPrices",
         Supplies,
@@ -2260,13 +3306,18 @@ static class CsvExport
     public static string Cell(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }
 
-static class ExcelSupplyImport
+static class ExcelExport
 {
     private static readonly XNamespace Spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-    private static readonly XNamespace Relationships = "http://schemas.openxmlformats.org/package/2006/relationships";
 
-    public static byte[] CreateTemplate()
+    public static byte[] CreateWorkbook(string sheetName, IReadOnlyList<string[]> rows)
     {
+        var safeSheetName = string.IsNullOrWhiteSpace(sheetName) ? "Sheet1" : sheetName.Trim();
+        if (safeSheetName.Length > 31)
+        {
+            safeSheetName = safeSheetName[..31];
+        }
+
         using var memory = new MemoryStream();
         using (var archive = new ZipArchive(memory, ZipArchiveMode.Create, true))
         {
@@ -2291,23 +3342,72 @@ static class ExcelSupplyImport
                   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
                 </Relationships>
                 """);
-            WriteEntry(archive, "xl/workbook.xml", """
+            WriteEntry(archive, "xl/workbook.xml", $"""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                  <sheets><sheet name="Поставка" sheetId="1" r:id="rId1"/></sheets>
+                  <sheets><sheet name="{System.Security.SecurityElement.Escape(safeSheetName)}" sheetId="1" r:id="rId1"/></sheets>
                 </workbook>
                 """);
-
-            var rows = new[]
-            {
-                new[] { "Название товара", "Артикул", "ProductId", "Количество", "Резервный" },
-                new[] { "Пример постоянного товара", "OFFER-001", "123456789", "10", "нет" },
-                new[] { "Пример резервного товара", "", "", "5", "да" }
-            };
             WriteEntry(archive, "xl/worksheets/sheet1.xml", CreateWorksheet(rows));
         }
 
         return memory.ToArray();
+    }
+
+    private static string CreateWorksheet(IReadOnlyList<string[]> rows)
+    {
+        var builder = new StringBuilder();
+        builder.Append("""<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>""");
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            builder.Append($"""<row r="{rowIndex + 1}">""");
+            for (var columnIndex = 0; columnIndex < rows[rowIndex].Length; columnIndex++)
+            {
+                var cellRef = $"{ColumnName(columnIndex)}{rowIndex + 1}";
+                var value = System.Security.SecurityElement.Escape(rows[rowIndex][columnIndex]) ?? string.Empty;
+                builder.Append($"""<c r="{cellRef}" t="inlineStr"><is><t>{value}</t></is></c>""");
+            }
+            builder.Append("</row>");
+        }
+        builder.Append("</sheetData></worksheet>");
+        return builder.ToString();
+    }
+
+    private static void WriteEntry(ZipArchive archive, string path, string content)
+    {
+        var entry = archive.CreateEntry(path);
+        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+        writer.Write(content.Trim());
+    }
+
+    private static string ColumnName(int index)
+    {
+        var dividend = index + 1;
+        var name = string.Empty;
+        while (dividend > 0)
+        {
+            var modulo = (dividend - 1) % 26;
+            name = Convert.ToChar('A' + modulo) + name;
+            dividend = (dividend - modulo) / 26;
+        }
+        return name;
+    }
+}
+
+static class ExcelSupplyImport
+{
+    private static readonly XNamespace Spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    private static readonly XNamespace Relationships = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+    public static byte[] CreateTemplate()
+    {
+        var rows = new[]
+        {
+            new[] { "Название товара", "Артикул", "ProductId", "Количество", "Новый товар" },
+            new[] { "Пример постоянного товара", "OFFER-001", "123456789", "10", "нет" },
+            new[] { "Пример нового товара", "", "", "5", "да" }
+        };
+        return ExcelExport.CreateWorkbook("Поставка", rows);
     }
 
     public static List<CreateSupplyItemRequest> ReadSupplyItems(Stream stream)
@@ -2348,25 +3448,6 @@ static class ExcelSupplyImport
 
             return new CreateSupplyItemRequest(productId, offerId, productName, quantity, isReserve);
         }).ToList();
-    }
-
-    private static string CreateWorksheet(IReadOnlyList<string[]> rows)
-    {
-        var builder = new StringBuilder();
-        builder.Append("""<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>""");
-        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
-        {
-            builder.Append($"""<row r="{rowIndex + 1}">""");
-            for (var columnIndex = 0; columnIndex < rows[rowIndex].Length; columnIndex++)
-            {
-                var cellRef = $"{ColumnName(columnIndex)}{rowIndex + 1}";
-                var value = System.Security.SecurityElement.Escape(rows[rowIndex][columnIndex]) ?? string.Empty;
-                builder.Append($"""<c r="{cellRef}" t="inlineStr"><is><t>{value}</t></is></c>""");
-            }
-            builder.Append("</row>");
-        }
-        builder.Append("</sheetData></worksheet>");
-        return builder.ToString();
     }
 
     private static List<string> ReadSharedStrings(ZipArchive archive)
@@ -2421,13 +3502,6 @@ static class ExcelSupplyImport
         return cell.Element(Spreadsheet + "v")?.Value ?? string.Empty;
     }
 
-    private static void WriteEntry(ZipArchive archive, string path, string content)
-    {
-        var entry = archive.CreateEntry(path);
-        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
-        writer.Write(content.Trim());
-    }
-
     private static string GetValue(IReadOnlyList<string> values, int index) =>
         index < values.Count ? values[index].Trim() : string.Empty;
 
@@ -2435,19 +3509,6 @@ static class ExcelSupplyImport
         value.Equals("да", StringComparison.OrdinalIgnoreCase)
         || value.Equals("true", StringComparison.OrdinalIgnoreCase)
         || value.Equals("1", StringComparison.OrdinalIgnoreCase);
-
-    private static string ColumnName(int index)
-    {
-        var dividend = index + 1;
-        var name = string.Empty;
-        while (dividend > 0)
-        {
-            var modulo = (dividend - 1) % 26;
-            name = Convert.ToChar('A' + modulo) + name;
-            dividend = (dividend - modulo) / 26;
-        }
-        return name;
-    }
 
     private static int ColumnIndex(string cellReference)
     {

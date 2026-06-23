@@ -9,10 +9,16 @@ public class ProductionTask
     public int RequiredQuantity { get; set; }
     public int? ActualQuantity { get; set; }
     public string Status { get; set; } = ProductionTaskStatuses.New;
+    public bool IsUrgent { get; set; }
+    public Guid? CreatedByUserId { get; set; }
+    public string? CreatedByDisplayName { get; set; }
     public string? AssignedUserName { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? StartedAt { get; set; }
-    public DateTimeOffset? DeferredAt { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public Guid? CancelledByUserId { get; set; }
+    public string? CancelledByDisplayName { get; set; }
+    public string? CancellationComment { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
     public bool IsArchived { get; set; }
     public DateTimeOffset? ArchivedAt { get; set; }
@@ -29,12 +35,13 @@ public class ProductionTaskItem
     public string ProductName { get; set; } = string.Empty;
     public int RequiredQuantity { get; set; }
     public int? ActualQuantity { get; set; }
+    public bool EnforceMinimumQuantity { get; set; }
 }
 
 public static class ProductionTaskStatuses
 {
     public const string New = "New";
     public const string InProgress = "InProgress";
-    public const string Deferred = "Deferred";
+    public const string Cancelled = "Cancelled";
     public const string Completed = "Completed";
 }

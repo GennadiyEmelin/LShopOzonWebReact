@@ -134,6 +134,60 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.ToTable("AuditLogs");
                 });
 
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.ToTable("ChatGroups");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroupMember", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("JoinedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastReadAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("GroupId", "UserId")
+                        .IsUnique();
+
+                    b.ToTable("ChatGroupMembers");
+                });
+
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatMessage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -156,10 +210,16 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsHiddenForSender")
+                        .HasColumnType("boolean");
+
                     b.Property<DateTimeOffset?>("ReadAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("ReceiverId")
+                    b.Property<Guid?>("ReceiverId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid>("SenderId")
@@ -171,6 +231,8 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasColumnType("character varying(2000)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("GroupId", "CreatedAt");
 
                     b.HasIndex("ReceiverId", "ReadAt");
 
@@ -244,16 +306,37 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CancellationComment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("CancelledByDisplayName")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset?>("CompletedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTimeOffset?>("DeferredAt")
-                        .HasColumnType("timestamp with time zone");
+                    b.Property<string>("CreatedByDisplayName")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
 
                     b.Property<bool>("IsArchived")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsUrgent")
                         .HasColumnType("boolean");
 
                     b.Property<string>("OfferId")
@@ -297,6 +380,9 @@ namespace LShopOzonWebReact.Api.Migrations
 
                     b.Property<int?>("ActualQuantity")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("EnforceMinimumQuantity")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("OfferId")
                         .IsRequired()
@@ -400,19 +486,55 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.ToTable("SupplyItems");
                 });
 
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroup", b =>
+                {
+                    b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroupMember", b =>
+                {
+                    b.HasOne("LShopOzonWebReact.Api.Models.ChatGroup", "Group")
+                        .WithMany("Members")
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatMessage", b =>
                 {
+                    b.HasOne("LShopOzonWebReact.Api.Models.ChatGroup", "Group")
+                        .WithMany("Messages")
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
                     b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "Receiver")
                         .WithMany()
                         .HasForeignKey("ReceiverId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "Sender")
                         .WithMany()
                         .HasForeignKey("SenderId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Group");
 
                     b.Navigation("Receiver");
 
@@ -439,6 +561,13 @@ namespace LShopOzonWebReact.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Supply");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroup", b =>
+                {
+                    b.Navigation("Members");
+
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductionTask", b =>

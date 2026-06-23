@@ -12,6 +12,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Supply> Supplies => Set<Supply>();
     public DbSet<SupplyItem> SupplyItems => Set<SupplyItem>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
+    public DbSet<ChatGroup> ChatGroups => Set<ChatGroup>();
+    public DbSet<ChatGroupMember> ChatGroupMembers => Set<ChatGroupMember>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -44,6 +46,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(task => task.ProductName).HasMaxLength(240);
             entity.Property(task => task.Status).HasMaxLength(32);
             entity.Property(task => task.AssignedUserName).HasMaxLength(80);
+            entity.Property(task => task.CreatedByDisplayName).HasMaxLength(160);
+            entity.Property(task => task.CancellationComment).HasMaxLength(2000);
+            entity.Property(task => task.CancelledByDisplayName).HasMaxLength(160);
             entity.HasMany(task => task.Items)
                 .WithOne(item => item.ProductionTask)
                 .HasForeignKey(item => item.ProductionTaskId)
@@ -76,11 +81,39 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(item => item.ProductName).HasMaxLength(240);
         });
 
+        modelBuilder.Entity<ChatGroup>(entity =>
+        {
+            entity.Property(group => group.Name).HasMaxLength(120);
+            entity.HasIndex(group => group.CreatedAt);
+            entity.HasOne(group => group.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(group => group.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasMany(group => group.Members)
+                .WithOne(member => member.Group)
+                .HasForeignKey(member => member.GroupId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(group => group.Messages)
+                .WithOne(message => message.Group)
+                .HasForeignKey(message => message.GroupId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ChatGroupMember>(entity =>
+        {
+            entity.HasIndex(member => new { member.GroupId, member.UserId }).IsUnique();
+            entity.HasOne(member => member.User)
+                .WithMany()
+                .HasForeignKey(member => member.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<ChatMessage>(entity =>
         {
             entity.HasIndex(message => new { message.SenderId, message.ReceiverId, message.CreatedAt });
             entity.HasIndex(message => new { message.ReceiverId, message.SenderId, message.CreatedAt });
             entity.HasIndex(message => new { message.ReceiverId, message.ReadAt });
+            entity.HasIndex(message => new { message.GroupId, message.CreatedAt });
             entity.Property(message => message.Text).HasMaxLength(2000);
             entity.Property(message => message.AttachmentFileName).HasMaxLength(260);
             entity.Property(message => message.AttachmentContentType).HasMaxLength(120);
@@ -91,7 +124,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(message => message.Receiver)
                 .WithMany()
                 .HasForeignKey(message => message.ReceiverId)
-                .OnDelete(DeleteBehavior.Cascade);
+                .OnDelete(DeleteBehavior.Cascade)
+                .IsRequired(false);
         });
 
         modelBuilder.Entity<AuditLog>(entity =>
