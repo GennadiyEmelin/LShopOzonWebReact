@@ -283,6 +283,11 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<string>("ProductLink")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("OfferId");
@@ -363,6 +368,11 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<string>("TaskType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("IsArchived");
@@ -396,6 +406,11 @@ namespace LShopOzonWebReact.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
+
+                    b.Property<string>("ProductLink")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<Guid>("ProductionTaskId")
                         .HasColumnType("uuid");

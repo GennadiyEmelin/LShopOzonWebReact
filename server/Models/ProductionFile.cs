@@ -6,6 +6,7 @@ public class ProductionFile
     public long? OzonProductId { get; set; }
     public string OfferId { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;
+    public string ProductLink { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string ContentType { get; set; } = "application/octet-stream";

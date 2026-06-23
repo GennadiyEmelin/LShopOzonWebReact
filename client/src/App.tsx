@@ -196,10 +196,20 @@ type ProductionFile = {
   ozonProductId?: number
   offerId: string
   productName: string
+  productLink?: string
   notes: string
   fileName: string
   contentType: string
   createdAt: string
+}
+
+type ProductionCatalogItem = {
+  offerId: string
+  ozonProductId?: number
+  productName: string
+  productLink: string
+  fileCount: number
+  completedAt?: string
 }
 
 type ProductionTask = {
@@ -210,6 +220,7 @@ type ProductionTask = {
   requiredQuantity: number
   actualQuantity?: number
   status: 'New' | 'InProgress' | 'Cancelled' | 'Completed'
+  taskType?: 'Ozon' | 'Novinka'
   isUrgent: boolean
   assignedUserName?: string
   createdByUserId?: string
@@ -231,6 +242,7 @@ type ProductionTaskItem = {
   ozonProductId: number
   offerId: string
   productName: string
+  productLink?: string
   requiredQuantity: number
   actualQuantity?: number
   enforceMinimumQuantity?: boolean
@@ -297,6 +309,12 @@ type DraftTaskItem = {
   imageUrl: string
   requiredQuantity: number
   enforceMinimumQuantity: boolean
+}
+
+type DraftNovinkaItem = {
+  tempId: string
+  productName: string
+  productLink: string
 }
 
 function createTempId() {
@@ -394,6 +412,7 @@ const defaultUserFeatures = ['home', 'production', 'production.products', 'produ
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
+type ProductionCatalogTab = 'ozon' | 'novinka' | 'editor'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
 type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales'
 
@@ -419,6 +438,7 @@ function App() {
   const [ozonStatus, setOzonStatus] = useState('')
   const [ozonProducts, setOzonProducts] = useState<OzonProduct[]>([])
   const [productSearch, setProductSearch] = useState('')
+  const [productStatusFilter, setProductStatusFilter] = useState<'all' | 'selling' | 'ready' | 'archived'>('all')
   const [stockStatus, setStockStatus] = useState('')
   const [ozonStocks, setOzonStocks] = useState<OzonStock[]>([])
   const [stockSearch, setStockSearch] = useState('')
@@ -440,7 +460,16 @@ function App() {
   const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
   const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
-  const [selectedProductionProductId, setSelectedProductionProductId] = useState<number | null>(null)
+  const [taskSourceSubTab, setTaskSourceSubTab] = useState<'ozon' | 'novinka'>('ozon')
+  const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>('ozon')
+  const [editorNovinkaOfferId, setEditorNovinkaOfferId] = useState('')
+  const [editorOzonProductId, setEditorOzonProductId] = useState('')
+  const [productEditorStatus, setProductEditorStatus] = useState('')
+  const [productEditorSaving, setProductEditorSaving] = useState(false)
+  const [draftNovinkaItems, setDraftNovinkaItems] = useState<DraftNovinkaItem[]>([])
+  const [novinkaProductName, setNovinkaProductName] = useState('')
+  const [novinkaProductLink, setNovinkaProductLink] = useState('')
+  const [selectedNovinkaOfferId, setSelectedNovinkaOfferId] = useState('')
   const [productionFiles, setProductionFiles] = useState<ProductionFile[]>([])
   const [productionFilesModal, setProductionFilesModal] = useState<{
     productName: string
@@ -449,10 +478,12 @@ function App() {
   const [productionTasks, setProductionTasks] = useState<ProductionTask[]>([])
   const [taskSearch, setTaskSearch] = useState('')
   const [taskUrgencyFilter, setTaskUrgencyFilter] = useState<'all' | 'urgent' | 'normal'>('all')
+  const [productionTaskTypeFilter, setProductionTaskTypeFilter] = useState<'all' | 'ozon' | 'novinka'>('all')
   const [archiveTaskStatusFilter, setArchiveTaskStatusFilter] = useState<'all' | 'Completed' | 'Cancelled'>('all')
   const [productionStatus, setProductionStatus] = useState('')
   const [taskStatus, setTaskStatus] = useState('')
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [taskFormStatus, setTaskFormStatus] = useState('')
+  const [taskFormSaving, setTaskFormSaving] = useState(false)
   const [selectedTaskProductId, setSelectedTaskProductId] = useState('')
   const [taskQuantity, setTaskQuantity] = useState('')
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false)
@@ -470,7 +501,6 @@ function App() {
   const [supplyStatus, setSupplyStatus] = useState('')
   const [supplyProductId, setSupplyProductId] = useState('')
   const [supplyQuantity, setSupplyQuantity] = useState('')
-  const [reserveProductName, setReserveProductName] = useState('')
   const [reserveQuantity, setReserveQuantity] = useState('')
   const [draftSupplyItems, setDraftSupplyItems] = useState<DraftSupplyItem[]>([])
   const [replaceProducts, setReplaceProducts] = useState<Record<string, string>>({})
@@ -478,7 +508,6 @@ function App() {
   const [editSupplyItems, setEditSupplyItems] = useState<DraftSupplyItem[]>([])
   const [editSupplyProductId, setEditSupplyProductId] = useState('')
   const [editSupplyQuantity, setEditSupplyQuantity] = useState('')
-  const [editReserveProductName, setEditReserveProductName] = useState('')
   const [editReserveQuantity, setEditReserveQuantity] = useState('')
   const [analyticsProductKey, setAnalyticsProductKey] = useState('')
   const [showSupplyHelp, setShowSupplyHelp] = useState(false)
@@ -531,7 +560,12 @@ function App() {
   const [showNotifications, setShowNotifications] = useState(false)
   const [seenNewTaskNotificationIds, setSeenNewTaskNotificationIds] = useState<string[]>([])
   const [seenInProgressTaskNotificationIds, setSeenInProgressTaskNotificationIds] = useState<string[]>([])
+  const [seenCancelledTaskNotificationIds, setSeenCancelledTaskNotificationIds] = useState<string[]>([])
+  const [seenCompletedTaskNotificationIds, setSeenCompletedTaskNotificationIds] = useState<string[]>([])
+  const [seenCreatedSupplyIds, setSeenCreatedSupplyIds] = useState<string[]>([])
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
+  const knownNewSupplyIdsRef = useRef<Set<string> | null>(null)
+  const productionTaskStatusRef = useRef<Record<string, ProductionTask['status']>>({})
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null)
@@ -539,9 +573,35 @@ function App() {
   const selectedChatKeyRef = useRef('')
   const creatingGroupRef = useRef(false)
   const normalizedProductSearch = productSearch.trim().toLowerCase()
-  const filteredCatalogProducts = [...(normalizedProductSearch
-    ? ozonProducts.filter((item) =>
-        [
+  const productStatusCounts = useMemo(() => {
+    const counts = {
+      all: ozonProducts.length,
+      selling: 0,
+      ready: 0,
+      archived: 0,
+    }
+
+    for (const product of ozonProducts) {
+      const group = getProductStatusGroup(product.status)
+
+      if (group === 'selling') {
+        counts.selling++
+      } else if (group === 'ready') {
+        counts.ready++
+      } else if (group === 'archived') {
+        counts.archived++
+      }
+    }
+
+    return counts
+  }, [ozonProducts])
+  const filteredCatalogProducts = [...((
+    productStatusFilter !== 'all'
+      ? ozonProducts.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
+      : ozonProducts
+  ).filter((item) =>
+    normalizedProductSearch
+      ? [
           item.productId,
           item.offerId,
           item.sku,
@@ -554,34 +614,17 @@ function App() {
           item.productUrl,
         ]
           .filter((value) => value !== undefined && value !== null)
-          .some((value) => String(value).toLowerCase().includes(normalizedProductSearch)),
-      )
-    : ozonProducts)].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
-  const normalizedProductionSearch = productionSearch.trim().toLowerCase()
-  const filteredOzonProducts = [...(normalizedProductionSearch
-    ? ozonProducts.filter((item) =>
-        [
-          item.productId,
-          item.offerId,
-          item.sku,
-          item.name,
-          item.price,
-          item.oldPrice,
-          item.minPrice,
-          item.currencyCode,
-          item.status,
-          item.productUrl,
-        ]
-          .filter((value) => value !== undefined && value !== null)
-          .some((value) => String(value).toLowerCase().includes(normalizedProductionSearch)),
-      )
-    : ozonProducts)].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
+          .some((value) => String(value).toLowerCase().includes(normalizedProductSearch))
+      : true,
+  ))].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
   const normalizedTaskSearch = taskSearch.trim().toLowerCase()
   const filteredProductionTasks = normalizedTaskSearch
     ? productionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
     : productionTasks
   const allNewProductionTasks = productionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const allInProgressProductionTasks = productionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
+  const allCancelledProductionTasks = productionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived)
+  const allCompletedProductionTasks = productionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
   const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const filteredNewProductionTasks = sortProductionTasksByUrgency(
     newProductionTasks.filter((task) => {
@@ -596,21 +639,65 @@ function App() {
     return true
     }),
   )
+  const filteredNewTasksBySource = filteredNewProductionTasks.filter((task) =>
+    taskSourceSubTab === 'novinka' ? isNovinkaTask(task) : !isNovinkaTask(task),
+  )
+  const filterTasksByProductionType = (tasks: ProductionTask[]) => {
+    if (productionTaskTypeFilter === 'all') {
+      return tasks
+    }
+
+    if (productionTaskTypeFilter === 'novinka') {
+      return tasks.filter((task) => isNovinkaTask(task))
+    }
+
+    return tasks.filter((task) => !isNovinkaTask(task))
+  }
   const inProgressProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived),
   )
+  const filteredInProgressProductionTasks = filterTasksByProductionType(inProgressProductionTasks)
   const cancelledProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived),
   )
+  const filteredCancelledProductionTasks = filterTasksByProductionType(cancelledProductionTasks)
   const completedProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived),
   )
+  const filteredCompletedProductionTasks = filterTasksByProductionType(completedProductionTasks)
   const archivedProductionTasks = filteredProductionTasks.filter((task) => task.isArchived)
   const filteredArchivedProductionTasks = archivedProductionTasks.filter(
     (task) => archiveTaskStatusFilter === 'all' || task.status === archiveTaskStatusFilter,
   )
-  const selectedProductionProduct = ozonProducts.find(
-    (item) => item.productId === selectedProductionProductId,
+  const ozonProductionCatalogItems = useMemo((): ProductionCatalogItem[] => {
+    return ozonProducts.map((product) => ({
+      offerId: product.offerId,
+      ozonProductId: product.productId,
+      productName: product.name,
+      productLink: product.productUrl ?? '',
+      fileCount: productionFiles.filter(
+        (file) => file.offerId === product.offerId || file.ozonProductId === product.productId,
+      ).length,
+    }))
+  }, [ozonProducts, productionFiles])
+  const novinkaProductionCatalogItems = useMemo(
+    (): ProductionCatalogItem[] => buildNovinkaCatalogFromFiles(productionFiles),
+    [productionFiles],
+  )
+  const activeProductionCatalog =
+    productionCatalogTab === 'ozon' ? ozonProductionCatalogItems : novinkaProductionCatalogItems
+  const editorSelectedNovinka = novinkaProductionCatalogItems.find(
+    (item) => item.offerId === editorNovinkaOfferId,
+  )
+  const editorSelectedOzon = ozonProducts.find(
+    (product) => String(product.productId) === editorOzonProductId,
+  )
+  const normalizedCatalogSearch = productionSearch.trim().toLowerCase()
+  const filteredProductionCatalog = activeProductionCatalog.filter((item) =>
+    !normalizedCatalogSearch
+      ? true
+      : [item.offerId, item.productName, item.productLink]
+          .some((value) => value.toLowerCase().includes(normalizedCatalogSearch)),
   )
   const filteredSupplyAnalytics = analyticsProductKey
     ? supplyAnalytics.filter((item) =>
@@ -749,31 +836,65 @@ function App() {
   const unseenNewProductionTasks = allNewProductionTasks.filter(
     (task) => !seenNewTaskNotificationIds.includes(task.id),
   )
+  const unseenNewOzonTasks = unseenNewProductionTasks.filter((task) => !isNovinkaTask(task))
+  const unseenNewNovinkaTasks = unseenNewProductionTasks.filter((task) => isNovinkaTask(task))
   const unseenInProgressProductionTasks = allInProgressProductionTasks.filter(
     (task) => !seenInProgressTaskNotificationIds.includes(task.id),
   )
-  const notificationItems = [
-    ...(unseenNewProductionTasks.length > 0
-      ? [{ key: 'tasks-new', label: `Новые задачи: ${unseenNewProductionTasks.length}`, target: 'tasks' as const }]
-      : []),
-    ...(unseenInProgressProductionTasks.length > 0
-      ? [{ key: 'tasks-work', label: `В работе: ${unseenInProgressProductionTasks.length}`, target: 'inProgress' as const }]
-      : []),
-    ...chatThreads
-      .filter((item) => (item.unreadCount ?? 0) > 0)
-      .map((item) => ({
-        key: `chat-${item.type}-${item.id}`,
-        label: `${item.title}: ${item.unreadCount} новых сообщений`,
-        target: 'chat' as const,
-        chatType: item.type,
-        chatId: item.id,
-      })),
-  ]
-  const productionNotificationTotal = unseenNewProductionTasks.length
-  const notificationTotal = unseenNewProductionTasks.length + unseenInProgressProductionTasks.length + chatUnreadTotal
+  const unseenInProgressOzonTasks = unseenInProgressProductionTasks.filter((task) => !isNovinkaTask(task))
+  const unseenInProgressNovinkaTasks = unseenInProgressProductionTasks.filter((task) => isNovinkaTask(task))
+  const unseenCancelledProductionTasks = allCancelledProductionTasks.filter(
+    (task) => !seenCancelledTaskNotificationIds.includes(task.id),
+  )
+  const unseenCancelledOzonTasks = unseenCancelledProductionTasks.filter((task) => !isNovinkaTask(task))
+  const unseenCancelledNovinkaTasks = unseenCancelledProductionTasks.filter((task) => isNovinkaTask(task))
+  const unseenCompletedProductionTasks = allCompletedProductionTasks.filter(
+    (task) => !seenCompletedTaskNotificationIds.includes(task.id),
+  )
+  const unseenCompletedOzonTasks = unseenCompletedProductionTasks.filter((task) => !isNovinkaTask(task))
+  const unseenCompletedNovinkaTasks = unseenCompletedProductionTasks.filter((task) => isNovinkaTask(task))
+  const allActiveSupplies = supplies.filter((supply) => !supply.isArchived)
+  const unseenSupplies = allActiveSupplies.filter((supply) => !seenCreatedSupplyIds.includes(supply.id))
+  const unseenCreatedSupplies = unseenSupplies.filter((supply) => supply.status === 'Created')
   const hasFeature = (feature: string) =>
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
   const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
+  const canSeeProductionNotifications = hasFeature('production')
+  const canSeeSupplyNotifications = hasFeature('supplies')
+  const canSeeChatNotifications = hasFeature('chats')
+  const notificationItems = [
+    ...(canSeeProductionNotifications
+      ? unseenNewProductionTasks.map((task) => ({
+          key: `task-new-${task.id}`,
+          label: `Новая задача: ${getProductionTaskSummary(task)}`,
+          target: 'tasks' as const,
+          taskId: task.id,
+        }))
+      : []),
+    ...(canSeeSupplyNotifications
+      ? unseenCreatedSupplies.map((supply) => ({
+          key: `supply-new-${supply.id}`,
+          label: `Новая поставка: ${getSupplyNotificationSummary(supply)}`,
+          target: 'supplies-all' as const,
+          supplyId: supply.id,
+        }))
+      : []),
+    ...(canSeeChatNotifications
+      ? chatThreads
+          .filter((item) => (item.unreadCount ?? 0) > 0)
+          .map((item) => ({
+            key: `chat-${item.type}-${item.id}`,
+            label: `Новое сообщение · ${item.title}: ${item.unreadCount}`,
+            target: 'chat' as const,
+            chatType: item.type,
+            chatId: item.id,
+          }))
+      : []),
+  ]
+  const productionNotificationTotal = canSeeProductionNotifications ? unseenNewProductionTasks.length : 0
+  const supplyNotificationTotal = canSeeSupplyNotifications ? unseenCreatedSupplies.length : 0
+  const notificationTotal =
+    productionNotificationTotal + supplyNotificationTotal + (canSeeChatNotifications ? chatUnreadTotal : 0)
   const visibleTabs = tabs.filter((tab) => {
     if (tab.id === 'home') {
       return Boolean(user)
@@ -849,11 +970,17 @@ function App() {
     if (!user?.id) {
       setSeenNewTaskNotificationIds([])
       setSeenInProgressTaskNotificationIds([])
+      setSeenCancelledTaskNotificationIds([])
+      setSeenCompletedTaskNotificationIds([])
+      setSeenCreatedSupplyIds([])
       return
     }
 
     setSeenNewTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'new')))
     setSeenInProgressTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'in-progress')))
+    setSeenCancelledTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'cancelled')))
+    setSeenCompletedTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'completed')))
+    setSeenCreatedSupplyIds(readStringListFromStorage(getSupplyNotificationStorageKey(user.id)))
   }, [user?.id])
 
   useEffect(() => {
@@ -901,6 +1028,20 @@ function App() {
       setAnalyticsSubTab(analyticsFallbacks.find(([, feature]) => hasSubFeature(feature, 'analytics'))?.[0] ?? 'summary')
     }
   }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'production' || productionSubTab !== 'products') {
+      return
+    }
+
+    if (productionCatalogTab === 'ozon' && ozonProducts.length === 0) {
+      void loadOzonProducts()
+    }
+
+    if (productionCatalogTab === 'editor' && ozonProducts.length === 0) {
+      void loadOzonProducts()
+    }
+  }, [token, activeTab, productionSubTab, productionCatalogTab, ozonProducts.length])
 
   useEffect(() => {
     if (!token || user?.role !== 'Admin') {
@@ -968,7 +1109,11 @@ function App() {
       .build()
 
     connection.on('ProductionTasksChanged', () => {
-      loadProductionTasks()
+      void loadProductionTasks()
+    })
+
+    connection.on('SuppliesChanged', () => {
+      void loadSupplies()
     })
 
     connection.on('ChatMessagesChanged', (senderId: string, receiverId: string | null, groupId: string | null) => {
@@ -1121,6 +1266,8 @@ function App() {
     setSelectedChatId('')
     setChatGroupDetail(null)
     knownNewTaskIdsRef.current = null
+    knownNewSupplyIdsRef.current = null
+    productionTaskStatusRef.current = {}
     knownChatUnreadCountsRef.current = null
     knownChatMessageIdsRef.current = {}
     selectedChatKeyRef.current = ''
@@ -2489,25 +2636,14 @@ function App() {
     setProductionStatus(data.length ? `Найдено записей: ${data.length}` : 'Записей пока нет')
   }
 
-  async function uploadProductionFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (!uploadFile) {
-      setProductionStatus('Выберите файл')
-      return
-    }
-
-    if (!selectedProductionProduct) {
-      setProductionStatus('Выберите товар')
-      return
-    }
-
+  async function uploadProductionFileForTaskItem(item: ProductionTaskItem, file: File) {
     const formData = new FormData()
-    formData.append('ozonProductId', String(selectedProductionProduct.productId))
-    formData.append('offerId', selectedProductionProduct.offerId)
-    formData.append('productName', selectedProductionProduct.name)
+    formData.append('ozonProductId', item.ozonProductId > 0 ? String(item.ozonProductId) : '0')
+    formData.append('offerId', item.offerId)
+    formData.append('productName', item.productName)
+    formData.append('productLink', item.productLink ?? '')
     formData.append('notes', '')
-    formData.append('file', uploadFile)
+    formData.append('file', file)
 
     const response = await fetch('/api/production/files', {
       method: 'POST',
@@ -2518,12 +2654,11 @@ function App() {
     })
 
     if (!response.ok) {
-      setProductionStatus('Не удалось загрузить файл')
+      setTaskStatus('Не удалось загрузить файл')
       return
     }
 
-    setUploadFile(null)
-    setProductionStatus('Файл загружен')
+    setTaskStatus('Файл загружен')
     await loadProductionFiles(productionSearch)
   }
 
@@ -2554,6 +2689,68 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function deleteProductionFile(id: string) {
+    if (!window.confirm('Удалить файл производства?')) {
+      return
+    }
+
+    const notify = (message: string) => {
+      if (productionSubTab === 'products') {
+        setProductionStatus(message)
+      } else {
+        setTaskStatus(message)
+      }
+    }
+
+    try {
+      const response = await fetch(`/api/production/files/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        const message = await response.text()
+        notify(message || 'Не удалось удалить файл')
+        return
+      }
+
+      let reworkTaskCreated = false
+      try {
+        const payload = (await response.json()) as { reworkTaskCreated?: boolean }
+        reworkTaskCreated = Boolean(payload.reworkTaskCreated)
+      } catch {
+        reworkTaskCreated = false
+      }
+
+      await loadProductionFiles(productionSearch)
+      await loadProductionTasks()
+
+      notify(
+        reworkTaskCreated
+          ? 'Файл удалён. Товар убран из списка, создана новая задача для новинки.'
+          : 'Файл удалён',
+      )
+
+      if (reworkTaskCreated) {
+        setProductionSubTab('tasks')
+        setTaskSourceSubTab('novinka')
+      }
+
+      setProductionFilesModal((current) => {
+        if (!current) {
+          return null
+        }
+
+        const files = current.files.filter((file) => file.id !== id)
+        return files.length > 0 ? { ...current, files } : null
+      })
+    } catch {
+      notify('Не удалось удалить файл')
+    }
+  }
+
   function openProductionFilesModal(productName: string, files: ProductionFile[]) {
     if (files.length === 0) {
       return
@@ -2562,33 +2759,39 @@ function App() {
     setProductionFilesModal({ productName, files })
   }
 
-  async function deleteProductionFile(id: string) {
-    const response = await fetch(`/api/production/files/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setProductionStatus('Не удалось удалить файл')
-      return
-    }
-
-    setProductionStatus('Файл удален')
-    await loadProductionFiles(productionSearch)
-  }
-
-  function markTaskNotificationsSeen(kind: 'new' | 'in-progress', taskIds: string[]) {
+  function markTaskNotificationsSeen(
+    kind: 'new' | 'in-progress' | 'cancelled' | 'completed',
+    taskIds: string[],
+  ) {
     if (!user?.id || taskIds.length === 0) {
       return
     }
 
     const storageKey = getTaskNotificationStorageKey(user.id, kind)
-    const updateState = kind === 'new' ? setSeenNewTaskNotificationIds : setSeenInProgressTaskNotificationIds
+    const updateState =
+      kind === 'new'
+        ? setSeenNewTaskNotificationIds
+        : kind === 'in-progress'
+          ? setSeenInProgressTaskNotificationIds
+          : kind === 'cancelled'
+            ? setSeenCancelledTaskNotificationIds
+            : setSeenCompletedTaskNotificationIds
 
     updateState((current) => {
       const next = Array.from(new Set([...current, ...taskIds]))
+      localStorage.setItem(storageKey, JSON.stringify(next))
+      return next
+    })
+  }
+
+  function markSupplyNotificationsSeen(supplyIds: string[]) {
+    if (!user?.id || supplyIds.length === 0) {
+      return
+    }
+
+    const storageKey = getSupplyNotificationStorageKey(user.id)
+    setSeenCreatedSupplyIds((current) => {
+      const next = Array.from(new Set([...current, ...supplyIds]))
       localStorage.setItem(storageKey, JSON.stringify(next))
       return next
     })
@@ -2604,7 +2807,7 @@ function App() {
 
   function markVisibleNotificationsSeen() {
     markTaskNotificationsSeen('new', unseenNewProductionTasks.map((task) => task.id))
-    markTaskNotificationsSeen('in-progress', unseenInProgressProductionTasks.map((task) => task.id))
+    markSupplyNotificationsSeen(unseenCreatedSupplies.map((supply) => supply.id))
     chatThreads
       .filter((item) => (item.unreadCount ?? 0) > 0)
       .forEach((item) => markChatNotificationsSeen(item.type, item.id))
@@ -2623,9 +2826,25 @@ function App() {
     }
 
     const data: ProductionTask[] = await response.json()
-    const newTasks = data.filter((task) => task.status === 'New')
+    const newTasks = data.filter((task) => task.status === 'New' && !task.isArchived)
     const previousTaskIds = knownNewTaskIdsRef.current
     const nextTaskIds = new Set(newTasks.map((task) => task.id))
+    const reopenedTaskIds = data
+      .filter(
+        (task) =>
+          task.status === 'New' &&
+          !task.isArchived &&
+          productionTaskStatusRef.current[task.id] === 'Completed',
+      )
+      .map((task) => task.id)
+
+    if (reopenedTaskIds.length > 0 && user?.id) {
+      setSeenNewTaskNotificationIds((current) => {
+        const next = current.filter((id) => !reopenedTaskIds.includes(id))
+        localStorage.setItem(getTaskNotificationStorageKey(user.id, 'new'), JSON.stringify(next))
+        return next
+      })
+    }
 
     if (previousTaskIds) {
       const arrivedTasks = newTasks.filter((task) => !previousTaskIds.has(task.id))
@@ -2640,22 +2859,102 @@ function App() {
     }
 
     knownNewTaskIdsRef.current = nextTaskIds
+    productionTaskStatusRef.current = Object.fromEntries(data.map((task) => [task.id, task.status]))
     setProductionTasks(data)
     setTaskStatus(data.length ? `Задач: ${data.length}` : 'Задач пока нет')
   }
 
   function resetTaskForm() {
     setDraftTaskItems([])
+    setDraftNovinkaItems([])
+    setNovinkaProductName('')
+    setNovinkaProductLink('')
     setTaskIsUrgent(false)
     setSelectedTaskProductId('')
     setTaskQuantity('')
     setEditingTaskId(null)
   }
 
+  async function convertNovinkaToOzon() {
+    const sourceNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === editorNovinkaOfferId)
+    const targetOzonProductId = Number(editorOzonProductId)
+
+    if (!sourceNovinka) {
+      setProductEditorStatus('Выберите новинку из списка.')
+      return
+    }
+
+    if (!Number.isFinite(targetOzonProductId) || targetOzonProductId <= 0) {
+      setProductEditorStatus('Выберите товар Ozon из списка.')
+      return
+    }
+
+    setProductEditorSaving(true)
+    setProductEditorStatus('')
+
+    try {
+      const response = await fetch('/api/production/catalog/convert-to-ozon', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sourceOfferId: sourceNovinka.offerId,
+          sourceProductName: sourceNovinka.productName,
+          sourceProductLink: sourceNovinka.productLink,
+          targetOzonProductId,
+        }),
+      })
+
+      if (!response.ok) {
+        const message = await response.text()
+        setProductEditorStatus(message || 'Не удалось изменить тип товара.')
+        return
+      }
+
+      const result = (await response.json()) as {
+        updatedFileCount: number
+        offerId: string
+        productName: string
+        productUrl: string
+      }
+
+      await loadProductionFiles(productionSearch)
+      setEditorNovinkaOfferId('')
+      setEditorOzonProductId('')
+      setProductionCatalogTab('ozon')
+      setProductEditorStatus(
+        `Тип изменён на Ozon: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`,
+      )
+    } finally {
+      setProductEditorSaving(false)
+    }
+  }
+
+  function addDraftNovinkaItem() {
+    const productName = novinkaProductName.trim()
+    const productLink = novinkaProductLink.trim()
+
+    if (!productName || !productLink) {
+      setTaskStatus('Укажите наименование и ссылку на товар')
+      return
+    }
+
+    setDraftNovinkaItems((current) => [
+      ...current,
+      { tempId: createTempId(), productName, productLink },
+    ])
+    setNovinkaProductName('')
+    setNovinkaProductLink('')
+    setTaskStatus('Новинка добавлена в задачу')
+  }
+
   function openCreateTaskModal() {
     resetTaskForm()
+    setTaskFormStatus('')
     setShowCreateTaskModal(true)
-    if (ozonProducts.length === 0) {
+    if (taskSourceSubTab === 'ozon' && ozonProducts.length === 0) {
       void loadOzonProducts()
     }
     void loadSupplies()
@@ -2663,6 +2962,7 @@ function App() {
 
   function closeTaskFormModal() {
     setShowCreateTaskModal(false)
+    setTaskFormStatus('')
     resetTaskForm()
   }
 
@@ -2673,17 +2973,31 @@ function App() {
 
     setEditingTaskId(task.id)
     setTaskIsUrgent(task.isUrgent)
-    setDraftTaskItems(
-      getProductionTaskItems(task).map((item) => ({
-        tempId: createTempId(),
-        ozonProductId: item.ozonProductId,
-        offerId: item.offerId,
-        productName: item.productName,
-        imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
-        requiredQuantity: item.requiredQuantity,
-        enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
-      })),
-    )
+    if (isNovinkaTask(task)) {
+      setTaskSourceSubTab('novinka')
+      setDraftNovinkaItems(
+        getProductionTaskItems(task).map((item) => ({
+          tempId: createTempId(),
+          productName: item.productName,
+          productLink: item.productLink ?? '',
+        })),
+      )
+      setDraftTaskItems([])
+    } else {
+      setTaskSourceSubTab('ozon')
+      setDraftTaskItems(
+        getProductionTaskItems(task).map((item) => ({
+          tempId: createTempId(),
+          ozonProductId: item.ozonProductId,
+          offerId: item.offerId,
+          productName: item.productName,
+          imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
+          requiredQuantity: item.requiredQuantity,
+          enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+        })),
+      )
+      setDraftNovinkaItems([])
+    }
     setSelectedTaskProductId('')
     setTaskQuantity('')
     setShowCreateTaskModal(true)
@@ -2717,43 +3031,100 @@ function App() {
   }
 
   async function saveTaskFromDraft() {
-    if (draftTaskItems.length === 0) {
-      setTaskStatus('Добавьте хотя бы один товар')
+    const isNovinka = taskSourceSubTab === 'novinka'
+    let novinkaItems = [...draftNovinkaItems]
+    let ozonItems = [...draftTaskItems]
+
+    if (isNovinka) {
+      const productName = novinkaProductName.trim()
+      const productLink = novinkaProductLink.trim()
+      if (productName && productLink) {
+        novinkaItems = [...novinkaItems, { tempId: createTempId(), productName, productLink }]
+      }
+    } else {
+      const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
+      const quantity = Number(taskQuantity)
+      if (product && Number.isFinite(quantity) && quantity > 0) {
+        ozonItems = [
+          ...ozonItems,
+          {
+            tempId: createTempId(),
+            ozonProductId: product.productId,
+            offerId: product.offerId,
+            productName: product.name,
+            imageUrl: product.imageUrl,
+            requiredQuantity: quantity,
+            enforceMinimumQuantity: false,
+          },
+        ]
+      }
+    }
+
+    const draftItems = isNovinka ? novinkaItems : ozonItems
+
+    if (draftItems.length === 0) {
+      setTaskFormStatus(
+        isNovinka
+          ? 'Добавьте новинку или заполните наименование и ссылку'
+          : 'Добавьте товар или выберите товар и укажите количество',
+      )
       return
     }
 
-    const payload = {
-      isUrgent: taskIsUrgent,
-      items: draftTaskItems.map((item) => ({
-        ozonProductId: item.ozonProductId,
-        offerId: item.offerId,
-        productName: item.productName,
-        requiredQuantity: item.requiredQuantity,
-        enforceMinimumQuantity: item.enforceMinimumQuantity,
-      })),
-    }
+    setTaskFormSaving(true)
+    setTaskFormStatus('')
 
-    const response = await fetch(
-      editingTaskId ? `/api/production/tasks/${editingTaskId}` : '/api/production/tasks',
-      {
-        method: editingTaskId ? 'PUT' : 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+    const payload = isNovinka
+      ? {
+          taskType: 'Novinka',
+          isUrgent: taskIsUrgent,
+          items: novinkaItems.map((item) => ({
+            ozonProductId: 0,
+            offerId: '',
+            productName: item.productName,
+            productLink: item.productLink,
+            requiredQuantity: 0,
+            enforceMinimumQuantity: false,
+          })),
+        }
+      : {
+          taskType: 'Ozon',
+          isUrgent: taskIsUrgent,
+          items: ozonItems.map((item) => ({
+            ozonProductId: item.ozonProductId,
+            offerId: item.offerId,
+            productName: item.productName,
+            requiredQuantity: item.requiredQuantity,
+            enforceMinimumQuantity: item.enforceMinimumQuantity,
+          })),
+        }
+
+    try {
+      const response = await fetch(
+        editingTaskId ? `/api/production/tasks/${editingTaskId}` : '/api/production/tasks',
+        {
+          method: editingTaskId ? 'PUT' : 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-      },
-    )
+      )
 
-    if (!response.ok) {
-      setTaskStatus(editingTaskId ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу')
-      return
+      if (!response.ok) {
+        const message = await response.text()
+        setTaskFormStatus(message || (editingTaskId ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу'))
+        return
+      }
+
+      const wasEdit = Boolean(editingTaskId)
+      closeTaskFormModal()
+      setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
+      await loadProductionTasks()
+    } finally {
+      setTaskFormSaving(false)
     }
-
-    const wasEdit = Boolean(editingTaskId)
-    closeTaskFormModal()
-    setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
-    await loadProductionTasks()
   }
 
   async function startProductionTask(id: string) {
@@ -2807,6 +3178,37 @@ function App() {
   async function completeProductionTask(id: string) {
     const task = productionTasks.find((item) => item.id === id)
     const taskItems = task ? getProductionTaskItems(task) : []
+
+    if (task && isNovinkaTask(task)) {
+      const missingFiles = taskItems.filter(
+        (item) => getProductionFilesForTaskItem(item, productionFiles).length === 0,
+      )
+      if (missingFiles.length > 0) {
+        setTaskStatus(`Добавьте файлы: ${missingFiles.map((item) => item.productName).join(', ')}`)
+        return
+      }
+
+      const response = await fetch(`/api/production/tasks/${id}/complete`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ actualQuantity: 0, items: [] }),
+      })
+
+      if (!response.ok) {
+        const message = await response.text()
+        setTaskStatus(message || 'Не удалось завершить задачу')
+        return
+      }
+
+      setTaskStatus('Задача выполнена')
+      await loadProductionTasks()
+      await loadProductionFiles(productionSearch)
+      return
+    }
+
     const completedItems = taskItems.map((item) => ({
       id: item.id,
       actualQuantity: Number(actualQuantities[item.id]),
@@ -2925,6 +3327,25 @@ function App() {
     }
 
     const data: Supply[] = await response.json()
+    const activeSuppliesList = data.filter((supply) => !supply.isArchived)
+    const previousSupplyIds = knownNewSupplyIdsRef.current
+    const nextSupplyIds = new Set(activeSuppliesList.map((supply) => supply.id))
+
+    if (previousSupplyIds) {
+      const arrivedSupplies = activeSuppliesList.filter(
+        (supply) => !previousSupplyIds.has(supply.id) && supply.status === 'Created',
+      )
+      if (arrivedSupplies.length > 0) {
+        showBrowserNotification(
+          'Новая поставка',
+          arrivedSupplies.length === 1
+            ? getSupplyNotificationSummary(arrivedSupplies[0])
+            : `Новых поставок: ${arrivedSupplies.length}`,
+        )
+      }
+    }
+
+    knownNewSupplyIdsRef.current = nextSupplyIds
     setSupplies(data)
     setSupplyStatus(data.length ? `Поставок: ${data.length}` : 'Поставок пока нет')
   }
@@ -2973,9 +3394,10 @@ function App() {
 
   function addReserveSupplyProduct() {
     const quantity = Number(reserveQuantity)
+    const selectedNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
 
-    if (!reserveProductName.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Укажите название нового товара и количество')
+    if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
+      setSupplyStatus('Выберите новинку из списка и укажите количество')
       return
     }
 
@@ -2983,15 +3405,15 @@ function App() {
       ...current,
       {
         tempId: createTempId(),
-        offerId: '',
-        productName: reserveProductName.trim(),
+        offerId: selectedNovinka.offerId,
+        productName: selectedNovinka.productName,
         quantity,
         isReserve: true,
       },
     ])
-    setReserveProductName('')
+    setSelectedNovinkaOfferId('')
     setReserveQuantity('')
-    setSupplyStatus('Новый товар добавлен')
+    setSupplyStatus('Новинка добавлена в поставку')
   }
 
   async function createSupply() {
@@ -3164,7 +3586,7 @@ function App() {
     )
     setEditSupplyProductId('')
     setEditSupplyQuantity('')
-    setEditReserveProductName('')
+    setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
   }
 
@@ -3173,7 +3595,7 @@ function App() {
     setEditSupplyItems([])
     setEditSupplyProductId('')
     setEditSupplyQuantity('')
-    setEditReserveProductName('')
+    setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
   }
 
@@ -3204,9 +3626,10 @@ function App() {
 
   function addEditReserveSupplyProduct() {
     const quantity = Number(editReserveQuantity)
+    const selectedNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
 
-    if (!editReserveProductName.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Укажите название нового товара и количество')
+    if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
+      setSupplyStatus('Выберите новинку из списка и укажите количество')
       return
     }
 
@@ -3214,13 +3637,13 @@ function App() {
       ...current,
       {
         tempId: createTempId(),
-        offerId: '',
-        productName: editReserveProductName.trim(),
+        offerId: selectedNovinka.offerId,
+        productName: selectedNovinka.productName,
         quantity,
         isReserve: true,
       },
     ])
-    setEditReserveProductName('')
+    setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
   }
 
@@ -3341,6 +3764,9 @@ function App() {
                 {tab.id === 'production' && productionNotificationTotal > 0 && (
                   <span className="tab-badge">{productionNotificationTotal}</span>
                 )}
+                {tab.id === 'supplies' && supplyNotificationTotal > 0 && (
+                  <span className="tab-badge">{supplyNotificationTotal}</span>
+                )}
                 {tab.id === 'chats' && chatUnreadTotal > 0 && (
                   <span className="tab-badge">{chatUnreadTotal}</span>
                 )}
@@ -3382,13 +3808,13 @@ function App() {
                         markChatNotificationsSeen(item.chatType, item.chatId)
                         setActiveTab('chats')
                       } else if (item.target === 'tasks') {
-                        markTaskNotificationsSeen('new', allNewProductionTasks.map((task) => task.id))
+                        markTaskNotificationsSeen('new', [item.taskId])
                         setActiveTab('production')
                         setProductionSubTab('tasks')
-                      } else {
-                        markTaskNotificationsSeen('in-progress', allInProgressProductionTasks.map((task) => task.id))
-                        setActiveTab('production')
-                        setProductionSubTab(item.target)
+                      } else if (item.target === 'supplies-all') {
+                        markSupplyNotificationsSeen([item.supplyId])
+                        setActiveTab('supplies')
+                        setSupplySubTab('all')
                       }
                     }}
                   >
@@ -3405,7 +3831,7 @@ function App() {
             {user?.position && <small>{user.position}</small>}
           </span>
           <button type="button" className="profile-button" onClick={() => user && openUserProfile(user)}>
-            {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : 'Профиль'}
+            {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>фото</span>}
           </button>
           <button type="button" className="logout-button" onClick={confirmLogout}>
             Выйти
@@ -3432,8 +3858,10 @@ function App() {
         <ProductionFilesModal
           productName={productionFilesModal.productName}
           files={productionFilesModal.files}
+          token={token}
           onClose={() => setProductionFilesModal(null)}
           onDownload={downloadProductionFile}
+          onDelete={deleteProductionFile}
         />
       )}
 
@@ -3556,6 +3984,20 @@ function App() {
                         <span>Комиссия Ozon</span>
                         <strong>
                           {homeAnalytics ? formatLossMoney(homeAnalytics.commissionTotal, 'KZT') : '—'}
+                        </strong>
+                      </div>
+                      <div className="home-metric home-metric-loss">
+                        <span>Логистика</span>
+                        <strong>
+                          {homeAnalytics ? formatLossMoney(homeAnalytics.logisticsTotal, 'KZT') : '—'}
+                        </strong>
+                      </div>
+                      <div className="home-metric home-metric-loss">
+                        <span>Логистика отменённых</span>
+                        <strong>
+                          {homeAnalytics
+                            ? formatLossMoney(homeAnalytics.cancelledLogisticsTotal, 'KZT')
+                            : '—'}
                         </strong>
                       </div>
                     </div>
@@ -3782,9 +4224,7 @@ function App() {
                   hidden={!hasSubFeature('production.tasks', 'production')}
                 >
                   Задачи
-                  {unseenNewProductionTasks.length > 0 && (
-                    <span className="tab-badge">{unseenNewProductionTasks.length}</span>
-                  )}
+                  {renderTabBadge(unseenNewProductionTasks.length || allNewProductionTasks.length)}
                 </button>
                 <button
                   type="button"
@@ -3796,22 +4236,31 @@ function App() {
                   hidden={!hasSubFeature('production.inProgress', 'production')}
                 >
                   В работе
+                  {renderTabBadge(unseenInProgressProductionTasks.length || allInProgressProductionTasks.length)}
                 </button>
                 <button
                   type="button"
                   className={productionSubTab === 'cancelled' ? 'active' : ''}
-                  onClick={() => setProductionSubTab('cancelled')}
+                  onClick={() => {
+                    markTaskNotificationsSeen('cancelled', allCancelledProductionTasks.map((task) => task.id))
+                    setProductionSubTab('cancelled')
+                  }}
                   hidden={!hasSubFeature('production.cancelled', 'production')}
                 >
                   Отменённые
+                  {renderTabBadge(unseenCancelledProductionTasks.length || allCancelledProductionTasks.length)}
                 </button>
                 <button
                   type="button"
                   className={productionSubTab === 'completed' ? 'active' : ''}
-                  onClick={() => setProductionSubTab('completed')}
+                  onClick={() => {
+                    markTaskNotificationsSeen('completed', allCompletedProductionTasks.map((task) => task.id))
+                    setProductionSubTab('completed')
+                  }}
                   hidden={!hasSubFeature('production.completed', 'production')}
                 >
                   Выполненные
+                  {renderTabBadge(unseenCompletedProductionTasks.length || allCompletedProductionTasks.length)}
                 </button>
               </div>
 
@@ -3839,71 +4288,179 @@ function App() {
                 </div>
               )}
 
+              {(productionSubTab === 'inProgress' ||
+                productionSubTab === 'cancelled' ||
+                productionSubTab === 'completed') && (
+                <ProductionTaskTypeFilterTabs
+                  value={productionTaskTypeFilter}
+                  onChange={setProductionTaskTypeFilter}
+                  counts={
+                    productionSubTab === 'inProgress'
+                      ? {
+                          all: allInProgressProductionTasks.length,
+                          allUnseen: unseenInProgressProductionTasks.length,
+                          ozon: allInProgressProductionTasks.filter((task) => !isNovinkaTask(task)).length,
+                          ozonUnseen: unseenInProgressOzonTasks.length,
+                          novinka: allInProgressProductionTasks.filter((task) => isNovinkaTask(task)).length,
+                          novinkaUnseen: unseenInProgressNovinkaTasks.length,
+                        }
+                      : productionSubTab === 'cancelled'
+                        ? {
+                            all: allCancelledProductionTasks.length,
+                            allUnseen: unseenCancelledProductionTasks.length,
+                            ozon: allCancelledProductionTasks.filter((task) => !isNovinkaTask(task)).length,
+                            ozonUnseen: unseenCancelledOzonTasks.length,
+                            novinka: allCancelledProductionTasks.filter((task) => isNovinkaTask(task)).length,
+                            novinkaUnseen: unseenCancelledNovinkaTasks.length,
+                          }
+                        : {
+                            all: allCompletedProductionTasks.length,
+                            allUnseen: unseenCompletedProductionTasks.length,
+                            ozon: allCompletedProductionTasks.filter((task) => !isNovinkaTask(task)).length,
+                            ozonUnseen: unseenCompletedOzonTasks.length,
+                            novinka: allCompletedProductionTasks.filter((task) => isNovinkaTask(task)).length,
+                            novinkaUnseen: unseenCompletedNovinkaTasks.length,
+                          }
+                  }
+                />
+              )}
+
               {productionSubTab === 'products' && (
                 <>
                   <div className="production-tools">
-                    <form
-                      className="search-form"
-                      onSubmit={(event) => {
-                        event.preventDefault()
-                        loadProductionFiles(productionSearch)
-                      }}
-                    >
-                      <input
-                        placeholder="Поиск по названию или артикулу"
-                        value={productionSearch}
-                        onChange={(event) => setProductionSearch(event.target.value)}
-                      />
-                      <button type="submit">Найти файлы</button>
-                    </form>
+                    <div className="inner-tabs production-catalog-tabs">
+                      <button
+                        type="button"
+                        className={productionCatalogTab === 'ozon' ? 'active' : ''}
+                        onClick={() => {
+                          setProductionCatalogTab('ozon')
+                          setProductEditorStatus('')
+                        }}
+                      >
+                        Товары на Ozon
+                      </button>
+                      <button
+                        type="button"
+                        className={productionCatalogTab === 'novinka' ? 'active' : ''}
+                        onClick={() => {
+                          setProductionCatalogTab('novinka')
+                          setProductEditorStatus('')
+                        }}
+                      >
+                        Новинки
+                      </button>
+                      <button
+                        type="button"
+                        className={productionCatalogTab === 'editor' ? 'active' : ''}
+                        onClick={() => {
+                          setProductionCatalogTab('editor')
+                          setProductEditorStatus('')
+                          if (ozonProducts.length === 0) {
+                            void loadOzonProducts()
+                          }
+                        }}
+                      >
+                        Редактор товаров
+                      </button>
+                    </div>
+                    {productionCatalogTab !== 'editor' && (
+                      <form
+                        className="search-form"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          if (productionCatalogTab === 'novinka') {
+                            void loadProductionFiles(productionSearch)
+                          } else {
+                            void loadOzonProducts()
+                          }
+                        }}
+                      >
+                        <input
+                          placeholder="Поиск по названию, артикулу или ссылке"
+                          value={productionSearch}
+                          onChange={(event) => setProductionSearch(event.target.value)}
+                        />
+                        <button type="submit">Найти</button>
+                      </form>
+                    )}
                   </div>
 
+                  {productionCatalogTab === 'editor' ? (
+                    <ProductTypeEditorPanel
+                      token={token}
+                      novinkaProducts={novinkaProductionCatalogItems}
+                      ozonProducts={ozonProducts}
+                      selectedNovinkaOfferId={editorNovinkaOfferId}
+                      selectedOzonProductId={editorOzonProductId}
+                      onNovinkaOfferIdChange={setEditorNovinkaOfferId}
+                      onOzonProductIdChange={setEditorOzonProductId}
+                      selectedNovinka={editorSelectedNovinka}
+                      selectedOzon={editorSelectedOzon}
+                      status={productEditorStatus}
+                      saving={productEditorSaving}
+                      onConvert={() => void convertNovinkaToOzon()}
+                      onLoadOzonProducts={() => void loadOzonProducts()}
+                    />
+                  ) : (
+                    <>
                   <div className="section-title soft-title">
-                    <h2>Товары на Ozon</h2>
-                    <p>Ссылки, названия и артикулы</p>
+                    <h2>{productionCatalogTab === 'ozon' ? 'Товары на Ozon' : 'Новинки'}</h2>
+                    <p>
+                      {productionCatalogTab === 'ozon'
+                        ? `Все товары Ozon · ${filteredProductionCatalog.length}`
+                        : `Новинки с файлами · ${filteredProductionCatalog.length}`}
+                    </p>
                   </div>
 
                   <div className="data-table">
-                <div className="table-row production-product-row table-head">
-                  <span>Товар</span>
-                  <span>Артикул</span>
-                  <span>Файлы</span>
-                  <span>Действия</span>
-                </div>
-                    {filteredOzonProducts.map((item) => {
-                      const isSelected = selectedProductionProductId === item.productId
-                      const itemFiles = productionFiles.filter(
-                        (file) =>
-                          file.offerId === item.offerId || file.ozonProductId === item.productId,
+                    <div className="table-row production-product-row table-head">
+                      <span>Товар</span>
+                      <span>{productionCatalogTab === 'ozon' ? 'Артикул' : 'Ссылка'}</span>
+                      <span>Файлы</span>
+                      <span>Действия</span>
+                    </div>
+                    {filteredProductionCatalog.map((item) => {
+                      const ozonProduct = ozonProducts.find(
+                        (product) =>
+                          product.productId === item.ozonProductId ||
+                          product.offerId === item.offerId,
                       )
+                      const itemFiles = getProductionFilesForCatalogItem(item, productionFiles)
+                      const catalogKey = item.offerId || item.productName
 
                       return (
-                        <div className="product-row-group" key={item.productId}>
-                          <div
-                            className={`table-row production-product-row ${
-                              isSelected ? 'selected-row' : ''
-                            }`}
-                          >
+                        <div className="product-row-group" key={catalogKey}>
+                          <div className="table-row production-product-row">
                             <span className="unsold-product-name">
-                              {item.imageUrl ? (
-                                <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
-                                  <ProductThumb imageUrl={item.imageUrl} name={item.name} />
+                              {ozonProduct?.imageUrl ? (
+                                <ProductImageHoverPreview imageUrl={ozonProduct.imageUrl} name={item.productName}>
+                                  <ProductThumb imageUrl={ozonProduct.imageUrl} name={item.productName} />
                                 </ProductImageHoverPreview>
                               ) : (
-                                <ProductThumb name={item.name} />
+                                <ProductThumb name={item.productName} />
                               )}
                               <span>
-                                <strong>{item.name}</strong>
-                                <small>{item.status}</small>
+                                <strong>{item.productName}</strong>
+                                <small>{productionCatalogTab === 'ozon' ? 'Ozon' : 'Новинка'}</small>
                               </span>
                             </span>
-                            <span>{item.offerId}</span>
+                            <span>
+                              {productionCatalogTab === 'ozon' ? (
+                                item.offerId || '-'
+                              ) : item.productLink ? (
+                                <a href={item.productLink} target="_blank" rel="noreferrer">
+                                  Открыть ссылку
+                                </a>
+                              ) : (
+                                '-'
+                              )}
+                            </span>
                             <span>
                               {itemFiles.length > 0 ? (
                                 <button
                                   type="button"
                                   className="production-files-trigger"
-                                  onClick={() => openProductionFilesModal(item.name, itemFiles)}
+                                  onClick={() => openProductionFilesModal(item.productName, itemFiles)}
                                 >
                                   Файлы ({itemFiles.length})
                                 </button>
@@ -3912,46 +4469,75 @@ function App() {
                               )}
                             </span>
                             <span>
-                              {item.productUrl ? (
-                                <a href={item.productUrl} target="_blank" rel="noreferrer">
-                                  Открыть
+                              {productionCatalogTab === 'ozon' && ozonProduct?.productUrl ? (
+                                <a href={ozonProduct.productUrl} target="_blank" rel="noreferrer">
+                                  Ozon
+                                </a>
+                              ) : productionCatalogTab === 'novinka' && item.productLink ? (
+                                <a href={item.productLink} target="_blank" rel="noreferrer">
+                                  Товар
                                 </a>
                               ) : (
                                 '-'
                               )}
                             </span>
-                            <span className="row-actions">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSelectedProductionProductId(isSelected ? null : item.productId)
-                                }
-                              >
-                                {isSelected ? 'Скрыть' : 'Выбрать'}
-                              </button>
-                            </span>
                           </div>
-
-                          {isSelected && (
-                            <ProductDetail
-                              product={item}
-                              files={itemFiles}
-                              userRole={user?.role}
-                              onUpload={uploadProductionFile}
-                              onFileChange={setUploadFile}
-                              onDownload={downloadProductionFile}
-                              onDelete={deleteProductionFile}
-                            />
-                          )}
                         </div>
                       )
                     })}
+                    {filteredProductionCatalog.length === 0 && (
+                      <div className="empty-state">
+                        <strong>
+                          {productionCatalogTab === 'ozon'
+                            ? 'Товары Ozon пока не загружены.'
+                            : 'Пока нет новинок с файлами для производства.'}
+                        </strong>
+                      </div>
+                    )}
                   </div>
+                    </>
+                  )}
                 </>
               )}
 
               {productionSubTab === 'tasks' && (
                 <>
+                  <div className="inner-tabs production-task-source-tabs">
+                    <button
+                      type="button"
+                      className={taskSourceSubTab === 'ozon' ? 'active' : ''}
+                      onClick={() => {
+                        markTaskNotificationsSeen(
+                          'new',
+                          allNewProductionTasks.filter((task) => !isNovinkaTask(task)).map((task) => task.id),
+                        )
+                        setTaskSourceSubTab('ozon')
+                      }}
+                    >
+                      Ozon
+                      {renderTabBadge(
+                        unseenNewOzonTasks.length ||
+                          allNewProductionTasks.filter((task) => !isNovinkaTask(task)).length,
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className={taskSourceSubTab === 'novinka' ? 'active' : ''}
+                      onClick={() => {
+                        markTaskNotificationsSeen(
+                          'new',
+                          allNewProductionTasks.filter((task) => isNovinkaTask(task)).map((task) => task.id),
+                        )
+                        setTaskSourceSubTab('novinka')
+                      }}
+                    >
+                      Новинки
+                      {renderTabBadge(
+                        unseenNewNovinkaTasks.length ||
+                          allNewProductionTasks.filter((task) => isNovinkaTask(task)).length,
+                      )}
+                    </button>
+                  </div>
                   {user?.role === 'Admin' && hasSubFeature('production.createTask', 'production') && (
                     <div className="supply-create-bar">
                       <button type="button" onClick={openCreateTaskModal}>
@@ -3971,58 +4557,103 @@ function App() {
                         </div>
 
                         <div className="task-form task-form-modal">
-                          <ProductSearchInput
-                            listId="task-products"
-                            products={ozonProducts}
-                            selectedProductId={selectedTaskProductId}
-                            onProductIdChange={setSelectedTaskProductId}
-                            placeholder="Начните писать название или артикул"
-                            hideInlinePreview
-                            showClearButton
-                          />
-                          <div className="task-form-modal-compose">
-                            {(() => {
-                              const selectedTaskProduct = ozonProducts.find(
-                                (item) => String(item.productId) === selectedTaskProductId,
-                              )
-                              const supplyHint = selectedTaskProduct
-                                ? formatProductSupplyHint(
-                                    getProductSupplySummary(
-                                      selectedTaskProduct.productId,
-                                      selectedTaskProduct.offerId,
-                                      supplies,
-                                    ),
-                                  )
-                                : ''
-
-                              return selectedTaskProduct ? (
-                                <div className="task-form-modal-preview-wrap">
-                                  <TaskProductPreview product={selectedTaskProduct} />
-                                  {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
-                                </div>
-                              ) : (
-                                <div className="task-form-modal-preview task-form-modal-preview-empty">
-                                  <span>Выберите товар для превью</span>
-                                </div>
-                              )
-                            })()}
-                            <div className="task-form-modal-actions">
-                              <input
-                                className="task-quantity-input task-form-modal-qty"
-                                type="number"
-                                min="1"
-                                placeholder="Кол-во"
-                                value={taskQuantity}
-                                onChange={(event) => setTaskQuantity(event.target.value)}
+                          {taskSourceSubTab === 'ozon' ? (
+                            <>
+                              <ProductSearchInput
+                                listId="task-products"
+                                products={ozonProducts}
+                                selectedProductId={selectedTaskProductId}
+                                onProductIdChange={setSelectedTaskProductId}
+                                placeholder="Начните писать название или артикул"
+                                hideInlinePreview
+                                showClearButton
                               />
-                              <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
-                                Добавить
-                              </button>
+                              <div className="task-form-modal-compose">
+                                {(() => {
+                                  const selectedTaskProduct = ozonProducts.find(
+                                    (item) => String(item.productId) === selectedTaskProductId,
+                                  )
+                                  const supplyHint = selectedTaskProduct
+                                    ? formatProductSupplyHint(
+                                        getProductSupplySummary(
+                                          selectedTaskProduct.productId,
+                                          selectedTaskProduct.offerId,
+                                          supplies,
+                                        ),
+                                      )
+                                    : ''
+
+                                  return selectedTaskProduct ? (
+                                    <div className="task-form-modal-preview-wrap">
+                                      <TaskProductPreview product={selectedTaskProduct} />
+                                      {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
+                                    </div>
+                                  ) : (
+                                    <div className="task-form-modal-preview task-form-modal-preview-empty">
+                                      <span>Выберите товар для превью</span>
+                                    </div>
+                                  )
+                                })()}
+                                <div className="task-form-modal-actions">
+                                  <input
+                                    className="task-quantity-input task-form-modal-qty"
+                                    type="number"
+                                    min="1"
+                                    placeholder="Кол-во"
+                                    value={taskQuantity}
+                                    onChange={(event) => setTaskQuantity(event.target.value)}
+                                  />
+                                  <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
+                                    Добавить
+                                  </button>
+                                </div>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="novinka-task-compose">
+                              <div className="novinka-task-fields">
+                                <label className="novinka-task-field">
+                                  <span>Наименование товара</span>
+                                  <input
+                                    className="novinka-task-input"
+                                    placeholder="Введите название"
+                                    value={novinkaProductName}
+                                    onChange={(event) => setNovinkaProductName(event.target.value)}
+                                  />
+                                </label>
+                                <label className="novinka-task-field">
+                                  <span>Ссылка на товар</span>
+                                  <input
+                                    className="novinka-task-input"
+                                    placeholder="https://..."
+                                    value={novinkaProductLink}
+                                    onChange={(event) => setNovinkaProductLink(event.target.value)}
+                                  />
+                                </label>
+                              </div>
+                              <div className="novinka-task-compose-actions">
+                                {novinkaProductLink.trim() && (
+                                  <LinkHoverPreview
+                                    url={novinkaProductLink}
+                                    name={novinkaProductName || 'Новинка'}
+                                    token={token}
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  className="task-form-modal-btn novinka-add-btn"
+                                  onClick={addDraftNovinkaItem}
+                                >
+                                  Добавить
+                                </button>
+                              </div>
                             </div>
-                          </div>
+                          )}
                         </div>
 
                         <div className="data-table modal-table">
+                          {taskSourceSubTab === 'ozon' ? (
+                            <>
                           <div className="table-row task-draft-row table-head">
                             <span>Товар</span>
                             <span>Артикул</span>
@@ -4106,11 +4737,61 @@ function App() {
                               <strong>Добавьте товары в задачу.</strong>
                             </div>
                           )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="table-row task-draft-row novinka-draft-row table-head">
+                                <span>Товар</span>
+                                <span>Ссылка</span>
+                                <span></span>
+                              </div>
+                              {draftNovinkaItems.map((item) => (
+                                <div className="table-row task-draft-row novinka-draft-row" key={item.tempId}>
+                                  <span className="product-mini task-draft-product-mini">
+                                    <LinkHoverPreview
+                                      url={item.productLink}
+                                      name={item.productName}
+                                      token={token}
+                                    />
+                                    <span>
+                                      <strong>{item.productName}</strong>
+                                    </span>
+                                  </span>
+                                  <span>
+                                    <NovinkaExternalLinkButton url={item.productLink} />
+                                  </span>
+                                  <span>
+                                    <button
+                                      type="button"
+                                      className="danger"
+                                      onClick={() =>
+                                        setDraftNovinkaItems((current) =>
+                                          current.filter((entry) => entry.tempId !== item.tempId),
+                                        )
+                                      }
+                                    >
+                                      Убрать
+                                    </button>
+                                  </span>
+                                </div>
+                              ))}
+                              {draftNovinkaItems.length === 0 && (
+                                <div className="empty-state">
+                                  <strong>Добавьте новинки в задачу.</strong>
+                                </div>
+                              )}
+                            </>
+                          )}
                         </div>
 
                         <div className="supply-actions task-form-modal-footer">
-                          <button type="button" onClick={saveTaskFromDraft}>
-                            {editingTaskId ? 'Сохранить' : 'Создать'}
+                          {taskFormStatus && <p className="modal-status">{taskFormStatus}</p>}
+                          <button
+                            type="button"
+                            disabled={taskFormSaving}
+                            onClick={() => void saveTaskFromDraft()}
+                          >
+                            {taskFormSaving ? 'Сохранение...' : editingTaskId ? 'Сохранить' : 'Создать'}
                           </button>
                           <label className="task-urgent-toggle">
                             <input
@@ -4126,9 +4807,10 @@ function App() {
                   )}
 
                   <ProductionTaskTable
-                    tasks={filteredNewProductionTasks}
+                    tasks={filteredNewTasksBySource}
                     products={ozonProducts}
                     productionFiles={productionFiles}
+                    token={token}
                     actualQuantities={actualQuantities}
                     setActualQuantities={setActualQuantities}
                     currentUserId={user?.id}
@@ -4137,6 +4819,8 @@ function App() {
                     onCancelRequest={setCancelTaskId}
                     onComplete={completeProductionTask}
                     onOpenFiles={openProductionFilesModal}
+                    onUploadTaskItemFile={uploadProductionFileForTaskItem}
+                    onDeleteFile={deleteProductionFile}
                     onEdit={user?.role === 'Admin' ? openEditTaskModal : undefined}
                   />
                 </>
@@ -4144,9 +4828,10 @@ function App() {
 
               {productionSubTab === 'inProgress' && (
                 <ProductionTaskTable
-                  tasks={inProgressProductionTasks}
+                  tasks={filteredInProgressProductionTasks}
                   products={ozonProducts}
                   productionFiles={productionFiles}
+                  token={token}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   currentUserId={user?.id}
@@ -4155,14 +4840,17 @@ function App() {
                   onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
+                  onUploadTaskItemFile={uploadProductionFileForTaskItem}
+                  onDeleteFile={deleteProductionFile}
                 />
               )}
 
               {productionSubTab === 'cancelled' && (
                 <ProductionTaskTable
-                  tasks={cancelledProductionTasks}
+                  tasks={filteredCancelledProductionTasks}
                   products={ozonProducts}
                   productionFiles={productionFiles}
+                  token={token}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   currentUserId={user?.id}
@@ -4171,6 +4859,8 @@ function App() {
                   onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
+                  onUploadTaskItemFile={uploadProductionFileForTaskItem}
+                  onDeleteFile={deleteProductionFile}
                   onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
                   onRestore={user?.role === 'Admin' ? restoreProductionTask : undefined}
                   cancelled
@@ -4179,8 +4869,12 @@ function App() {
 
               {productionSubTab === 'completed' && (
                 <ProductionTaskArchiveTable
-                  tasks={completedProductionTasks}
+                  tasks={filteredCompletedProductionTasks}
                   products={ozonProducts}
+                  productionFiles={productionFiles}
+                  token={token}
+                  onOpenFiles={openProductionFilesModal}
+                  onDeleteFile={deleteProductionFile}
                   onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
                   emptyText="Выполненных задач пока нет."
                 />
@@ -4206,6 +4900,10 @@ function App() {
                   <ProductionTaskArchiveTable
                     tasks={filteredArchivedProductionTasks}
                     products={ozonProducts}
+                    productionFiles={productionFiles}
+                    token={token}
+                    onOpenFiles={openProductionFilesModal}
+                    onDeleteFile={deleteProductionFile}
                     archiveView
                     onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
                     emptyText="В архиве задач пока нет."
@@ -4222,7 +4920,7 @@ function App() {
                 <p>{isLoading ? 'Загрузка...' : 'Ответ получен от ASP.NET Core'}</p>
               </div>
 
-              <div className="subtabs-placeholder">
+              <div className="subtabs-placeholder products-toolbar">
                 {user?.role === 'Admin' && (
                   <button type="button" onClick={loadOzonProducts}>
                     Обновить товары Ozon
@@ -4236,14 +4934,38 @@ function App() {
                 />
               </div>
 
+              <div className="analytics-status-filters-bar products-status-filters-bar">
+                <div className="analytics-status-filters">
+                  {(
+                    [
+                      ['all', 'Все'],
+                      ['selling', 'Продается'],
+                      ['ready', 'Готов к продаже'],
+                      ['archived', 'Архив'],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      type="button"
+                      key={value}
+                      className={productStatusFilter === value ? 'active' : ''}
+                      onClick={() => setProductStatusFilter(value)}
+                    >
+                      {label}
+                      <small>{productStatusCounts[value] ?? 0}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {ozonStatus && (
                 <div className="ozon-status">
                   <strong>{ozonStatus}</strong>
-                  {ozonProducts && (
-                    <span>
-                      Загружено: {ozonProducts.length}
-                    </span>
-                  )}
+                  <span>
+                    Показано: {filteredCatalogProducts.length}
+                    {productStatusFilter !== 'all' || productSearch.trim()
+                      ? ` из ${ozonProducts.length}`
+                      : ''}
+                  </span>
                 </div>
               )}
 
@@ -4744,15 +5466,20 @@ function App() {
                     hidden={!hasSubFeature('supplies.editor', 'supplies')}
                   >
                     Редактор поставок
+                    {renderTabBadge(createdSupplies.length)}
                   </button>
                 )}
                 <button
                   type="button"
                   className={supplySubTab === 'all' ? 'active' : ''}
-                  onClick={() => setSupplySubTab('all')}
+                  onClick={() => {
+                    markSupplyNotificationsSeen(allActiveSupplies.map((supply) => supply.id))
+                    setSupplySubTab('all')
+                  }}
                   hidden={!hasSubFeature('supplies.all', 'supplies')}
                 >
                   Все поставки
+                  {renderTabBadge(unseenSupplies.length || allActiveSupplies.length)}
                 </button>
                 {user?.role === 'Admin' && (
                   <button
@@ -4762,6 +5489,7 @@ function App() {
                     hidden={!hasSubFeature('supplies.analytics', 'supplies')}
                   >
                     Аналитика поставок
+                    {renderTabBadge(supplyAnalytics.length)}
                   </button>
                 )}
               </div>
@@ -4835,15 +5563,17 @@ function App() {
                     <SupplyItemsModal
                       title="Создать поставку"
                       listIdPrefix="supply-products"
+                      token={token}
                       ozonProducts={ozonProducts}
+                      novinkaProducts={novinkaProductionCatalogItems}
                       items={draftSupplyItems}
                       setItems={setDraftSupplyItems}
                       productId={supplyProductId}
                       setProductId={setSupplyProductId}
                       quantity={supplyQuantity}
                       setQuantity={setSupplyQuantity}
-                      reserveProductName={reserveProductName}
-                      setReserveProductName={setReserveProductName}
+                      selectedNovinkaOfferId={selectedNovinkaOfferId}
+                      setSelectedNovinkaOfferId={setSelectedNovinkaOfferId}
                       reserveQuantity={reserveQuantity}
                       setReserveQuantity={setReserveQuantity}
                       onAddProduct={addSupplyProduct}
@@ -4950,15 +5680,17 @@ function App() {
                 <SupplyItemsModal
                   title="Редактировать поставку"
                   listIdPrefix={`edit-supply-${editingSupplyId}`}
+                  token={token}
                   ozonProducts={ozonProducts}
+                  novinkaProducts={novinkaProductionCatalogItems}
                   items={editSupplyItems}
                   setItems={setEditSupplyItems}
                   productId={editSupplyProductId}
                   setProductId={setEditSupplyProductId}
                   quantity={editSupplyQuantity}
                   setQuantity={setEditSupplyQuantity}
-                  reserveProductName={editReserveProductName}
-                  setReserveProductName={setEditReserveProductName}
+                  selectedNovinkaOfferId={selectedNovinkaOfferId}
+                  setSelectedNovinkaOfferId={setSelectedNovinkaOfferId}
                   reserveQuantity={editReserveQuantity}
                   setReserveQuantity={setEditReserveQuantity}
                   onAddProduct={addEditSupplyProduct}
@@ -5811,8 +6543,23 @@ function getAnalyticsProductImageUrl(
   return undefined
 }
 
-function getTaskNotificationStorageKey(userId: string, kind: 'new' | 'in-progress') {
+function getTaskNotificationStorageKey(
+  userId: string,
+  kind: 'new' | 'in-progress' | 'cancelled' | 'completed',
+) {
   return `lshop:${userId}:seen-production-${kind}-tasks`
+}
+
+function getSupplyNotificationStorageKey(userId: string) {
+  return `lshop:${userId}:seen-supplies`
+}
+
+function renderTabBadge(count: number) {
+  if (count <= 0) {
+    return null
+  }
+
+  return <span className="tab-badge">{count > 99 ? '99+' : count}</span>
 }
 
 function readStringListFromStorage(key: string) {
@@ -6536,6 +7283,285 @@ function formatProductSelectedLabel(product: OzonProduct) {
   return `${product.offerId} | ${name}`
 }
 
+function ProductTypeEditorPanel({
+  token,
+  novinkaProducts,
+  ozonProducts,
+  selectedNovinkaOfferId,
+  selectedOzonProductId,
+  onNovinkaOfferIdChange,
+  onOzonProductIdChange,
+  selectedNovinka,
+  selectedOzon,
+  status,
+  saving,
+  onConvert,
+  onLoadOzonProducts,
+}: {
+  token: string
+  novinkaProducts: ProductionCatalogItem[]
+  ozonProducts: OzonProduct[]
+  selectedNovinkaOfferId: string
+  selectedOzonProductId: string
+  onNovinkaOfferIdChange: (offerId: string) => void
+  onOzonProductIdChange: (productId: string) => void
+  selectedNovinka?: ProductionCatalogItem
+  selectedOzon?: OzonProduct
+  status: string
+  saving: boolean
+  onConvert: () => void
+  onLoadOzonProducts: () => void
+}) {
+  return (
+    <>
+      <div className="section-title soft-title">
+        <h2>Редактор товаров</h2>
+        <p>Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.</p>
+      </div>
+
+      <div className="product-type-editor-layout">
+        <div className="supply-form-block supply-form-block-novinka product-type-editor-block">
+          <strong>Новинка</strong>
+          <span className="product-type-editor-hint">Выберите товар из списка новинок</span>
+          <NovinkaSearchInput
+            listId="product-editor-novinka-list"
+            products={novinkaProducts}
+            selectedOfferId={selectedNovinkaOfferId}
+            onOfferIdChange={onNovinkaOfferIdChange}
+            placeholder="Начните писать название или артикул"
+            showClearButton
+          />
+          <div className="product-type-editor-preview">
+            {selectedNovinka ? (
+              <NovinkaProductPreview item={selectedNovinka} token={token} />
+            ) : (
+              <div className="task-form-modal-preview task-form-modal-preview-empty">
+                <span>Выберите новинку для превью</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="product-type-editor-divider" aria-hidden="true" />
+
+        <div className="supply-form-block supply-form-block-ozon product-type-editor-block">
+          <strong>Товар Ozon</strong>
+          <span className="product-type-editor-hint">Выберите соответствующий товар из каталога Ozon</span>
+          <ProductSearchInput
+            listId="product-editor-ozon-list"
+            products={ozonProducts}
+            selectedProductId={selectedOzonProductId}
+            onProductIdChange={onOzonProductIdChange}
+            placeholder="Начните писать название или артикул"
+            hideInlinePreview
+            showClearButton
+          />
+          <div className="product-type-editor-preview">
+            {selectedOzon ? (
+              <TaskProductPreview product={selectedOzon} />
+            ) : (
+              <div className="task-form-modal-preview task-form-modal-preview-empty">
+                <span>Выберите товар Ozon для превью</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="supply-create-bar product-type-editor-footer">
+        <button
+          type="button"
+          disabled={!selectedNovinka || !selectedOzon || saving}
+          onClick={onConvert}
+        >
+          {saving ? 'Сохранение...' : 'Изменить тип на Ozon'}
+        </button>
+        <button type="button" className="product-type-editor-secondary" onClick={onLoadOzonProducts}>
+          Обновить список Ozon
+        </button>
+        {status && <p className="modal-status">{status}</p>}
+      </div>
+    </>
+  )
+}
+
+function formatNovinkaSelectedLabel(item: ProductionCatalogItem) {
+  const name = item.productName.length > 64 ? `${item.productName.slice(0, 64)}...` : item.productName
+  return `${item.offerId} | ${name}`
+}
+
+function NovinkaSearchInput({
+  listId: _listId,
+  products,
+  selectedOfferId,
+  onOfferIdChange,
+  placeholder,
+  showClearButton = false,
+}: {
+  listId: string
+  products: ProductionCatalogItem[]
+  selectedOfferId: string
+  onOfferIdChange: (offerId: string) => void
+  placeholder: string
+  showClearButton?: boolean
+}) {
+  const selectedProduct = products.find((item) => item.offerId === selectedOfferId)
+  const selectedLabel = selectedProduct ? formatNovinkaSelectedLabel(selectedProduct) : ''
+  const [query, setQuery] = useState(selectedLabel)
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
+  const controlRef = useRef<HTMLDivElement>(null)
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredProducts = normalizedQuery
+    ? products
+        .filter((item) =>
+          [item.productName, item.offerId, item.productLink]
+            .filter(Boolean)
+            .some((value) => value.toLowerCase().includes(normalizedQuery)),
+        )
+        .slice(0, 80)
+    : products.slice(0, 80)
+
+  useEffect(() => {
+    setQuery(selectedLabel)
+  }, [selectedLabel])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+
+    function updateMenuPosition() {
+      const input = controlRef.current?.querySelector('.product-search-input')
+      if (!(input instanceof HTMLInputElement)) {
+        return
+      }
+
+      const rect = input.getBoundingClientRect()
+      setMenuStyle({
+        position: 'fixed',
+        top: `${rect.bottom + 6}px`,
+        left: `${rect.left}px`,
+        width: `${Math.min(rect.width, 680)}px`,
+        zIndex: 2000,
+      })
+    }
+
+    updateMenuPosition()
+    window.addEventListener('resize', updateMenuPosition)
+    window.addEventListener('scroll', updateMenuPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition)
+      window.removeEventListener('scroll', updateMenuPosition, true)
+    }
+  }, [isOpen, query, products.length])
+
+  function selectProduct(item: ProductionCatalogItem) {
+    onOfferIdChange(item.offerId)
+    setQuery(formatNovinkaSelectedLabel(item))
+    setIsOpen(false)
+  }
+
+  function clearSelection() {
+    onOfferIdChange('')
+    setQuery('')
+    setIsOpen(false)
+  }
+
+  return (
+    <div className="product-search-wrap">
+      <div
+        className={`product-search-control-row ${showClearButton && selectedProduct ? 'has-outside-clear' : ''}`}
+      >
+        <div ref={controlRef} className="product-search-control">
+          <input
+            className="product-search-input"
+            placeholder={placeholder}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setIsOpen(true)
+              if (!event.target.value.trim()) {
+                onOfferIdChange('')
+              }
+            }}
+            onFocus={() => setIsOpen(true)}
+            onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
+          />
+          {isOpen && filteredProducts.length > 0 && (
+            <div className="product-search-menu product-search-menu-fixed" id={_listId} style={menuStyle}>
+              {filteredProducts.map((item) => (
+                <button
+                  type="button"
+                  key={item.offerId}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectProduct(item)}
+                >
+                  <ProductThumb name={item.productName} />
+                  <span>
+                    <strong>{item.offerId}</strong>
+                    <small>{item.productName}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {isOpen && filteredProducts.length === 0 && (
+            <div className="product-search-menu product-search-menu-fixed product-search-menu-empty" style={menuStyle}>
+              <span>
+                {products.length === 0
+                  ? 'Список новинок пуст. Завершите задачи по новинкам с файлами.'
+                  : 'По вашему запросу ничего не найдено.'}
+              </span>
+            </div>
+          )}
+        </div>
+        {showClearButton && selectedProduct && (
+          <button
+            type="button"
+            className="product-search-clear-outside"
+            aria-label="Очистить выбор"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={clearSelection}
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NovinkaProductPreview({ item, token }: { item: ProductionCatalogItem; token: string }) {
+  return (
+    <div className="task-form-modal-preview selected-product-card selected-product-card-large">
+      <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
+      <span>
+        <strong>{item.productName}</strong>
+        <small>{item.offerId}</small>
+        {item.productLink && <NovinkaExternalLinkButton url={item.productLink} />}
+      </span>
+    </div>
+  )
+}
+
+function NovinkaExternalLinkButton({ url }: { url: string }) {
+  const normalizedUrl = url.trim()
+  if (!normalizedUrl) {
+    return null
+  }
+
+  return (
+    <button
+      type="button"
+      className="task-form-modal-btn novinka-external-link-btn"
+      onClick={() => window.open(normalizedUrl, '_blank', 'noopener,noreferrer')}
+    >
+      Ссылка
+    </button>
+  )
+}
+
 function UserAvatarPreview({
   avatarUrl,
   displayName,
@@ -6677,6 +7703,171 @@ function UserProfileModal({
   )
 }
 
+type LinkPreviewData = {
+  imageUrl?: string
+  title?: string
+}
+
+const linkPreviewCache = new Map<string, LinkPreviewData>()
+
+function parseLinkPreviewResponse(data: Record<string, unknown>): LinkPreviewData {
+  return {
+    imageUrl: (data.imageUrl ?? data.ImageUrl) as string | undefined,
+    title: (data.title ?? data.Title) as string | undefined,
+  }
+}
+
+async function fetchLinkPreview(url: string, token: string): Promise<LinkPreviewData> {
+  const normalizedUrl = url.trim()
+  if (!normalizedUrl || !token) {
+    return {}
+  }
+
+  const cached = linkPreviewCache.get(normalizedUrl)
+  if (cached) {
+    return cached
+  }
+
+  const response = await fetch(`/api/link-preview?url=${encodeURIComponent(normalizedUrl)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!response.ok) {
+    return {}
+  }
+
+  const data = parseLinkPreviewResponse((await response.json()) as Record<string, unknown>)
+  linkPreviewCache.set(normalizedUrl, data)
+  return data
+}
+
+function usePreviewImageSrc(imageUrl: string | undefined, token: string) {
+  const [displaySrc, setDisplaySrc] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (!imageUrl?.trim() || !token) {
+      setDisplaySrc(undefined)
+      return
+    }
+
+    let objectUrl: string | undefined
+    let cancelled = false
+
+    void fetch(`/api/link-preview/image?url=${encodeURIComponent(imageUrl.trim())}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (cancelled || !blob) {
+          return
+        }
+
+        objectUrl = URL.createObjectURL(blob)
+        setDisplaySrc(objectUrl)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [imageUrl, token])
+
+  return displaySrc
+}
+
+function LinkHoverPreview({
+  url,
+  name,
+  token,
+}: {
+  url: string
+  name: string
+  token: string
+}) {
+  const normalizedUrl = url.trim()
+  const [preview, setPreview] = useState<LinkPreviewData | null>(
+    () => linkPreviewCache.get(normalizedUrl) ?? null,
+  )
+  const [visible, setVisible] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const displaySrc = usePreviewImageSrc(preview?.imageUrl, token)
+
+  useEffect(() => {
+    if (!normalizedUrl || !token) {
+      return
+    }
+
+    const cached = linkPreviewCache.get(normalizedUrl)
+    if (cached) {
+      setPreview(cached)
+      return
+    }
+
+    let cancelled = false
+    void fetchLinkPreview(normalizedUrl, token).then((data) => {
+      if (cancelled) {
+        return
+      }
+
+      setPreview(data)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [normalizedUrl, token])
+
+  function updatePosition(clientX: number, clientY: number) {
+    const popupWidth = 296
+    const popupHeight = 296
+    const offset = 16
+    const maxLeft = window.innerWidth - popupWidth - 12
+    const maxTop = window.innerHeight - popupHeight - 12
+
+    setPosition({
+      x: Math.max(12, Math.min(clientX + offset, maxLeft)),
+      y: Math.max(12, Math.min(clientY + offset, maxTop)),
+    })
+  }
+
+  const label = preview?.title || name || 'Ссылка'
+
+  return (
+    <>
+      <span
+        className="product-image-hover-trigger"
+        onMouseEnter={(event) => {
+          setVisible(true)
+          updatePosition(event.clientX, event.clientY)
+        }}
+        onMouseLeave={() => setVisible(false)}
+        onMouseMove={(event) => updatePosition(event.clientX, event.clientY)}
+      >
+        <ProductThumb imageUrl={displaySrc ?? preview?.imageUrl} name={label} />
+      </span>
+      {visible && (
+        <div className="product-image-hover-popup link-hover-popup" style={{ left: position.x, top: position.y }}>
+          {displaySrc || preview?.imageUrl ? (
+            <img src={displaySrc ?? preview?.imageUrl} alt={label} referrerPolicy="no-referrer" />
+          ) : (
+            <div className="link-hover-popup-fallback">
+              <strong>{label}</strong>
+              <small>{normalizedUrl}</small>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 function ProductThumb({ imageUrl, name, large = false }: { imageUrl?: string; name: string; large?: boolean }) {
   return (
     <span className={`product-thumb ${large ? 'product-thumb-large' : ''}`}>
@@ -6758,16 +7949,263 @@ function TaskProductPreview({ product }: { product: OzonProduct }) {
   )
 }
 
+function ProductionTaskTypeFilterTabs({
+  value,
+  onChange,
+  counts,
+}: {
+  value: 'all' | 'ozon' | 'novinka'
+  onChange: (value: 'all' | 'ozon' | 'novinka') => void
+  counts: {
+    all: number
+    allUnseen?: number
+    ozon: number
+    ozonUnseen?: number
+    novinka: number
+    novinkaUnseen?: number
+  }
+}) {
+  return (
+    <div className="inner-tabs production-task-source-tabs">
+      <button type="button" className={value === 'all' ? 'active' : ''} onClick={() => onChange('all')}>
+        Все
+        {renderTabBadge(counts.allUnseen || counts.all)}
+      </button>
+      <button type="button" className={value === 'ozon' ? 'active' : ''} onClick={() => onChange('ozon')}>
+        Ozon
+        {renderTabBadge(counts.ozonUnseen || counts.ozon)}
+      </button>
+      <button type="button" className={value === 'novinka' ? 'active' : ''} onClick={() => onChange('novinka')}>
+        Новинки
+        {renderTabBadge(counts.novinkaUnseen || counts.novinka)}
+      </button>
+    </div>
+  )
+}
+
+function getProductionTaskTableMode(tasks: ProductionTask[]) {
+  if (tasks.length === 0) {
+    return 'empty' as const
+  }
+
+  if (tasks.every((task) => isNovinkaTask(task))) {
+    return 'novinka' as const
+  }
+
+  if (tasks.every((task) => !isNovinkaTask(task))) {
+    return 'ozon' as const
+  }
+
+  return 'mixed' as const
+}
+
+function renderNovinkaItemLink(item: ProductionTaskItem) {
+  if (!item.productLink?.trim()) {
+    return '—'
+  }
+
+  return <NovinkaExternalLinkButton url={item.productLink} />
+}
+
+function useProductionFilePreviewUrl(fileId: string, token: string, enabled: boolean) {
+  const [previewUrl, setPreviewUrl] = useState<string>()
+
+  useEffect(() => {
+    if (!enabled || !token) {
+      setPreviewUrl(undefined)
+      return
+    }
+
+    let objectUrl: string | undefined
+    let cancelled = false
+
+    void fetch(`/api/production/files/${fileId}/download`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (cancelled || !blob) {
+          return
+        }
+
+        objectUrl = URL.createObjectURL(blob)
+        setPreviewUrl(objectUrl)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [enabled, fileId, token])
+
+  return previewUrl
+}
+
+function ProductionFilePreviewCell({
+  file,
+  token,
+  onDelete,
+  compact = false,
+}: {
+  file: ProductionFile
+  token: string
+  onDelete?: (id: string) => void
+  compact?: boolean
+}) {
+  const isImage = file.contentType.startsWith('image/')
+  const previewUrl = useProductionFilePreviewUrl(file.id, token, isImage)
+
+  if (compact) {
+    return (
+      <span className="production-file-preview-cell production-file-preview-compact">
+        {isImage ? (
+          <ProductImageHoverPreview imageUrl={previewUrl} name={file.fileName}>
+            <ProductThumb imageUrl={previewUrl} name={file.fileName} />
+          </ProductImageHoverPreview>
+        ) : (
+          <span className="production-file-preview-fallback">Файл</span>
+        )}
+        <span className="production-file-name" title={file.fileName}>
+          {file.fileName}
+        </span>
+        {onDelete && (
+          <button
+            type="button"
+            className="production-file-delete-icon danger"
+            title="Удалить"
+            aria-label="Удалить файл"
+            onClick={() => onDelete(file.id)}
+          >
+            ×
+          </button>
+        )}
+      </span>
+    )
+  }
+
+  if (!isImage) {
+    return (
+      <span className="production-file-preview-cell">
+        <span>{file.fileName}</span>
+        {onDelete && (
+          <button type="button" className="danger production-file-delete-btn" onClick={() => onDelete(file.id)}>
+            Удалить
+          </button>
+        )}
+      </span>
+    )
+  }
+
+  return (
+    <span className="production-file-preview-cell product-mini">
+      <ProductImageHoverPreview imageUrl={previewUrl} name={file.fileName}>
+        <ProductThumb imageUrl={previewUrl} name={file.fileName} />
+      </ProductImageHoverPreview>
+      <span>{file.fileName}</span>
+      {onDelete && (
+        <button type="button" className="danger production-file-delete-btn" onClick={() => onDelete(file.id)}>
+          Удалить
+        </button>
+      )}
+    </span>
+  )
+}
+
+function TaskItemFilesPanel({
+  item,
+  itemFiles,
+  token,
+  onDeleteFile,
+  onOpenFiles,
+  onUploadTaskItemFile,
+  canUpload,
+}: {
+  item: ProductionTaskItem
+  itemFiles: ProductionFile[]
+  token: string
+  onDeleteFile?: (id: string) => void
+  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
+  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
+  canUpload: boolean
+}) {
+  const uploadInputId = `task-item-upload-${item.id}`
+
+  return (
+    <span className="task-item-files">
+      {itemFiles.length > 0 ? (
+        <div className="task-item-file-list">
+          {itemFiles.map((file) => (
+            <ProductionFilePreviewCell
+              key={file.id}
+              file={file}
+              token={token}
+              compact
+              onDelete={onDeleteFile}
+            />
+          ))}
+        </div>
+      ) : (
+        !canUpload && '—'
+      )}
+      {(itemFiles.length > 0 || canUpload) && (
+        <div className="task-item-files-actions">
+          {itemFiles.length > 0 && onOpenFiles && (
+            <button
+              type="button"
+              className="production-files-trigger"
+              onClick={() => onOpenFiles(item.productName, itemFiles)}
+            >
+              Все ({itemFiles.length})
+            </button>
+          )}
+          {canUpload && onUploadTaskItemFile && (
+            <>
+              <input
+                id={uploadInputId}
+                type="file"
+                className="task-item-file-input"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) {
+                    void onUploadTaskItemFile(item, file)
+                  }
+                  event.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                className="task-item-upload-btn"
+                onClick={() => document.getElementById(uploadInputId)?.click()}
+              >
+                {itemFiles.length > 0 ? 'Добавить' : 'Загрузить файл'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </span>
+  )
+}
+
 function ProductionFilesModal({
   productName,
   files,
+  token,
   onClose,
   onDownload,
+  onDelete,
 }: {
   productName: string
   files: ProductionFile[]
+  token: string
   onClose: () => void
   onDownload: (id: string) => void
+  onDelete?: (id: string) => void
 }) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
@@ -6792,12 +8230,19 @@ function ProductionFilesModal({
           </div>
           {files.map((file) => (
             <div className="table-row file-row" key={file.id}>
-              <span>{file.fileName}</span>
+              <span>
+                <ProductionFilePreviewCell file={file} token={token} />
+              </span>
               <span>{new Date(file.createdAt).toLocaleDateString('ru-RU')}</span>
               <span className="file-actions">
                 <button type="button" onClick={() => onDownload(file.id)}>
                   Скачать
                 </button>
+                {onDelete && (
+                  <button type="button" className="danger" onClick={() => onDelete(file.id)}>
+                    Удалить
+                  </button>
+                )}
               </span>
             </div>
           ))}
@@ -6812,99 +8257,11 @@ function ProductionFilesModal({
   )
 }
 
-function ProductDetail({
-  product,
-  files,
-  userRole,
-  onUpload,
-  onFileChange,
-  onDownload,
-  onDelete,
-}: {
-  product: OzonProduct
-  files: ProductionFile[]
-  userRole?: string
-  onUpload: (event: FormEvent<HTMLFormElement>) => void
-  onFileChange: (file: File | null) => void
-  onDownload: (id: string) => void
-  onDelete: (id: string) => void
-}) {
-  return (
-    <section className="product-detail inline-detail">
-      <div className="product-preview">
-        <div className="preview-media">
-          {product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span>Нет фото</span>}
-        </div>
-        <div>
-          <p className="eyebrow">Карточка товара</p>
-          <h2>{product.name}</h2>
-          <dl>
-            <div>
-              <dt>Артикул</dt>
-              <dd>{product.offerId}</dd>
-            </div>
-            <div>
-              <dt>Product ID</dt>
-              <dd>{product.productId}</dd>
-            </div>
-            <div>
-              <dt>Статус</dt>
-              <dd>{product.status}</dd>
-            </div>
-          </dl>
-          {product.productUrl && (
-            <a className="product-link" href={product.productUrl} target="_blank" rel="noreferrer">
-              Открыть товар на Ozon
-            </a>
-          )}
-        </div>
-      </div>
-
-      <form className="product-file-form" onSubmit={onUpload}>
-        <input
-          type="file"
-          accept="image/*,.pdf,.xlsx,.xls,.doc,.docx"
-          onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-        />
-        <button type="submit">Добавить файл</button>
-      </form>
-
-      <div className="data-table">
-        <div className="table-row file-row table-head">
-          <span>Файл</span>
-          <span>Дата</span>
-          <span>Действия</span>
-        </div>
-        {files.map((file) => (
-          <div className="table-row file-row" key={file.id}>
-            <span>{file.fileName}</span>
-            <span>{new Date(file.createdAt).toLocaleDateString('ru-RU')}</span>
-            <span className="file-actions">
-              <button type="button" onClick={() => onDownload(file.id)}>
-                Скачать
-              </button>
-              {userRole === 'Admin' && (
-                <button type="button" className="danger" onClick={() => onDelete(file.id)}>
-                  Удалить
-                </button>
-              )}
-            </span>
-          </div>
-        ))}
-        {files.length === 0 && (
-          <div className="empty-state">
-            <strong>Для этого товара еще нет файлов производства.</strong>
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
 function ProductionTaskTable({
   tasks,
   products,
   productionFiles,
+  token,
   actualQuantities,
   setActualQuantities,
   currentUserId,
@@ -6913,6 +8270,8 @@ function ProductionTaskTable({
   onCancelRequest,
   onComplete,
   onOpenFiles,
+  onUploadTaskItemFile,
+  onDeleteFile,
   onDelete,
   onArchive,
   onRestore,
@@ -6923,6 +8282,7 @@ function ProductionTaskTable({
   tasks: ProductionTask[]
   products: OzonProduct[]
   productionFiles: ProductionFile[]
+  token: string
   actualQuantities: Record<string, string>
   setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
   currentUserId?: string
@@ -6931,6 +8291,8 @@ function ProductionTaskTable({
   onCancelRequest: (id: string) => void
   onComplete: (id: string) => void
   onOpenFiles: (productName: string, files: ProductionFile[]) => void
+  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
+  onDeleteFile?: (id: string) => void
   onDelete?: (id: string) => void
   onArchive?: (id: string) => void
   onRestore?: (id: string) => void
@@ -6938,25 +8300,32 @@ function ProductionTaskTable({
   completed?: boolean
   cancelled?: boolean
 }) {
+  const tableMode = getProductionTaskTableMode(tasks)
+  const skuHeaderLabel =
+    tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул'
+
   return (
-    <div className="data-table">
+    <div className={`data-table production-task-table production-task-table-${tableMode}`}>
       <div className="table-row task-row table-head">
-        <span>Товар</span>
-        <span>Артикул</span>
-        <span>Нужно</span>
-        <span>Факт</span>
-        <span>Статус</span>
-        <span>Создатель</span>
-        <span>Исполнитель</span>
+        <span className="task-col-product">Товар</span>
+        <span className="task-col-sku">{skuHeaderLabel}</span>
+        <span className="task-col-type">Тип</span>
+        <span className="task-col-needed">Нужно</span>
+        <span className="task-col-fact">Факт</span>
+        <span className="task-col-status">Статус</span>
+        <span className="task-col-creator">Создатель</span>
+        <span className="task-col-assignee">Исполнитель</span>
         <span></span>
       </div>
       {tasks.map((task) => {
         const taskItems = getProductionTaskItems(task)
+        const novinka = isNovinkaTask(task)
         const isStaleNew =
           task.status === 'New' &&
           Date.now() - new Date(task.createdAt).getTime() > 4 * 60 * 60 * 1000
         const isCreator = Boolean(currentUserId && task.createdByUserId === currentUserId)
         const hasMinimumViolations =
+          !novinka &&
           task.status === 'InProgress' &&
           !completed &&
           !cancelled &&
@@ -6968,26 +8337,48 @@ function ProductionTaskTable({
             const actualNumber = Number(actualValue)
             return actualValue !== '' && Number.isFinite(actualNumber) && actualNumber < item.requiredQuantity
           })
+        const hasMissingNovinkaFiles =
+          novinka &&
+          task.status === 'InProgress' &&
+          !completed &&
+          !cancelled &&
+          taskItems.some((item) => getProductionFilesForTaskItem(item, productionFiles).length === 0)
 
         return (
         <details
-          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''}`}
+          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''} ${novinka && task.status === 'InProgress' ? 'task-novinka' : ''} ${novinka ? 'task-details-novinka' : ''}`}
           key={task.id}
         >
-          <summary className="table-row task-row">
-          <span>
+          <summary className={`table-row task-row ${novinka ? 'task-row-novinka' : ''}`}>
+          <span className="task-col-product">
             <strong>{getProductionTaskSummary(task)}</strong>
             <small>
               {task.isUrgent ? 'Срочно · ' : ''}
+              {novinka ? 'Новинка · ' : ''}
               {task.status === 'Cancelled' && task.cancelledAt
                 ? `Отменена: ${new Date(task.cancelledAt).toLocaleDateString('ru-RU')}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
                 : new Date(task.createdAt).toLocaleDateString('ru-RU')}
             </small>
           </span>
-          <span>{taskItems.map((item) => item.offerId || '-').join(', ')}</span>
-          <span>{getProductionTaskRequiredTotal(task)}</span>
-          <span>
-            {completed ? (
+          <span className="task-col-sku">
+            {novinka
+              ? taskItems.length === 1
+                ? renderNovinkaItemLink(taskItems[0])
+                : taskItems.map((item) => (
+                    <span key={item.id}>{renderNovinkaItemLink(item)}</span>
+                  ))
+              : taskItems.map((item) => item.offerId || '-').join(', ')}
+          </span>
+          <span className="task-col-type">
+            <span className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}>
+              {getProductionTaskTypeLabel(task)}
+            </span>
+          </span>
+          <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
+          <span className="task-col-fact">
+            {novinka ? (
+              <small>—</small>
+            ) : completed ? (
               getProductionTaskActualTotal(task)
             ) : task.status === 'InProgress' ? (
               <small>По товарам</small>
@@ -6995,9 +8386,9 @@ function ProductionTaskTable({
               <small>—</small>
             )}
           </span>
-          <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>
-          <span>{task.createdByDisplayName || '-'}</span>
-          <span>{task.assignedUserName || '-'}</span>
+          <span className="task-col-status">{translateProductionTaskStatus(task.status, task.isUrgent)}</span>
+          <span className="task-col-creator">{task.createdByDisplayName || '-'}</span>
+          <span className="task-col-assignee">{task.assignedUserName || '-'}</span>
           <span className="task-actions">
             {!completed && !cancelled && task.status === 'New' && isAdmin && onEdit && (
               <button type="button" onClick={(event) => {
@@ -7026,8 +8417,14 @@ function ProductionTaskTable({
             {!completed && !cancelled && task.status === 'InProgress' && (
               <button
                 type="button"
-                className={hasMinimumViolations ? 'task-complete-blocked' : ''}
-                title={hasMinimumViolations ? 'Исправьте количество: факт не может быть меньше плана' : undefined}
+                className={hasMinimumViolations || hasMissingNovinkaFiles ? 'task-complete-blocked' : ''}
+                title={
+                  hasMissingNovinkaFiles
+                    ? 'Добавьте файлы производства по каждому товару'
+                    : hasMinimumViolations
+                      ? 'Исправьте количество: факт не может быть меньше плана'
+                      : undefined
+                }
                 onClick={(event) => {
                 event.preventDefault()
                 onComplete(task.id)
@@ -7076,19 +8473,29 @@ function ProductionTaskTable({
               )}
             </div>
           )}
-          <div className="task-items-table">
+          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
-              <span>Артикул</span>
-              <span>План</span>
-              <span>Факт</span>
-              <span>Файлы</span>
+              {!novinka && <span>Артикул</span>}
+              {novinka ? (
+                <>
+                  <span>Ссылка</span>
+                  <span>Файлы</span>
+                </>
+              ) : (
+                <>
+                  <span>План</span>
+                  <span>Факт</span>
+                  <span>Файлы</span>
+                </>
+              )}
             </div>
             {taskItems.map((item) => {
               const actualValue = actualQuantities[item.id] ?? ''
               const actualNumber = Number(actualValue)
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
               const isBelowMinimum =
+                !novinka &&
                 !completed &&
                 !cancelled &&
                 task.status === 'InProgress' &&
@@ -7100,60 +8507,77 @@ function ProductionTaskTable({
               return (
               <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <TaskItemThumb item={item} products={products} />
+                  <TaskItemThumb item={item} products={products} token={token} />
                   <span>
                     <strong>{item.productName}</strong>
-                    {item.enforceMinimumQuantity && !completed && !cancelled && (
+                    {item.enforceMinimumQuantity && !novinka && !completed && !cancelled && (
                       <small className="task-minimum-badge">Факт не меньше {item.requiredQuantity}</small>
                     )}
                   </span>
                 </span>
-                <span>{item.offerId || '-'}</span>
-                <span>{item.requiredQuantity}</span>
-                <span>
-                  {completed ? (
-                    item.actualQuantity ?? 0
-                  ) : task.status === 'InProgress' ? (
-                    <span className="task-actual-input-wrap">
-                      <input
-                        className={isBelowMinimum ? 'task-quantity-invalid' : ''}
-                        type="number"
-                        min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
-                        placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
-                        value={actualValue}
-                        onChange={(event) =>
-                          setActualQuantities((current) => ({
-                            ...current,
-                            [item.id]: event.target.value,
-                          }))
-                        }
-                      />
-                      {isBelowMinimum && (
-                        <small className="task-minimum-error">
-                          Нельзя меньше {item.requiredQuantity}
-                        </small>
-                      )}
-                      {item.enforceMinimumQuantity && actualValue === '' && (
-                        <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
+                {!novinka && <span>{item.offerId || '-'}</span>}
+                {novinka ? (
+                  <>
+                    <span>{renderNovinkaItemLink(item)}</span>
+                    <TaskItemFilesPanel
+                      item={item}
+                      itemFiles={itemFiles}
+                      token={token}
+                      onDeleteFile={onDeleteFile}
+                      onOpenFiles={onOpenFiles}
+                      onUploadTaskItemFile={onUploadTaskItemFile}
+                      canUpload={!completed && !cancelled && task.status === 'InProgress'}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <span>{item.requiredQuantity}</span>
+                    <span>
+                      {completed ? (
+                        item.actualQuantity ?? 0
+                      ) : task.status === 'InProgress' ? (
+                        <span className="task-actual-input-wrap">
+                          <input
+                            className={isBelowMinimum ? 'task-quantity-invalid' : ''}
+                            type="number"
+                            min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
+                            placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
+                            value={actualValue}
+                            onChange={(event) =>
+                              setActualQuantities((current) => ({
+                                ...current,
+                                [item.id]: event.target.value,
+                              }))
+                            }
+                          />
+                          {isBelowMinimum && (
+                            <small className="task-minimum-error">
+                              Нельзя меньше {item.requiredQuantity}
+                            </small>
+                          )}
+                          {item.enforceMinimumQuantity && actualValue === '' && (
+                            <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
+                          )}
+                        </span>
+                      ) : (
+                        '—'
                       )}
                     </span>
-                  ) : (
-                    '—'
-                  )}
-                </span>
-                <span className="task-item-files">
-                  {itemFiles.length > 0 ? (
-                    <button
-                      type="button"
-                      className="production-files-trigger"
-                      onClick={() => onOpenFiles(item.productName, itemFiles)}
-                    >
-                      Файлы ({itemFiles.length})
-                    </button>
-                  ) : (
-                    '—'
-                  )}
-                </span>
+                    <span className="task-item-files">
+                      {itemFiles.length > 0 ? (
+                        <button
+                          type="button"
+                          className="production-files-trigger"
+                          onClick={() => onOpenFiles(item.productName, itemFiles)}
+                        >
+                          Файлы ({itemFiles.length})
+                        </button>
+                      ) : (
+                        '—'
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
               )
             })}
@@ -7181,6 +8605,22 @@ function getProductionTaskItems(task: ProductionTask) {
   }]
 }
 
+function isNovinkaTask(task: ProductionTask) {
+  if (task.taskType === 'Novinka') {
+    return true
+  }
+
+  if (task.offerId?.startsWith('NV-')) {
+    return true
+  }
+
+  return getProductionTaskItems(task).some((item) => item.offerId.startsWith('NV-'))
+}
+
+function getProductionTaskTypeLabel(task: ProductionTask) {
+  return isNovinkaTask(task) ? 'Новинка' : 'Ozon'
+}
+
 function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) {
   return products.find((product) => product.productId === item.ozonProductId)?.imageUrl
 }
@@ -7188,10 +8628,16 @@ function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) 
 function TaskItemThumb({
   item,
   products,
+  token,
 }: {
   item: ProductionTaskItem
   products: OzonProduct[]
+  token?: string
 }) {
+  if (item.productLink?.trim() && token && (item.offerId?.startsWith('NV-') || !item.ozonProductId)) {
+    return <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
+  }
+
   const imageUrl = getTaskItemImageUrl(item, products)
 
   if (imageUrl) {
@@ -7223,20 +8669,94 @@ function sortProductionTasksByUrgency(tasks: ProductionTask[]) {
   })
 }
 
-function getProductionFilesForTaskItem(
-  item: { offerId: string; ozonProductId: number },
+function isNovinkaProductionFile(file: ProductionFile) {
+  return (
+    file.offerId.startsWith('NV-') ||
+    (Boolean(file.productLink?.trim()) && !file.ozonProductId)
+  )
+}
+
+function getNovinkaCatalogKey(file: ProductionFile) {
+  const name = file.productName.trim().toLowerCase()
+  const link = file.productLink?.trim().toLowerCase() ?? ''
+  if (link) {
+    return `${name}|${link}`
+  }
+
+  if (file.offerId.trim()) {
+    return file.offerId.trim().toUpperCase()
+  }
+
+  return name
+}
+
+function buildNovinkaCatalogFromFiles(files: ProductionFile[]): ProductionCatalogItem[] {
+  const groups = new Map<string, ProductionFile[]>()
+
+  for (const file of files.filter(isNovinkaProductionFile)) {
+    const key = getNovinkaCatalogKey(file)
+    const bucket = groups.get(key) ?? []
+    bucket.push(file)
+    groups.set(key, bucket)
+  }
+
+  return [...groups.values()]
+    .map((group) => {
+      const latest = group.reduce((left, right) =>
+        new Date(left.createdAt).getTime() >= new Date(right.createdAt).getTime() ? left : right,
+      )
+      const latestCreatedAt = group.reduce((max, file) =>
+        new Date(file.createdAt).getTime() > new Date(max).getTime() ? file.createdAt : max,
+      group[0].createdAt)
+
+      return {
+        offerId: latest.offerId,
+        ozonProductId: latest.ozonProductId || undefined,
+        productName: latest.productName,
+        productLink: latest.productLink ?? '',
+        fileCount: group.length,
+        completedAt: latestCreatedAt,
+      }
+    })
+    .sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
+}
+
+function getProductionFilesForCatalogItem(
+  item: ProductionCatalogItem,
   files: ProductionFile[],
 ) {
   return files.filter(
     (file) =>
       (item.offerId && file.offerId === item.offerId) ||
-      (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId),
+      (item.ozonProductId && file.ozonProductId === item.ozonProductId) ||
+      (item.productLink && file.productLink === item.productLink) ||
+      (item.productName &&
+        file.productName === item.productName &&
+        item.offerId?.startsWith('NV-')),
+  )
+}
+
+function getProductionFilesForTaskItem(
+  item: { offerId: string; ozonProductId: number; productLink?: string; productName?: string },
+  files: ProductionFile[],
+) {
+  return files.filter(
+    (file) =>
+      (item.offerId && file.offerId === item.offerId) ||
+      (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId) ||
+      (item.productLink && file.productLink === item.productLink) ||
+      (item.productName && file.productName === item.productName && item.offerId?.startsWith('NV-')),
   )
 }
 
 function getProductionTaskSummary(task: ProductionTask) {
   const items = getProductionTaskItems(task)
   return items.length === 1 ? items[0].productName : `${items.length} товаров в задаче`
+}
+
+function getSupplyNotificationSummary(supply: Supply) {
+  const items = supply.items ?? []
+  return items.length === 1 ? items[0].productName : `${items.length} товаров в поставке`
 }
 
 function matchesProductionTask(task: ProductionTask, search: string) {
@@ -7254,6 +8774,7 @@ function matchesProductionTask(task: ProductionTask, search: string) {
     ...getProductionTaskItems(task).flatMap((item) => [
       item.offerId,
       item.productName,
+      item.productLink,
       item.requiredQuantity,
       item.actualQuantity,
     ]),
@@ -7296,6 +8817,10 @@ function formatFileSize(value: number) {
 function ProductionTaskArchiveTable({
   tasks,
   products,
+  productionFiles = [],
+  token = '',
+  onOpenFiles,
+  onDeleteFile,
   onArchive,
   onDelete,
   archiveView = false,
@@ -7303,27 +8828,40 @@ function ProductionTaskArchiveTable({
 }: {
   tasks: ProductionTask[]
   products: OzonProduct[]
+  productionFiles?: ProductionFile[]
+  token?: string
+  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
+  onDeleteFile?: (id: string) => void
   onArchive?: (id: string) => void
   onDelete?: (id: string) => void
   archiveView?: boolean
   emptyText?: string
 }) {
+  const tableMode = getProductionTaskTableMode(tasks)
+  const skuHeaderLabel =
+    tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул'
+
   return (
-    <div className="data-table">
+    <div className={`data-table production-task-table production-task-table-${tableMode}`}>
       <div className={`table-row task-archive-row table-head ${archiveView ? 'task-archive-row-extended' : ''}`}>
         <span>Что было в задаче</span>
-        <span>Артикул</span>
-        <span>План</span>
-        <span>Факт</span>
+        <span className="task-col-sku">{skuHeaderLabel}</span>
+        <span className="task-col-type">Тип</span>
+        <span className="task-col-needed">План</span>
+        <span className="task-col-fact">Факт</span>
         {archiveView && <span>Статус</span>}
         <span>Кто выполнял</span>
         <span>Взял в работу</span>
         <span>{archiveView ? 'Завершена / отменена' : 'Завершил'}</span>
         <span></span>
       </div>
-      {tasks.map((task) => (
-        <details className="task-details-row" key={task.id}>
-          <summary className={`table-row task-archive-row ${archiveView ? 'task-archive-row-extended' : ''}`}>
+      {tasks.map((task) => {
+        const novinka = isNovinkaTask(task)
+        const taskItems = getProductionTaskItems(task)
+
+        return (
+        <details className={`task-details-row ${novinka ? 'task-details-novinka' : ''}`} key={task.id}>
+          <summary className={`table-row task-archive-row ${archiveView ? 'task-archive-row-extended' : ''} ${novinka ? 'task-row-novinka' : ''}`}>
           <span>
             <strong>{getProductionTaskSummary(task)}</strong>
             <small>
@@ -7331,9 +8869,26 @@ function ProductionTaskArchiveTable({
               {task.isUrgent ? ' · Срочно' : ''}
             </small>
           </span>
-          <span>{getProductionTaskItems(task).map((item) => item.offerId || '-').join(', ')}</span>
-          <span>{getProductionTaskRequiredTotal(task)}</span>
-          <span>{task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}</span>
+          <span className="task-col-sku">
+            {novinka
+              ? taskItems.length === 1
+                ? renderNovinkaItemLink(taskItems[0])
+                : taskItems.map((item) => (
+                    <span key={item.id}>{renderNovinkaItemLink(item)}</span>
+                  ))
+              : taskItems.map((item) => item.offerId || '-').join(', ')}
+          </span>
+          <span className="task-col-type">
+            <span
+              className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}
+            >
+              {getProductionTaskTypeLabel(task)}
+            </span>
+          </span>
+          <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
+          <span className="task-col-fact">
+            {novinka ? '—' : task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}
+          </span>
           {archiveView && <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>}
           <span>{task.assignedUserName || '-'}</span>
           <span>{task.startedAt ? formatDateTime(task.startedAt) : '-'}</span>
@@ -7371,29 +8926,59 @@ function ProductionTaskArchiveTable({
               <p>{task.cancellationComment}</p>
             </div>
           )}
-          <div className="task-items-table">
+          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
-              <span>Артикул</span>
-              <span>План</span>
-              <span>Факт</span>
+              {!novinka && <span>Артикул</span>}
+              {novinka ? (
+                <>
+                  <span>Ссылка</span>
+                  <span>Файлы</span>
+                </>
+              ) : (
+                <>
+                  <span>План</span>
+                  <span>Факт</span>
+                </>
+              )}
             </div>
-            {getProductionTaskItems(task).map((item) => (
+            {taskItems.map((item) => {
+              const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+
+              return (
               <div className="table-row task-item-table-row" key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <TaskItemThumb item={item} products={products} />
+                  <TaskItemThumb item={item} products={products} token={token} />
                   <span>
                     <strong>{item.productName}</strong>
                   </span>
                 </span>
-                <span>{item.offerId || '-'}</span>
-                <span>{item.requiredQuantity}</span>
-                <span>{item.actualQuantity ?? 0}</span>
+                {!novinka && <span>{item.offerId || '-'}</span>}
+                {novinka ? (
+                  <>
+                    <span>{renderNovinkaItemLink(item)}</span>
+                    <TaskItemFilesPanel
+                      item={item}
+                      itemFiles={itemFiles}
+                      token={token}
+                      onDeleteFile={onDeleteFile}
+                      onOpenFiles={onOpenFiles}
+                      canUpload={false}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <span>{item.requiredQuantity}</span>
+                    <span>{item.actualQuantity ?? 0}</span>
+                  </>
+                )}
               </div>
-            ))}
+              )
+            })}
           </div>
         </details>
-      ))}
+        )
+      })}
       {tasks.length === 0 && (
         <div className="empty-state">
           <strong>{emptyText}</strong>
@@ -7406,15 +8991,17 @@ function ProductionTaskArchiveTable({
 function SupplyItemsModal({
   title,
   listIdPrefix,
+  token,
   ozonProducts,
+  novinkaProducts,
   items,
   setItems,
   productId,
   setProductId,
   quantity,
   setQuantity,
-  reserveProductName,
-  setReserveProductName,
+  selectedNovinkaOfferId,
+  setSelectedNovinkaOfferId,
   reserveQuantity,
   setReserveQuantity,
   onAddProduct,
@@ -7426,15 +9013,17 @@ function SupplyItemsModal({
 }: {
   title: string
   listIdPrefix: string
+  token: string
   ozonProducts: OzonProduct[]
+  novinkaProducts: ProductionCatalogItem[]
   items: DraftSupplyItem[]
   setItems: Dispatch<SetStateAction<DraftSupplyItem[]>>
   productId: string
   setProductId: Dispatch<SetStateAction<string>>
   quantity: string
   setQuantity: Dispatch<SetStateAction<string>>
-  reserveProductName: string
-  setReserveProductName: Dispatch<SetStateAction<string>>
+  selectedNovinkaOfferId: string
+  setSelectedNovinkaOfferId: Dispatch<SetStateAction<string>>
   reserveQuantity: string
   setReserveQuantity: Dispatch<SetStateAction<string>>
   onAddProduct: () => void
@@ -7445,6 +9034,7 @@ function SupplyItemsModal({
   itemsTableTitle?: string
 }) {
   const selectedProduct = ozonProducts.find((item) => String(item.productId) === productId)
+  const selectedNovinka = novinkaProducts.find((item) => item.offerId === selectedNovinkaOfferId)
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -7492,23 +9082,38 @@ function SupplyItemsModal({
             </div>
           </div>
 
-          <div className="supply-form-block">
-            <strong>Новый товар</strong>
-            <input
-              placeholder="Название нового товара"
-              value={reserveProductName}
-              onChange={(event) => setReserveProductName(event.target.value)}
+          <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
+            <strong>Новинка</strong>
+            <NovinkaSearchInput
+              listId={`${listIdPrefix}-novinka`}
+              products={novinkaProducts}
+              selectedOfferId={selectedNovinkaOfferId}
+              onOfferIdChange={setSelectedNovinkaOfferId}
+              placeholder="Начните писать название или артикул"
+              showClearButton
             />
-            <input
-              type="number"
-              min="1"
-              placeholder="Количество"
-              value={reserveQuantity}
-              onChange={(event) => setReserveQuantity(event.target.value)}
-            />
-            <button type="button" onClick={onAddReserve}>
-              Создать новый товар
-            </button>
+            <div className="task-form-modal-compose supply-form-compose">
+              {selectedNovinka ? (
+                <NovinkaProductPreview item={selectedNovinka} token={token} />
+              ) : (
+                <div className="task-form-modal-preview task-form-modal-preview-empty">
+                  <span>Выберите новинку для превью</span>
+                </div>
+              )}
+              <div className="task-form-modal-actions">
+                <input
+                  className="task-form-modal-qty"
+                  type="number"
+                  min="1"
+                  placeholder="Количество"
+                  value={reserveQuantity}
+                  onChange={(event) => setReserveQuantity(event.target.value)}
+                />
+                <button type="button" onClick={onAddReserve}>
+                  Добавить
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -7571,7 +9176,7 @@ function SupplyItemsModal({
                     }}
                   />
                 </span>
-                <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
+                <span>{item.isReserve ? (item.offerId.startsWith('NV-') ? 'Новинка' : 'Новый') : 'Постоянный'}</span>
                 <span>
                   <button
                     type="button"

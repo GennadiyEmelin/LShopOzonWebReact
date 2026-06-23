@@ -34,6 +34,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(file => file.OfferId);
             entity.Property(file => file.OfferId).HasMaxLength(120);
             entity.Property(file => file.ProductName).HasMaxLength(240);
+            entity.Property(file => file.ProductLink).HasMaxLength(500);
             entity.Property(file => file.FileName).HasMaxLength(260);
             entity.Property(file => file.ContentType).HasMaxLength(120);
         });
@@ -49,6 +50,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(task => task.CreatedByDisplayName).HasMaxLength(160);
             entity.Property(task => task.CancellationComment).HasMaxLength(2000);
             entity.Property(task => task.CancelledByDisplayName).HasMaxLength(160);
+            entity.Property(task => task.TaskType).HasMaxLength(32);
             entity.HasMany(task => task.Items)
                 .WithOne(item => item.ProductionTask)
                 .HasForeignKey(item => item.ProductionTaskId)
@@ -60,6 +62,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(item => item.OfferId);
             entity.Property(item => item.OfferId).HasMaxLength(120);
             entity.Property(item => item.ProductName).HasMaxLength(240);
+            entity.Property(item => item.ProductLink).HasMaxLength(500);
         });
 
         modelBuilder.Entity<Supply>(entity =>

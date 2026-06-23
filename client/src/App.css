@@ -47,7 +47,7 @@
 }
 
 .login-form button,
-.session button:not(.notification-bell-button),
+.session button:not(.notification-bell-button):not(.profile-button):not(.logout-button),
 .user-form button {
   border: 0;
   border-radius: 8px;
@@ -264,16 +264,24 @@
 
 .session .profile-button {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   overflow: hidden;
   border: 1px solid #d0d5dd;
   border-radius: 999px;
   padding: 0;
-  color: #344054;
-  background: #ffffff;
-  font-size: 11px;
+  color: #667085;
+  background: #f2f4f7;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
+.session .profile-button:hover {
+  border-color: #98a2b3;
+  background: #eaecf0;
 }
 
 .session .profile-button img,
@@ -734,6 +742,13 @@
 
 .task-form-modal-footer {
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.task-form-modal-footer .modal-status {
+  flex: 1 1 100%;
+  margin: 0;
 }
 
 .task-form-modal .task-quantity-input {
@@ -1086,6 +1101,35 @@
   align-items: stretch;
 }
 
+.supply-form-block-novinka {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.novinka-link-btn {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  color: #2563eb;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.novinka-link-btn:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.selected-product-card-large .novinka-link-btn {
+  margin-top: 8px;
+}
+
 .supply-form-compose {
   grid-column: 1 / -1;
 }
@@ -1204,7 +1248,7 @@
 }
 
 .task-row {
-  grid-template-columns: minmax(280px, 2fr) minmax(130px, 0.8fr) minmax(90px, 0.5fr) minmax(120px, 0.7fr) minmax(110px, 0.7fr) minmax(120px, 0.7fr) minmax(130px, 0.8fr) minmax(210px, 1fr);
+  grid-template-columns: minmax(280px, 2fr) minmax(130px, 0.8fr) minmax(90px, 0.45fr) minmax(90px, 0.5fr) minmax(120px, 0.7fr) minmax(110px, 0.7fr) minmax(120px, 0.7fr) minmax(130px, 0.8fr) minmax(210px, 1fr);
 }
 
 .task-draft-row {
@@ -1222,13 +1266,14 @@
 }
 
 .task-archive-row {
-  grid-template-columns: minmax(280px, 2fr) minmax(130px, 0.8fr) minmax(80px, 0.4fr) minmax(80px, 0.4fr) minmax(140px, 0.8fr) minmax(150px, 0.9fr) minmax(150px, 0.9fr) minmax(170px, 0.9fr);
+  grid-template-columns: minmax(280px, 2fr) minmax(130px, 0.8fr) minmax(90px, 0.45fr) minmax(80px, 0.4fr) minmax(80px, 0.4fr) minmax(140px, 0.8fr) minmax(150px, 0.9fr) minmax(150px, 0.9fr) minmax(170px, 0.9fr);
 }
 
 .task-archive-row-extended {
   grid-template-columns:
     minmax(240px, 2fr)
     minmax(120px, 0.8fr)
+    minmax(90px, 0.45fr)
     minmax(70px, 0.4fr)
     minmax(70px, 0.4fr)
     minmax(100px, 0.55fr)
@@ -1236,6 +1281,27 @@
     minmax(130px, 0.8fr)
     minmax(180px, 1fr)
     minmax(110px, 0.7fr);
+}
+
+.task-type-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-type-badge-ozon {
+  background: #eef4ff;
+  color: #175cd3;
+}
+
+.task-type-badge-novinka {
+  background: #ecfdf3;
+  color: #027a48;
 }
 
 .archive-task-filters label {
@@ -1308,6 +1374,329 @@
 
 .task-details-row.task-urgent > summary strong {
   color: #b42318;
+}
+
+.task-details-row.task-novinka > summary {
+  background: #ecfdf3;
+  border-left: 4px solid #12b76a;
+}
+
+.task-details-row.task-novinka > summary strong {
+  color: #027a48;
+}
+
+.production-task-source-tabs,
+.production-catalog-tabs {
+  margin-bottom: 16px;
+}
+
+.products-toolbar {
+  margin-bottom: 12px;
+}
+
+.products-status-filters-bar {
+  margin-bottom: 12px;
+}
+
+.novinka-task-field {
+  display: grid;
+  gap: 6px;
+}
+
+.novinka-task-field > span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #344054;
+}
+
+.novinka-task-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.novinka-task-fields {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.novinka-task-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.novinka-task-compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.product-type-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0;
+  padding: 0 20px 16px;
+  align-items: stretch;
+}
+
+.product-type-editor-block {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  margin: 0;
+}
+
+.product-type-editor-hint {
+  grid-column: 1 / -1;
+  margin-top: -2px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.product-type-editor-divider {
+  width: 1px;
+  background: #edf0f5;
+  margin: 0 14px;
+}
+
+.product-type-editor-preview {
+  grid-column: 1 / -1;
+}
+
+.product-type-editor-preview .task-form-modal-preview-empty,
+.product-type-editor-preview .selected-product-card-large {
+  min-height: 132px;
+}
+
+.product-type-editor-footer {
+  border-top: 1px solid #edf0f5;
+}
+
+.product-type-editor-footer .modal-status {
+  margin: 0;
+  flex: 1 1 100%;
+  color: #344054;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.product-type-editor-secondary {
+  border: 1px solid #cfd6e3 !important;
+  color: #344054 !important;
+  background: #ffffff !important;
+}
+
+.product-type-editor-secondary:hover {
+  background: #f8fafc !important;
+}
+
+@media (max-width: 960px) {
+  .product-type-editor-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding-bottom: 0;
+  }
+
+  .product-type-editor-divider {
+    display: none;
+  }
+}
+
+.novinka-add-btn {
+  width: auto !important;
+  min-width: 108px;
+  padding: 8px 14px !important;
+  font-size: 13px !important;
+}
+
+.novinka-draft-row {
+  grid-template-columns: minmax(280px, 2fr) minmax(110px, 0.7fr) max-content;
+}
+
+.novinka-external-link-btn {
+  width: auto !important;
+  min-width: 96px;
+  padding: 8px 12px !important;
+  font-size: 13px !important;
+}
+
+.selected-product-card-large .novinka-external-link-btn {
+  margin-top: 8px;
+}
+
+.link-hover-popup-fallback {
+  display: grid;
+  gap: 8px;
+  width: 280px;
+  padding: 16px;
+  color: #344054;
+  background: #ffffff;
+}
+
+.link-hover-popup-fallback strong {
+  color: #121826;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.link-hover-popup-fallback small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #667085;
+  font-size: 12px;
+}
+
+.task-item-file-input {
+  display: none;
+}
+
+.task-item-upload-btn {
+  width: auto;
+  margin: 0;
+}
+
+.task-item-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.production-file-preview-cell {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.production-file-preview-compact {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.production-file-preview-compact .product-thumb {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.production-file-preview-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: #f2f4f7;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.production-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.production-file-delete-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.production-file-delete-btn {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.production-task-table-novinka .task-col-needed,
+.production-task-table-novinka .task-col-fact {
+  display: none;
+}
+
+.production-task-table-mixed .task-row-novinka .task-col-needed,
+.production-task-table-mixed .task-row-novinka .task-col-fact {
+  color: #98a2b3;
+}
+
+.production-task-table-novinka .task-row,
+.production-task-table-novinka .task-archive-row {
+  grid-template-columns:
+    minmax(280px, 2fr)
+    minmax(120px, 0.8fr)
+    minmax(90px, 0.45fr)
+    minmax(110px, 0.7fr)
+    minmax(120px, 0.7fr)
+    minmax(130px, 0.8fr)
+    minmax(210px, 1fr);
+}
+
+.production-task-table-novinka .task-archive-row-extended {
+  grid-template-columns:
+    minmax(240px, 2fr)
+    minmax(120px, 0.8fr)
+    minmax(90px, 0.45fr)
+    minmax(100px, 0.55fr)
+    minmax(120px, 0.7fr)
+    minmax(130px, 0.8fr)
+    minmax(180px, 1fr)
+    minmax(110px, 0.7fr);
+}
+
+.task-items-table-novinka .task-item-table-row {
+  grid-template-columns: minmax(320px, 2fr) minmax(140px, 0.8fr) minmax(260px, 1.2fr);
+}
+
+.task-item-upload-label {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #ecfdf3;
+  color: #027a48;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-item-files {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+}
+
+.task-item-files-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .task-urgent-toggle {
@@ -1421,13 +1810,6 @@
   grid-template-columns: minmax(320px, 2fr) minmax(150px, 0.8fr) minmax(100px, 0.5fr) minmax(120px, 0.6fr) minmax(180px, 1fr);
   border-right: 1px solid #edf0f5;
   border-left: 1px solid #edf0f5;
-}
-
-.task-item-files {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
 }
 
 .task-item-file-link {
@@ -2952,7 +3334,7 @@
   font: inherit;
 }
 
-.users-list button {
+.users-list button:not(.user-card-open) {
   border: 0;
   border-radius: 8px;
   padding: 10px 12px;
@@ -2963,7 +3345,7 @@
   cursor: pointer;
 }
 
-.users-list button.danger {
+.users-list button:not(.user-card-open).danger {
   background: #b42318;
 }
 
@@ -4085,7 +4467,7 @@
     padding: 12px;
   }
 
-  .users-list button {
+  .users-list button:not(.user-card-open) {
     width: 100%;
   }
 

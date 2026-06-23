@@ -9,6 +9,7 @@ public class ProductionTask
     public int RequiredQuantity { get; set; }
     public int? ActualQuantity { get; set; }
     public string Status { get; set; } = ProductionTaskStatuses.New;
+    public string TaskType { get; set; } = ProductionTaskTypes.Ozon;
     public bool IsUrgent { get; set; }
     public Guid? CreatedByUserId { get; set; }
     public string? CreatedByDisplayName { get; set; }
@@ -36,6 +37,13 @@ public class ProductionTaskItem
     public int RequiredQuantity { get; set; }
     public int? ActualQuantity { get; set; }
     public bool EnforceMinimumQuantity { get; set; }
+    public string ProductLink { get; set; } = string.Empty;
+}
+
+public static class ProductionTaskTypes
+{
+    public const string Ozon = "Ozon";
+    public const string Novinka = "Novinka";
 }
 
 public static class ProductionTaskStatuses

@@ -1,6 +1,8 @@
+using System.Net;
 using System.Security.Claims;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using System.IO.Compression;
 using LShopOzonWebReact.Api.Data;
@@ -1710,6 +1712,7 @@ app.MapGet("/api/production/files", async (string? search, AppDbContext db, Clai
             file.OzonProductId,
             file.OfferId,
             file.ProductName,
+            file.ProductLink,
             file.Notes,
             file.FileName,
             file.ContentType,
@@ -1717,6 +1720,185 @@ app.MapGet("/api/production/files", async (string? search, AppDbContext db, Clai
         .ToListAsync();
 
     return Results.Ok(files);
+}).RequireAuthorization();
+
+app.MapGet("/api/production/catalog", async (string? type, AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
+    var catalog = await ProductionTaskResponses.BuildCatalogAsync(db, type ?? ProductionTaskTypes.Ozon);
+    return Results.Ok(catalog);
+}).RequireAuthorization();
+
+app.MapPut("/api/production/catalog/convert-to-ozon", async (
+    ConvertNovinkaToOzonRequest request,
+    AppDbContext db,
+    OzonApiClient ozonApi,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
+    if (request.TargetOzonProductId <= 0)
+    {
+        return Results.BadRequest("Выберите товар Ozon.");
+    }
+
+    var sourceOfferId = request.SourceOfferId?.Trim() ?? string.Empty;
+    var sourceProductName = request.SourceProductName?.Trim() ?? string.Empty;
+    var sourceProductLink = request.SourceProductLink?.Trim() ?? string.Empty;
+
+    if (string.IsNullOrWhiteSpace(sourceOfferId) && string.IsNullOrWhiteSpace(sourceProductName))
+    {
+        return Results.BadRequest("Выберите новинку.");
+    }
+
+    OzonProductSummary targetProduct;
+    try
+    {
+        targetProduct = await ozonApi.GetProductSummaryByIdAsync(request.TargetOzonProductId, cancellationToken)
+            ?? throw new InvalidOperationException("Товар не найден в Ozon.");
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+
+    var allFiles = await db.ProductionFiles.ToListAsync(cancellationToken);
+    var filesToUpdate = ProductionTaskResponses.FindNovinkaCatalogFiles(
+        allFiles,
+        sourceOfferId,
+        sourceProductName,
+        sourceProductLink);
+
+    if (filesToUpdate.Count == 0)
+    {
+        return Results.BadRequest("Не найдены файлы производства для выбранной новинки.");
+    }
+
+    foreach (var file in filesToUpdate)
+    {
+        file.OzonProductId = targetProduct.ProductId;
+        file.OfferId = targetProduct.OfferId;
+        file.ProductName = targetProduct.Name;
+        file.ProductLink = targetProduct.ProductUrl;
+    }
+
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Конвертация новинки в Ozon",
+        "ProductionCatalog",
+        targetProduct.ProductId.ToString(),
+        $"Новинка: {sourceProductName}, файлов: {filesToUpdate.Count}, артикул: {targetProduct.OfferId}");
+
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(new ConvertNovinkaToOzonResponse(
+        filesToUpdate.Count,
+        targetProduct.ProductId,
+        targetProduct.OfferId,
+        targetProduct.Name,
+        targetProduct.ProductUrl));
+}).RequireAuthorization();
+
+app.MapGet("/api/link-preview", async (string? url, IHttpClientFactory httpClientFactory, ClaimsPrincipal principal) =>
+{
+    if (principal.Identity?.IsAuthenticated != true)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!LinkPreviewHelper.TryNormalizeExternalUrl(url, out var normalizedUrl))
+    {
+        return Results.BadRequest("Invalid URL");
+    }
+
+    try
+    {
+        var client = httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(8);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+        using var response = await client.GetAsync(normalizedUrl);
+        if (!response.IsSuccessStatusCode)
+        {
+            return Results.Ok(new LinkPreviewResponse(null, null));
+        }
+
+        var html = await response.Content.ReadAsStringAsync();
+        if (html.Length > 512_000)
+        {
+            html = html[..512_000];
+        }
+
+        var imageUrl = LinkPreviewHelper.ExtractMetaContent(html, "og:image")
+            ?? LinkPreviewHelper.ExtractMetaContent(html, "og:image:secure_url")
+            ?? LinkPreviewHelper.ExtractMetaContent(html, "og:image:url")
+            ?? LinkPreviewHelper.ExtractMetaContent(html, "twitter:image")
+            ?? LinkPreviewHelper.ExtractMetaContent(html, "twitter:image:src")
+            ?? LinkPreviewHelper.ExtractLinkHref(html, "image_src");
+        imageUrl = LinkPreviewHelper.ResolveResourceUrl(normalizedUrl, imageUrl);
+        var title = LinkPreviewHelper.ExtractMetaContent(html, "og:title")
+            ?? LinkPreviewHelper.ExtractMetaContent(html, "twitter:title");
+        return Results.Ok(new LinkPreviewResponse(imageUrl, title));
+    }
+    catch
+    {
+        return Results.Ok(new LinkPreviewResponse(null, null));
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/link-preview/image", async (string? url, IHttpClientFactory httpClientFactory, ClaimsPrincipal principal) =>
+{
+    if (principal.Identity?.IsAuthenticated != true)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!LinkPreviewHelper.TryNormalizeExternalUrl(url, out var normalizedUrl))
+    {
+        return Results.BadRequest("Invalid URL");
+    }
+
+    try
+    {
+        var client = httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(8);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.Accept.ParseAdd("image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+        using var response = await client.GetAsync(normalizedUrl);
+        if (!response.IsSuccessStatusCode)
+        {
+            return Results.NotFound();
+        }
+
+        var contentType = response.Content.Headers.ContentType?.MediaType ?? "image/jpeg";
+        if (!contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.NotFound();
+        }
+
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        if (bytes.Length == 0 || bytes.Length > 5_000_000)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.File(bytes, contentType);
+    }
+    catch
+    {
+        return Results.NotFound();
+    }
 }).RequireAuthorization();
 
 app.MapPost("/api/production/files", async (
@@ -1746,6 +1928,7 @@ app.MapPost("/api/production/files", async (
         OzonProductId = long.TryParse(form["ozonProductId"], out var productId) ? productId : null,
         OfferId = form["offerId"].ToString().Trim(),
         ProductName = form["productName"].ToString().Trim(),
+        ProductLink = form["productLink"].ToString().Trim(),
         Notes = form["notes"].ToString().Trim(),
         FileName = Path.GetFileName(file.FileName),
         ContentType = string.IsNullOrWhiteSpace(file.ContentType)
@@ -1762,6 +1945,7 @@ app.MapPost("/api/production/files", async (
         productionFile.OzonProductId,
         productionFile.OfferId,
         productionFile.ProductName,
+        productionFile.ProductLink,
         productionFile.Notes,
         productionFile.FileName,
         productionFile.ContentType,
@@ -1779,19 +1963,65 @@ app.MapGet("/api/production/files/{id:guid}/download", async (Guid id, AppDbCont
     return Results.File(file.Content, file.ContentType, file.FileName);
 }).RequireAuthorization();
 
-app.MapDelete("/api/production/files/{id:guid}", async (Guid id, AppDbContext db) =>
+app.MapDelete("/api/production/files/{id:guid}", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
     var file = await db.ProductionFiles.FindAsync(id);
     if (file is null)
     {
         return Results.NotFound();
     }
 
+    var isNovinkaFile = ProductionTaskResponses.IsNovinkaProductionFile(file);
+    var offerId = file.OfferId;
+    var productName = file.ProductName;
+    var productLink = file.ProductLink;
+
     db.ProductionFiles.Remove(file);
     await db.SaveChangesAsync();
 
-    return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    ProductionTaskListItem? reworkTask = null;
+    if (isNovinkaFile)
+    {
+        var remainingInCatalog = ProductionTaskResponses.FindNovinkaCatalogFiles(
+            await db.ProductionFiles.AsNoTracking().ToListAsync(),
+            offerId,
+            productName,
+            productLink);
+
+        if (remainingInCatalog.Count == 0)
+        {
+            try
+            {
+                reworkTask = await ProductionTaskResponses.TryCreateNovinkaReworkTaskAsync(
+                    db,
+                    principal,
+                    productName,
+                    productLink,
+                    offerId);
+            }
+            catch
+            {
+                // Файл уже удалён — сбой автосоздания задачи не должен отменять удаление.
+            }
+        }
+    }
+
+    if (reworkTask is not null)
+    {
+        await hub.Clients.All.SendAsync("ProductionTasksChanged");
+    }
+
+    return Results.Ok(new DeleteProductionFileResponse(reworkTask is not null, reworkTask?.Id));
+}).RequireAuthorization();
 
 app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, ClaimsPrincipal principal) =>
 {
@@ -1811,46 +2041,9 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, Clai
 
     var tasks = await query
         .OrderByDescending(task => task.CreatedAt)
-        .Select(task => new ProductionTaskListItem(
-            task.Id,
-            task.OzonProductId,
-            task.OfferId,
-            task.ProductName,
-            task.RequiredQuantity,
-            task.ActualQuantity,
-            task.Status,
-            task.IsUrgent,
-            task.AssignedUserName,
-            task.CreatedByUserId,
-            task.CreatedByDisplayName,
-            task.CreatedAt,
-            task.StartedAt,
-            task.CancelledAt,
-            task.CancelledByUserId,
-            task.CancelledByDisplayName,
-            task.CancellationComment,
-            task.CompletedAt,
-            task.IsArchived,
-            task.ArchivedAt,
-            task.Items.Count == 0
-                ? new List<ProductionTaskItemListItem>
-                {
-                    new(task.Id, task.OzonProductId, task.OfferId, task.ProductName, task.RequiredQuantity, task.ActualQuantity, false)
-                }
-                : task.Items
-                    .OrderBy(item => item.ProductName)
-                    .Select(item => new ProductionTaskItemListItem(
-                        item.Id,
-                        item.OzonProductId,
-                        item.OfferId,
-                        item.ProductName,
-                        item.RequiredQuantity,
-                        item.ActualQuantity,
-                        item.EnforceMinimumQuantity))
-                    .ToList()))
         .ToListAsync();
 
-    return Results.Ok(tasks);
+    return Results.Ok(tasks.Select(ProductionTaskResponses.ToListItem));
 }).RequireAuthorization();
 
 app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
@@ -1910,6 +2103,7 @@ app.MapPost("/api/production/tasks", async (
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
+    var taskType = ProductionTaskResponses.NormalizeTaskType(request.TaskType);
     var requestItems = request.Items is { Count: > 0 }
         ? request.Items
         : [new CreateProductionTaskItemRequest(
@@ -1917,39 +2111,46 @@ app.MapPost("/api/production/tasks", async (
             request.OfferId,
             request.ProductName,
             request.RequiredQuantity,
-            false)];
+            false,
+            null)];
 
-    if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    if (taskType == ProductionTaskTypes.Novinka)
+    {
+        if (requestItems.Any(item => string.IsNullOrWhiteSpace(item.ProductName) || string.IsNullOrWhiteSpace(item.ProductLink)))
+        {
+            return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
+        }
+    }
+    else if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
     {
         return Results.BadRequest("Выберите товар и укажите количество больше нуля.");
     }
 
-    var firstItem = requestItems[0];
+    var builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
+    var firstItem = builtItems[0];
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
         ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
         : null;
     var task = new ProductionTask
     {
+        TaskType = taskType,
         OzonProductId = firstItem.OzonProductId,
         OfferId = firstItem.OfferId.Trim(),
-        ProductName = requestItems.Count == 1
+        ProductName = builtItems.Count == 1
             ? firstItem.ProductName.Trim()
-            : $"Задача на {requestItems.Count} товаров",
-        RequiredQuantity = requestItems.Sum(item => item.RequiredQuantity),
+            : taskType == ProductionTaskTypes.Novinka
+                ? $"Новинки · {builtItems.Count} товаров"
+                : $"Задача на {builtItems.Count} товаров",
+        RequiredQuantity = taskType == ProductionTaskTypes.Novinka
+            ? 0
+            : builtItems.Sum(item => item.RequiredQuantity),
         IsUrgent = request.IsUrgent,
         CreatedByUserId = currentUser?.Id,
         CreatedByDisplayName = currentUser?.DisplayName
             ?? principal.FindFirstValue("display_name")
             ?? principal.FindFirstValue(ClaimTypes.Name),
-        Items = requestItems.Select(item => new ProductionTaskItem
-        {
-            OzonProductId = item.OzonProductId,
-            OfferId = item.OfferId.Trim(),
-            ProductName = item.ProductName.Trim(),
-            RequiredQuantity = item.RequiredQuantity,
-            EnforceMinimumQuantity = item.EnforceMinimumQuantity
-        }).ToList()
+        Items = builtItems
     };
 
     db.ProductionTasks.Add(task);
@@ -1974,9 +2175,9 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
         ? request.Items
         : [];
 
-    if (requestItems.Count == 0 || requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    if (requestItems.Count == 0)
     {
-        return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
+        return Results.BadRequest("Добавьте товары в задачу.");
     }
 
     var task = await db.ProductionTasks
@@ -1992,23 +2193,33 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
         return Results.BadRequest("Редактировать можно только задачу, которая ещё не взята в работу.");
     }
 
-    var firstItem = requestItems[0];
-    db.ProductionTaskItems.RemoveRange(task.Items);
-    task.Items = requestItems.Select(item => new ProductionTaskItem
+    var taskType = ProductionTaskResponses.NormalizeTaskType(task.TaskType);
+    if (taskType == ProductionTaskTypes.Novinka)
     {
-        ProductionTaskId = task.Id,
-        OzonProductId = item.OzonProductId,
-        OfferId = item.OfferId.Trim(),
-        ProductName = item.ProductName.Trim(),
-        RequiredQuantity = item.RequiredQuantity,
-        EnforceMinimumQuantity = item.EnforceMinimumQuantity
-    }).ToList();
+        if (requestItems.Any(item => string.IsNullOrWhiteSpace(item.ProductName) || string.IsNullOrWhiteSpace(item.ProductLink)))
+        {
+            return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
+        }
+    }
+    else if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    {
+        return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
+    }
+
+    var builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
+    var firstItem = builtItems[0];
+    db.ProductionTaskItems.RemoveRange(task.Items);
+    task.Items = builtItems;
     task.OzonProductId = firstItem.OzonProductId;
     task.OfferId = firstItem.OfferId.Trim();
-    task.ProductName = requestItems.Count == 1
+    task.ProductName = builtItems.Count == 1
         ? firstItem.ProductName.Trim()
-        : $"Задача на {requestItems.Count} товаров";
-    task.RequiredQuantity = requestItems.Sum(item => item.RequiredQuantity);
+        : taskType == ProductionTaskTypes.Novinka
+            ? $"Новинки · {builtItems.Count} товаров"
+            : $"Задача на {builtItems.Count} товаров";
+    task.RequiredQuantity = taskType == ProductionTaskTypes.Novinka
+        ? 0
+        : builtItems.Sum(item => item.RequiredQuantity);
     task.IsUrgent = request.IsUrgent;
 
     AuditLogWriter.Add(db, principal, "Редактирование задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
@@ -2195,11 +2406,6 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
-    if (request.ActualQuantity < 0 || request.Items?.Any(item => item.ActualQuantity < 0) == true)
-    {
-        return Results.BadRequest("Фактическое количество не может быть меньше нуля.");
-    }
-
     var task = await db.ProductionTasks
         .Include(task => task.Items)
         .FirstOrDefaultAsync(task => task.Id == id);
@@ -2213,7 +2419,36 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
         return Results.BadRequest("Завершить можно только задачу, которая уже в работе.");
     }
 
-    if (request.Items is { Count: > 0 })
+    var isNovinkaTask = ProductionTaskResponses.NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka;
+
+    if (isNovinkaTask)
+    {
+        var files = await db.ProductionFiles.AsNoTracking().ToListAsync();
+        foreach (var taskItem in task.Items.Count == 0
+                     ? [new ProductionTaskItem { OfferId = task.OfferId, OzonProductId = task.OzonProductId, ProductName = task.ProductName }]
+                     : task.Items)
+        {
+            var hasFiles = files.Any(file =>
+                (!string.IsNullOrWhiteSpace(taskItem.OfferId) && file.OfferId == taskItem.OfferId) ||
+                (taskItem.OzonProductId > 0 && file.OzonProductId == taskItem.OzonProductId));
+
+            if (!hasFiles)
+            {
+                return Results.BadRequest($"Добавьте файлы для «{taskItem.ProductName}» перед завершением задачи.");
+            }
+        }
+
+        task.ActualQuantity = 0;
+        foreach (var taskItem in task.Items)
+        {
+            taskItem.ActualQuantity = null;
+        }
+    }
+    else if (request.ActualQuantity < 0 || request.Items?.Any(item => item.ActualQuantity < 0) == true)
+    {
+        return Results.BadRequest("Фактическое количество не может быть меньше нуля.");
+    }
+    else if (request.Items is { Count: > 0 })
     {
         var taskItems = task.Items.ToDictionary(item => item.Id);
         foreach (var requestItem in request.Items)
@@ -2420,7 +2655,11 @@ app.MapGet("/api/supplies", async (AppDbContext db, ClaimsPrincipal principal) =
         .ToList());
 }).RequireAuthorization();
 
-app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db, ClaimsPrincipal principal) =>
+app.MapPost("/api/supplies", async (
+    CreateSupplyRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
     {
@@ -2453,6 +2692,7 @@ app.MapPost("/api/supplies", async (CreateSupplyRequest request, AppDbContext db
     db.Supplies.Add(supply);
     AuditLogWriter.Add(db, principal, "Создание поставки", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
     await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("SuppliesChanged");
 
     return Results.Created($"/api/supplies/{supply.Id}", new SupplyListItem(
         supply.Id,
@@ -2485,6 +2725,7 @@ app.MapPost("/api/supplies/import", async (
     HttpRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
     CancellationToken cancellationToken) =>
 {
     if (!request.HasFormContentType)
@@ -2536,6 +2777,7 @@ app.MapPost("/api/supplies/import", async (
     db.Supplies.Add(supply);
     AuditLogWriter.Add(db, principal, "Импорт поставки из Excel", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
     await db.SaveChangesAsync(cancellationToken);
+    await hub.Clients.All.SendAsync("SuppliesChanged");
 
     return Results.Ok(new { supply.Id, Items = supply.Items.Count });
 }).DisableAntiforgery().RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
@@ -2894,17 +3136,37 @@ record ProductionFileListItem(
     long? OzonProductId,
     string OfferId,
     string ProductName,
+    string ProductLink,
     string Notes,
     string FileName,
     string ContentType,
     DateTimeOffset CreatedAt);
-record CreateProductionTaskRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
-record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity);
+record DeleteProductionFileResponse(bool ReworkTaskCreated, Guid? TaskId);
+record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
+record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink);
 record UpdateProductionTaskRequest(bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
 record UpdateProductionTaskItemRequest(int RequiredQuantity);
 record CancelProductionTaskRequest(string Comment);
 record CompleteProductionTaskRequest(int ActualQuantity, List<CompleteProductionTaskItemRequest>? Items);
 record CompleteProductionTaskItemRequest(Guid Id, int ActualQuantity);
+record ProductionCatalogItem(
+    string OfferId,
+    long? OzonProductId,
+    string ProductName,
+    string ProductLink,
+    int FileCount,
+    DateTimeOffset? CompletedAt);
+record ConvertNovinkaToOzonRequest(
+    string SourceOfferId,
+    string SourceProductName,
+    string SourceProductLink,
+    long TargetOzonProductId);
+record ConvertNovinkaToOzonResponse(
+    int UpdatedFileCount,
+    long OzonProductId,
+    string OfferId,
+    string ProductName,
+    string ProductUrl);
 record ProductionTaskListItem(
     Guid Id,
     long OzonProductId,
@@ -2913,6 +3175,7 @@ record ProductionTaskListItem(
     int RequiredQuantity,
     int? ActualQuantity,
     string Status,
+    string TaskType,
     bool IsUrgent,
     string? AssignedUserName,
     Guid? CreatedByUserId,
@@ -2927,7 +3190,7 @@ record ProductionTaskListItem(
     bool IsArchived,
     DateTimeOffset? ArchivedAt,
     List<ProductionTaskItemListItem> Items);
-record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity);
+record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, string ProductLink, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity);
 record CreateSupplyRequest(List<CreateSupplyItemRequest> Items);
 record CreateSupplyItemRequest(long? OzonProductId, string OfferId, string ProductName, int Quantity, bool IsReserve);
 record UpdateSupplyRequest(List<CreateSupplyItemRequest> Items);
@@ -3027,6 +3290,173 @@ static class AuditLogWriter
 
 static class ProductionTaskResponses
 {
+    public static string NormalizeTaskType(string? value) =>
+        string.Equals(value, ProductionTaskTypes.Novinka, StringComparison.OrdinalIgnoreCase)
+            ? ProductionTaskTypes.Novinka
+            : ProductionTaskTypes.Ozon;
+
+    public static string BuildNovinkaOfferId(Guid itemId) => $"NV-{itemId:N}";
+
+    public static bool IsNovinkaProductionFile(ProductionFile file) =>
+        file.OfferId.StartsWith("NV-", StringComparison.OrdinalIgnoreCase) ||
+        (!string.IsNullOrWhiteSpace(file.ProductLink) && file.OzonProductId is null or 0);
+
+    public static bool MatchesNovinkaProductionFile(
+        ProductionFile file,
+        string offerId,
+        string productName,
+        string productLink)
+    {
+        if (!string.IsNullOrWhiteSpace(offerId) &&
+            string.Equals(file.OfferId, offerId.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(productLink) &&
+            string.Equals(file.ProductLink, productLink.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(file.ProductName, productName.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(productName) &&
+               file.OfferId.StartsWith("NV-", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(file.ProductName, productName.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static async Task<ProductionTaskListItem?> TryCreateNovinkaReworkTaskAsync(
+        AppDbContext db,
+        ClaimsPrincipal principal,
+        string productName,
+        string productLink,
+        string offerId)
+    {
+        var normalizedName = productName.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            return null;
+        }
+
+        var normalizedOfferId = offerId.Trim();
+        var normalizedLink = await ResolveNovinkaProductLinkAsync(
+            db,
+            normalizedName,
+            productLink,
+            normalizedOfferId);
+
+        if (string.IsNullOrWhiteSpace(normalizedLink) && string.IsNullOrWhiteSpace(normalizedOfferId))
+        {
+            return null;
+        }
+
+        var activeTasks = await db.ProductionTasks
+            .AsNoTracking()
+            .Include(task => task.Items)
+            .Where(task =>
+                !task.IsArchived &&
+                task.TaskType == ProductionTaskTypes.Novinka &&
+                (task.Status == ProductionTaskStatuses.New || task.Status == ProductionTaskStatuses.InProgress))
+            .ToListAsync();
+
+        var existingActiveTask = activeTasks.FirstOrDefault(task =>
+            TaskMatchesNovinkaProduct(task, normalizedName, normalizedLink, normalizedOfferId));
+
+        if (existingActiveTask is not null)
+        {
+            return ToListItem(existingActiveTask);
+        }
+
+        var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
+            ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
+            : null;
+        var builtItems = BuildTaskItems(
+            ProductionTaskTypes.Novinka,
+            [new CreateProductionTaskItemRequest(0, string.Empty, normalizedName, 0, false, normalizedLink)]);
+        var firstItem = builtItems[0];
+        var task = new ProductionTask
+        {
+            TaskType = ProductionTaskTypes.Novinka,
+            Status = ProductionTaskStatuses.New,
+            OzonProductId = firstItem.OzonProductId,
+            OfferId = firstItem.OfferId.Trim(),
+            ProductName = normalizedName,
+            RequiredQuantity = 0,
+            CreatedByUserId = currentUser?.Id,
+            CreatedByDisplayName = currentUser?.DisplayName
+                ?? principal.FindFirstValue("display_name")
+                ?? principal.FindFirstValue(ClaimTypes.Name),
+            Items = builtItems
+        };
+
+        db.ProductionTasks.Add(task);
+        AuditLogWriter.Add(
+            db,
+            principal,
+            "Автосоздание задачи после удаления файлов новинки",
+            "ProductionTask",
+            task.Id.ToString(),
+            task.ProductName);
+        await db.SaveChangesAsync();
+
+        return ToListItem(task);
+    }
+
+    private static async Task<string> ResolveNovinkaProductLinkAsync(
+        AppDbContext db,
+        string productName,
+        string productLink,
+        string offerId)
+    {
+        if (!string.IsNullOrWhiteSpace(productLink))
+        {
+            return productLink.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(offerId))
+        {
+            var linkByOffer = await db.ProductionTaskItems
+                .AsNoTracking()
+                .Where(item =>
+                    item.OfferId == offerId &&
+                    !string.IsNullOrWhiteSpace(item.ProductLink))
+                .OrderByDescending(item => item.Id)
+                .Select(item => item.ProductLink)
+                .FirstOrDefaultAsync();
+
+            if (!string.IsNullOrWhiteSpace(linkByOffer))
+            {
+                return linkByOffer.Trim();
+            }
+        }
+
+        var linkByName = await db.ProductionTaskItems
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductName == productName &&
+                !string.IsNullOrWhiteSpace(item.ProductLink))
+            .OrderByDescending(item => item.Id)
+            .Select(item => item.ProductLink)
+            .FirstOrDefaultAsync();
+
+        return linkByName?.Trim() ?? string.Empty;
+    }
+
+    private static bool TaskMatchesNovinkaProduct(
+        ProductionTask task,
+        string productName,
+        string productLink,
+        string offerId)
+    {
+        return task.Items.Any(item =>
+            (string.Equals(item.ProductName, productName, StringComparison.OrdinalIgnoreCase) &&
+             (string.IsNullOrWhiteSpace(productLink) ||
+              string.Equals(item.ProductLink, productLink, StringComparison.OrdinalIgnoreCase))) ||
+            (!string.IsNullOrWhiteSpace(offerId) &&
+             string.Equals(item.OfferId, offerId, StringComparison.OrdinalIgnoreCase)));
+    }
+
     public static ProductionTaskListItem ToListItem(ProductionTask task) =>
         new(
             task.Id,
@@ -3036,6 +3466,7 @@ static class ProductionTaskResponses
             task.RequiredQuantity,
             task.ActualQuantity,
             task.Status,
+            NormalizeTaskType(task.TaskType),
             task.IsUrgent,
             task.AssignedUserName,
             task.CreatedByUserId,
@@ -3053,7 +3484,7 @@ static class ProductionTaskResponses
 
     private static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
         task.Items.Count == 0
-            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, task.RequiredQuantity, task.ActualQuantity, false)]
+            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false)]
             : task.Items
                 .OrderBy(item => item.ProductName)
                 .Select(item => new ProductionTaskItemListItem(
@@ -3061,10 +3492,162 @@ static class ProductionTaskResponses
                     item.OzonProductId,
                     item.OfferId,
                     item.ProductName,
+                    item.ProductLink,
                     item.RequiredQuantity,
                     item.ActualQuantity,
                     item.EnforceMinimumQuantity))
                 .ToList();
+
+    public static List<ProductionTaskItem> BuildTaskItems(
+        string taskType,
+        IReadOnlyCollection<CreateProductionTaskItemRequest> requestItems)
+    {
+        if (NormalizeTaskType(taskType) == ProductionTaskTypes.Novinka)
+        {
+            return requestItems.Select(itemRequest =>
+            {
+                var itemId = Guid.NewGuid();
+                return new ProductionTaskItem
+                {
+                    Id = itemId,
+                    OzonProductId = 0,
+                    OfferId = BuildNovinkaOfferId(itemId),
+                    ProductName = itemRequest.ProductName.Trim(),
+                    ProductLink = itemRequest.ProductLink?.Trim() ?? string.Empty,
+                    RequiredQuantity = 0,
+                    EnforceMinimumQuantity = false
+                };
+            }).ToList();
+        }
+
+        return requestItems.Select(itemRequest => new ProductionTaskItem
+        {
+            OzonProductId = itemRequest.OzonProductId,
+            OfferId = itemRequest.OfferId.Trim(),
+            ProductName = itemRequest.ProductName.Trim(),
+            RequiredQuantity = itemRequest.RequiredQuantity,
+            EnforceMinimumQuantity = itemRequest.EnforceMinimumQuantity
+        }).ToList();
+    }
+
+    public static async Task<List<ProductionCatalogItem>> BuildCatalogAsync(
+        AppDbContext db,
+        string taskType)
+    {
+        var normalizedTaskType = NormalizeTaskType(taskType);
+        var files = await db.ProductionFiles.AsNoTracking().ToListAsync();
+
+        if (normalizedTaskType == ProductionTaskTypes.Novinka)
+        {
+            return BuildNovinkaCatalogFromFiles(files);
+        }
+
+        var tasks = await db.ProductionTasks
+            .AsNoTracking()
+            .Include(task => task.Items)
+            .Where(task =>
+                task.Status == ProductionTaskStatuses.Completed &&
+                !task.IsArchived &&
+                task.TaskType == normalizedTaskType)
+            .ToListAsync();
+
+        var catalog = new List<ProductionCatalogItem>();
+
+        foreach (var task in tasks)
+        {
+            var taskItems = task.Items.Count == 0
+                ?
+                [
+                    new ProductionTaskItem
+                    {
+                        Id = task.Id,
+                        OzonProductId = task.OzonProductId,
+                        OfferId = task.OfferId,
+                        ProductName = task.ProductName,
+                        ProductLink = string.Empty
+                    }
+                ]
+                : task.Items;
+
+            foreach (var item in taskItems)
+            {
+                var itemFiles = files.Where(file =>
+                        (!string.IsNullOrWhiteSpace(item.OfferId) && file.OfferId == item.OfferId) ||
+                        (item.OzonProductId > 0 && file.OzonProductId == item.OzonProductId))
+                    .ToList();
+
+                if (itemFiles.Count == 0)
+                {
+                    continue;
+                }
+
+                catalog.Add(new ProductionCatalogItem(
+                    item.OfferId,
+                    item.OzonProductId > 0 ? item.OzonProductId : null,
+                    item.ProductName,
+                    item.ProductLink,
+                    itemFiles.Count,
+                    task.CompletedAt));
+            }
+        }
+
+        return catalog
+            .GroupBy(item => item.OfferId, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(item => item.CompletedAt).First())
+            .OrderBy(item => item.ProductName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public static string GetNovinkaCatalogKey(ProductionFile file) =>
+        GetNovinkaCatalogKeyFromCatalogItem(file.OfferId, file.ProductName, file.ProductLink);
+
+    private static string GetNovinkaCatalogKeyFromCatalogItem(string offerId, string productName, string productLink)
+    {
+        var name = productName.Trim();
+        var link = productLink.Trim();
+        if (!string.IsNullOrEmpty(link))
+        {
+            return $"{name.ToLowerInvariant()}|{link.ToLowerInvariant()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(offerId))
+        {
+            return offerId.Trim().ToUpperInvariant();
+        }
+
+        return name.ToLowerInvariant();
+    }
+
+    public static List<ProductionFile> FindNovinkaCatalogFiles(
+        IEnumerable<ProductionFile> files,
+        string offerId,
+        string productName,
+        string productLink)
+    {
+        var key = GetNovinkaCatalogKeyFromCatalogItem(offerId, productName, productLink);
+        return files
+            .Where(IsNovinkaProductionFile)
+            .Where(file => string.Equals(GetNovinkaCatalogKey(file), key, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static List<ProductionCatalogItem> BuildNovinkaCatalogFromFiles(List<ProductionFile> files) =>
+        files
+            .Where(IsNovinkaProductionFile)
+            .GroupBy(GetNovinkaCatalogKey, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var latest = group.OrderByDescending(file => file.CreatedAt).First();
+                return new ProductionCatalogItem(
+                    latest.OfferId,
+                    latest.OzonProductId is > 0 ? latest.OzonProductId : null,
+                    latest.ProductName,
+                    latest.ProductLink,
+                    group.Count(),
+                    group.Max(file => file.CreatedAt));
+            })
+            .OrderBy(item => item.ProductName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 }
 
 static class ChatAccess
@@ -3514,5 +4097,127 @@ static class ExcelSupplyImport
     {
         var letters = new string(cellReference.TakeWhile(char.IsLetter).ToArray());
         return letters.Aggregate(0, (sum, letter) => sum * 26 + letter - 'A' + 1) - 1;
+    }
+}
+
+record LinkPreviewResponse(string? ImageUrl, string? Title);
+
+static class LinkPreviewHelper
+{
+    private static readonly Regex MetaTagRegex = new(
+        "<meta\\s+(?<attrs>[^>]*?)>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex LinkTagRegex = new(
+        "<link\\s+(?<attrs>[^>]*?)>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static bool TryNormalizeExternalUrl(string? url, out Uri normalizedUrl)
+    {
+        normalizedUrl = null!;
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme is not "http" and not "https")
+        {
+            return false;
+        }
+
+        if (uri.IsLoopback || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        normalizedUrl = uri;
+        return true;
+    }
+
+    public static string? ExtractMetaContent(string html, string propertyName)
+    {
+        foreach (Match match in MetaTagRegex.Matches(html))
+        {
+            var attrs = match.Groups["attrs"].Value;
+            if (!MetaAttributeMatches(attrs, "property", propertyName)
+                && !MetaAttributeMatches(attrs, "name", propertyName))
+            {
+                continue;
+            }
+
+            var content = ReadMetaAttribute(attrs, "content");
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                return WebUtility.HtmlDecode(content.Trim());
+            }
+        }
+
+        return null;
+    }
+
+    public static string? ExtractLinkHref(string html, string relValue)
+    {
+        foreach (Match match in LinkTagRegex.Matches(html))
+        {
+            var attrs = match.Groups["attrs"].Value;
+            if (!MetaAttributeMatches(attrs, "rel", relValue))
+            {
+                continue;
+            }
+
+            var href = ReadMetaAttribute(attrs, "href");
+            if (!string.IsNullOrWhiteSpace(href))
+            {
+                return WebUtility.HtmlDecode(href.Trim());
+            }
+        }
+
+        return null;
+    }
+
+    public static string? ResolveResourceUrl(Uri pageUrl, string? resourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(resourceUrl))
+        {
+            return null;
+        }
+
+        var trimmed = WebUtility.HtmlDecode(resourceUrl.Trim());
+        if (trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            return $"{pageUrl.Scheme}:{trimmed}";
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute)
+            && absolute.Scheme is "http" or "https")
+        {
+            return absolute.ToString();
+        }
+
+        if (Uri.TryCreate(pageUrl, trimmed, out var resolved)
+            && resolved.Scheme is "http" or "https")
+        {
+            return resolved.ToString();
+        }
+
+        return null;
+    }
+
+    private static bool MetaAttributeMatches(string attrs, string attributeName, string expectedValue)
+    {
+        var value = ReadMetaAttribute(attrs, attributeName);
+        return value.Equals(expectedValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReadMetaAttribute(string attrs, string attributeName)
+    {
+        var pattern = $"{attributeName}\\s*=\\s*(?:\"(?<value>[^\"]*)\"|'(?<value>[^']*)'|(?<value>[^\\s>]+))";
+        var match = Regex.Match(attrs, pattern, RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["value"].Value.Trim() : string.Empty;
     }
 }
