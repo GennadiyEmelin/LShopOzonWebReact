@@ -3,6 +3,8 @@ import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } fr
 import * as signalR from '@microsoft/signalr'
 import './App.css'
 
+const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000001'
+
 type User = {
   id: string
   userName: string
@@ -70,14 +72,32 @@ type SystemHealth = {
   dotnetVersion: string
 }
 
-type OzonIntegrationStatus = {
+type OzonIntegrationSettings = {
   configured: boolean
-  success: boolean
-  message: string
   baseUrl: string
   clientIdMasked: string
   apiKeyMasked: string
-  checkedAt: string
+  hasStoredClientId: boolean
+  hasStoredApiKey: boolean
+  updatedAt: string | null
+}
+
+type TelegramNotificationEvent = {
+  id: string
+  group: string
+  label: string
+}
+
+type TelegramIntegrationInfo = {
+  botConfigured: boolean
+  botUsername: string | null
+  botDisplayName: string | null
+  connected: boolean
+  chatIdMasked: string
+  connectedAt: string | null
+  connectUrl: string | null
+  enabledEvents: string[]
+  availableEvents: string[]
 }
 
 type BackupFile = {
@@ -164,6 +184,8 @@ type OzonAnalytics = {
     stockTotal: number
     status: string
     imageUrl: string
+    ozonSellingSince?: string
+    daysWithoutSales?: number | null
   }>
   orderedUnitsTotal: number
   revenueTotal: number
@@ -306,9 +328,11 @@ type DraftTaskItem = {
   ozonProductId: number
   offerId: string
   productName: string
+  productLink?: string
   imageUrl: string
   requiredQuantity: number
   enforceMinimumQuantity: boolean
+  isNovinka?: boolean
 }
 
 type DraftNovinkaItem = {
@@ -350,6 +374,7 @@ const tabs = [
   { id: 'pooling', label: 'Складчина' },
   { id: 'supplies', label: 'Поставки' },
   { id: 'chats', label: 'Чаты' },
+  { id: 'integrations', label: 'Интеграции' },
   { id: 'users', label: 'Пользователи', adminOnly: true },
   { id: 'settings', label: 'Настройки', adminOnly: true },
 ] as const
@@ -407,8 +432,12 @@ const featureGroups = [
     title: 'Чаты',
     items: [{ id: 'chats', label: 'Раздел' }],
   },
+  {
+    title: 'Интеграции',
+    items: [{ id: 'integrations', label: 'Раздел' }],
+  },
 ]
-const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats']
+const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'integrations']
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
@@ -425,11 +454,22 @@ function App() {
   const [users, setUsers] = useState<User[]>([])
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [auditSearch, setAuditSearch] = useState('')
+  const [auditDateFrom, setAuditDateFrom] = useState('')
+  const [auditDateTo, setAuditDateTo] = useState('')
+  const [auditUserId, setAuditUserId] = useState('')
   const [auditStatus, setAuditStatus] = useState('')
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null)
   const [systemHealthStatus, setSystemHealthStatus] = useState('')
-  const [ozonIntegration, setOzonIntegration] = useState<OzonIntegrationStatus | null>(null)
-  const [ozonIntegrationStatus, setOzonIntegrationStatus] = useState('')
+  const [ozonSettingsData, setOzonSettingsData] = useState<OzonIntegrationSettings | null>(null)
+  const [ozonSettingsForm, setOzonSettingsForm] = useState({ clientId: '', apiKey: '', baseUrl: 'https://api-seller.ozon.ru' })
+  const [ozonSettingsStatus, setOzonSettingsStatus] = useState('')
+  const [ozonSettingsSaving, setOzonSettingsSaving] = useState(false)
+  const [telegramIntegration, setTelegramIntegration] = useState<TelegramIntegrationInfo | null>(null)
+  const [telegramEvents, setTelegramEvents] = useState<TelegramNotificationEvent[]>([])
+  const [telegramSelectedEvents, setTelegramSelectedEvents] = useState<string[]>([])
+  const [telegramStatus, setTelegramStatus] = useState('')
+  const [telegramSaving, setTelegramSaving] = useState(false)
+  const [telegramExpandedGroups, setTelegramExpandedGroups] = useState<Record<string, boolean>>({})
   const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
   const [backupStatus, setBackupStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('home')
@@ -485,7 +525,9 @@ function App() {
   const [taskFormStatus, setTaskFormStatus] = useState('')
   const [taskFormSaving, setTaskFormSaving] = useState(false)
   const [selectedTaskProductId, setSelectedTaskProductId] = useState('')
+  const [selectedTaskNovinkaOfferId, setSelectedTaskNovinkaOfferId] = useState('')
   const [taskQuantity, setTaskQuantity] = useState('')
+  const [taskNovinkaQuantity, setTaskNovinkaQuantity] = useState('')
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [taskIsUrgent, setTaskIsUrgent] = useState(false)
@@ -766,7 +808,7 @@ function App() {
       ...row,
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
-    .sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
+    .sort((left, right) => (right.daysWithoutSales ?? 0) - (left.daysWithoutSales ?? 0) || left.offerId.localeCompare(right.offerId, 'ru'))
   const unsoldProductStatusCounts = useMemo(() => {
     const counts = { all: unsoldAnalyticsProducts.length, selling: 0, ready: 0 }
 
@@ -906,6 +948,25 @@ function App() {
 
     return hasFeature(tab.id)
   })
+  const telegramEventGroups = useMemo(() => {
+    const groups = new Map<string, TelegramNotificationEvent[]>()
+    for (const event of telegramEvents) {
+      const list = groups.get(event.group) ?? []
+      list.push(event)
+      groups.set(event.group, list)
+    }
+
+    return Array.from(groups.entries())
+  }, [telegramEvents])
+  const telegramEventColumns = useMemo(() => {
+    const columns: Array<Array<[string, TelegramNotificationEvent[]]>> = [[], []]
+
+    telegramEventGroups.forEach((entry, index) => {
+      columns[index % 2].push(entry)
+    })
+
+    return columns
+  }, [telegramEventGroups])
   const homeProductionStats = useMemo(() => {
     const activeTasks = productionTasks.filter((task) => !task.isArchived)
 
@@ -1051,7 +1112,6 @@ function App() {
     loadUsers()
     loadAuditLogs()
     loadSystemHealth()
-    loadOzonIntegrationStatus()
     loadBackups()
     const intervalId = window.setInterval(() => {
       loadUsers()
@@ -1188,6 +1248,18 @@ function App() {
 
     loadAnalytics()
   }, [analyticsDateFrom, analyticsDateTo, activeTab, token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'integrations' || !hasFeature('integrations')) {
+      return
+    }
+
+    void loadTelegramNotificationEvents()
+    void loadIntegrationsTelegram()
+    if (user?.role === 'Admin') {
+      void loadIntegrationsOzon()
+    }
+  }, [activeTab, token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
     if (!token) {
@@ -1339,10 +1411,29 @@ function App() {
     setUsers(data)
   }
 
-  async function loadAuditLogs(search = auditSearch) {
+  async function loadAuditLogs(
+    search = auditSearch,
+    filters?: { dateFrom?: string; dateTo?: string; userId?: string },
+  ) {
     const params = new URLSearchParams()
     if (search.trim()) {
       params.set('search', search.trim())
+    }
+
+    const effectiveDateFrom = filters?.dateFrom ?? auditDateFrom
+    const effectiveDateTo = filters?.dateTo ?? auditDateTo
+    const effectiveUserId = filters?.userId ?? auditUserId
+
+    if (effectiveDateFrom.trim()) {
+      params.set('dateFrom', effectiveDateFrom.trim())
+    }
+
+    if (effectiveDateTo.trim()) {
+      params.set('dateTo', effectiveDateTo.trim())
+    }
+
+    if (effectiveUserId.trim()) {
+      params.set('userId', effectiveUserId.trim())
     }
 
     const response = await fetch(`/api/admin/audit-logs?${params.toString()}`, {
@@ -1399,22 +1490,236 @@ function App() {
     setSystemHealthStatus(data.databaseOk ? 'Система работает' : 'База данных недоступна')
   }
 
-  async function loadOzonIntegrationStatus() {
-    setOzonIntegrationStatus('Проверяем Ozon API...')
-    const response = await fetch('/api/admin/ozon-status', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setOzonIntegrationStatus('Не удалось проверить Ozon API')
+  async function loadIntegrationsOzon() {
+    if (user?.role !== 'Admin') {
       return
     }
 
-    const data: OzonIntegrationStatus = await response.json()
-    setOzonIntegration(data)
-    setOzonIntegrationStatus(data.message)
+    setOzonSettingsStatus('Загрузка настроек Ozon...')
+    const response = await fetch('/api/integrations/ozon', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      setOzonSettingsStatus('Не удалось загрузить настройки Ozon')
+      return
+    }
+
+    const data: OzonIntegrationSettings = await response.json()
+    setOzonSettingsData(data)
+    setOzonSettingsForm((current) => ({
+      ...current,
+      baseUrl: data.baseUrl || current.baseUrl,
+    }))
+    setOzonSettingsStatus(
+      data.configured
+        ? `Ozon API настроен. Обновлено: ${data.updatedAt ? formatDateTime(data.updatedAt) : '—'}`
+        : 'Укажите Client ID и API Key Ozon',
+    )
+  }
+
+  async function saveIntegrationsOzon() {
+    if (user?.role !== 'Admin') {
+      return
+    }
+
+    setOzonSettingsSaving(true)
+    setOzonSettingsStatus('Сохранение...')
+    const response = await fetch('/api/integrations/ozon', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        clientId: ozonSettingsForm.clientId.trim(),
+        apiKey: ozonSettingsForm.apiKey.trim(),
+        baseUrl: ozonSettingsForm.baseUrl.trim(),
+      }),
+    })
+
+    setOzonSettingsSaving(false)
+    if (!response.ok) {
+      const message = await response.text()
+      setOzonSettingsStatus(message || 'Не удалось сохранить настройки Ozon')
+      return
+    }
+
+    const data: OzonIntegrationSettings = await response.json()
+    setOzonSettingsData(data)
+    setOzonSettingsForm((current) => ({ ...current, clientId: '', apiKey: '' }))
+    setOzonSettingsStatus('Настройки Ozon сохранены')
+  }
+
+  async function testIntegrationsOzon() {
+    if (user?.role !== 'Admin') {
+      return
+    }
+
+    setOzonSettingsStatus('Проверка подключения Ozon...')
+    const response = await fetch('/api/integrations/ozon/test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setOzonSettingsStatus(message || 'Не удалось проверить Ozon API')
+      return
+    }
+
+    const data: { success: boolean; message: string } = await response.json()
+    setOzonSettingsStatus(data.message)
+  }
+
+  async function loadTelegramNotificationEvents() {
+    const response = await fetch('/api/integrations/notification-events', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const data: TelegramNotificationEvent[] = await response.json()
+    setTelegramEvents(data)
+  }
+
+  async function loadIntegrationsTelegram() {
+    setTelegramStatus('Загрузка Telegram...')
+    const response = await fetch('/api/integrations/telegram', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      setTelegramStatus('Не удалось загрузить настройки Telegram')
+      return
+    }
+
+    const data: TelegramIntegrationInfo = await response.json()
+    setTelegramIntegration(data)
+    setTelegramSelectedEvents(data.enabledEvents ?? [])
+    setTelegramStatus(
+      data.connected
+        ? `Telegram подключён${data.connectedAt ? ` · ${formatDateTime(data.connectedAt)}` : ''}`
+        : data.botConfigured
+          ? 'Подключите бота по ссылке ниже'
+          : 'Telegram-бот не настроен на сервере',
+    )
+  }
+
+  async function connectTelegramBot() {
+    setTelegramStatus('Генерация ссылки...')
+    const response = await fetch('/api/integrations/telegram/connect', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setTelegramStatus(message || 'Не удалось создать ссылку подключения')
+      return
+    }
+
+    const data: { connectUrl: string } = await response.json()
+    setTelegramStatus('Откройте ссылку в Telegram и нажмите Start')
+    void loadIntegrationsTelegram()
+    window.open(data.connectUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  async function saveTelegramPreferences() {
+    setTelegramSaving(true)
+    setTelegramStatus('Сохранение оповещений...')
+    const response = await fetch('/api/integrations/telegram/preferences', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ events: telegramSelectedEvents }),
+    })
+
+    setTelegramSaving(false)
+    if (!response.ok) {
+      const message = await response.text()
+      setTelegramStatus(message || 'Не удалось сохранить оповещения')
+      return
+    }
+
+    const data: { enabledEvents: string[] } = await response.json()
+    setTelegramSelectedEvents(data.enabledEvents)
+    setTelegramStatus(`Сохранено оповещений: ${data.enabledEvents.length}`)
+  }
+
+  async function testTelegramNotification() {
+    setTelegramStatus('Отправка тестового сообщения...')
+    const response = await fetch('/api/integrations/telegram/test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      setTelegramStatus(message || 'Не удалось отправить тест')
+      return
+    }
+
+    const data: { message: string } = await response.json()
+    setTelegramStatus(data.message)
+  }
+
+  async function disconnectTelegramBot() {
+    setTelegramStatus('Отключение...')
+    const response = await fetch('/api/integrations/telegram', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      setTelegramStatus('Не удалось отключить Telegram')
+      return
+    }
+
+    setTelegramSelectedEvents([])
+    setTelegramStatus('Telegram отключён')
+    void loadIntegrationsTelegram()
+  }
+
+  function toggleTelegramEvent(eventId: string) {
+    setTelegramSelectedEvents((current) =>
+      current.includes(eventId) ? current.filter((item) => item !== eventId) : [...current, eventId],
+    )
+  }
+
+  function toggleTelegramGroup(group: string, enabled: boolean) {
+    const groupEventIds = telegramEvents.filter((item) => item.group === group).map((item) => item.id)
+    setTelegramSelectedEvents((current) => {
+      const next = new Set(current)
+      groupEventIds.forEach((eventId) => {
+        if (enabled) {
+          next.add(eventId)
+        } else {
+          next.delete(eventId)
+        }
+      })
+      return Array.from(next)
+    })
+  }
+
+  function selectAllTelegramEvents() {
+    setTelegramSelectedEvents(telegramEvents.map((item) => item.id))
+  }
+
+  function clearTelegramEvents() {
+    setTelegramSelectedEvents([])
+  }
+
+  function expandAllTelegramGroups() {
+    setTelegramExpandedGroups(Object.fromEntries(telegramEventGroups.map(([group]) => [group, true])))
+  }
+
+  function collapseAllTelegramGroups() {
+    setTelegramExpandedGroups(Object.fromEntries(telegramEventGroups.map(([group]) => [group, false])))
   }
 
   async function loadBackups() {
@@ -2871,7 +3176,9 @@ function App() {
     setNovinkaProductLink('')
     setTaskIsUrgent(false)
     setSelectedTaskProductId('')
+    setSelectedTaskNovinkaOfferId('')
     setTaskQuantity('')
+    setTaskNovinkaQuantity('')
     setEditingTaskId(null)
   }
 
@@ -2937,7 +3244,7 @@ function App() {
     const productLink = novinkaProductLink.trim()
 
     if (!productName || !productLink) {
-      setTaskStatus('Укажите наименование и ссылку на товар')
+      setTaskFormStatus('Укажите наименование и ссылку на товар')
       return
     }
 
@@ -2947,6 +3254,7 @@ function App() {
     ])
     setNovinkaProductName('')
     setNovinkaProductLink('')
+    setTaskFormStatus('')
     setTaskStatus('Новинка добавлена в задачу')
   }
 
@@ -2956,6 +3264,9 @@ function App() {
     setShowCreateTaskModal(true)
     if (taskSourceSubTab === 'ozon' && ozonProducts.length === 0) {
       void loadOzonProducts()
+    }
+    if (productionFiles.length === 0) {
+      void loadProductionFiles('')
     }
     void loadSupplies()
   }
@@ -2986,15 +3297,22 @@ function App() {
     } else {
       setTaskSourceSubTab('ozon')
       setDraftTaskItems(
-        getProductionTaskItems(task).map((item) => ({
-          tempId: createTempId(),
-          ozonProductId: item.ozonProductId,
-          offerId: item.offerId,
-          productName: item.productName,
-          imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
-          requiredQuantity: item.requiredQuantity,
-          enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
-        })),
+        getProductionTaskItems(task).map((item) => {
+          const isNovinkaItem =
+            item.ozonProductId <= 0 &&
+            (item.offerId.startsWith('NV-') || Boolean(item.productLink?.trim()))
+          return {
+            tempId: createTempId(),
+            ozonProductId: item.ozonProductId,
+            offerId: item.offerId,
+            productName: item.productName,
+            productLink: item.productLink,
+            imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
+            requiredQuantity: item.requiredQuantity,
+            enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+            isNovinka: isNovinkaItem,
+          }
+        }),
       )
       setDraftNovinkaItems([])
     }
@@ -3030,6 +3348,42 @@ function App() {
     setTaskStatus('Товар добавлен в задачу')
   }
 
+  function addDraftNovinkaToOzonTask() {
+    const quantity = Number(taskNovinkaQuantity)
+    const selectedNovinka = novinkaProductionCatalogItems.find(
+      (item) => item.offerId === selectedTaskNovinkaOfferId,
+    )
+
+    if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
+      setTaskFormStatus('Выберите новинку из списка и укажите количество')
+      return
+    }
+
+    if (selectedNovinka.fileCount <= 0) {
+      setTaskFormStatus('У выбранной новинки нет файлов производства')
+      return
+    }
+
+    setDraftTaskItems((current) => [
+      ...current,
+      {
+        tempId: createTempId(),
+        ozonProductId: selectedNovinka.ozonProductId ?? 0,
+        offerId: selectedNovinka.offerId,
+        productName: selectedNovinka.productName,
+        productLink: selectedNovinka.productLink,
+        imageUrl: '',
+        requiredQuantity: quantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+      },
+    ])
+    setSelectedTaskNovinkaOfferId('')
+    setTaskNovinkaQuantity('')
+    setTaskFormStatus('')
+    setTaskStatus('Новинка добавлена в задачу')
+  }
+
   async function saveTaskFromDraft() {
     const isNovinka = taskSourceSubTab === 'novinka'
     let novinkaItems = [...draftNovinkaItems]
@@ -3058,6 +3412,27 @@ function App() {
           },
         ]
       }
+
+      const novinka = novinkaProductionCatalogItems.find(
+        (item) => item.offerId === selectedTaskNovinkaOfferId,
+      )
+      const novinkaQuantity = Number(taskNovinkaQuantity)
+      if (novinka && Number.isFinite(novinkaQuantity) && novinkaQuantity > 0 && novinka.fileCount > 0) {
+        ozonItems = [
+          ...ozonItems,
+          {
+            tempId: createTempId(),
+            ozonProductId: novinka.ozonProductId ?? 0,
+            offerId: novinka.offerId,
+            productName: novinka.productName,
+            productLink: novinka.productLink,
+            imageUrl: '',
+            requiredQuantity: novinkaQuantity,
+            enforceMinimumQuantity: false,
+            isNovinka: true,
+          },
+        ]
+      }
     }
 
     const draftItems = isNovinka ? novinkaItems : ozonItems
@@ -3066,7 +3441,7 @@ function App() {
       setTaskFormStatus(
         isNovinka
           ? 'Добавьте новинку или заполните наименование и ссылку'
-          : 'Добавьте товар или выберите товар и укажите количество',
+          : 'Добавьте товар Ozon или новинку из списка и укажите количество',
       )
       return
     }
@@ -3094,6 +3469,7 @@ function App() {
             ozonProductId: item.ozonProductId,
             offerId: item.offerId,
             productName: item.productName,
+            productLink: item.productLink ?? '',
             requiredQuantity: item.requiredQuantity,
             enforceMinimumQuantity: item.enforceMinimumQuantity,
           })),
@@ -4550,7 +4926,15 @@ function App() {
                     <div className="modal-backdrop" role="presentation">
                       <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
                         <div className="modal-title-row">
-                          <h3>{editingTaskId ? 'Редактировать задачу' : 'Создать задачу'}</h3>
+                          <h3>
+                            {editingTaskId
+                              ? taskSourceSubTab === 'novinka'
+                                ? 'Редактировать задачу новинки'
+                                : 'Редактировать задачу'
+                              : taskSourceSubTab === 'novinka'
+                                ? 'Создать задачу новинки'
+                                : 'Создать задачу'}
+                          </h3>
                           <button type="button" onClick={closeTaskFormModal}>
                             Закрыть
                           </button>
@@ -4558,59 +4942,110 @@ function App() {
 
                         <div className="task-form task-form-modal">
                           {taskSourceSubTab === 'ozon' ? (
-                            <>
-                              <ProductSearchInput
-                                listId="task-products"
-                                products={ozonProducts}
-                                selectedProductId={selectedTaskProductId}
-                                onProductIdChange={setSelectedTaskProductId}
-                                placeholder="Начните писать название или артикул"
-                                hideInlinePreview
-                                showClearButton
-                              />
-                              <div className="task-form-modal-compose">
-                                {(() => {
-                                  const selectedTaskProduct = ozonProducts.find(
-                                    (item) => String(item.productId) === selectedTaskProductId,
-                                  )
-                                  const supplyHint = selectedTaskProduct
-                                    ? formatProductSupplyHint(
-                                        getProductSupplySummary(
-                                          selectedTaskProduct.productId,
-                                          selectedTaskProduct.offerId,
-                                          supplies,
-                                        ),
-                                      )
-                                    : ''
+                            <div className="supply-forms">
+                              <div className="supply-form-block supply-form-block-ozon">
+                                <strong>Товар из Ozon</strong>
+                                <ProductSearchInput
+                                  listId="task-products"
+                                  products={ozonProducts}
+                                  selectedProductId={selectedTaskProductId}
+                                  onProductIdChange={setSelectedTaskProductId}
+                                  placeholder="Начните писать название или артикул"
+                                  hideInlinePreview
+                                  showClearButton
+                                />
+                                <div className="task-form-modal-compose supply-form-compose">
+                                  {(() => {
+                                    const selectedTaskProduct = ozonProducts.find(
+                                      (item) => String(item.productId) === selectedTaskProductId,
+                                    )
+                                    const supplyHint = selectedTaskProduct
+                                      ? formatProductSupplyHint(
+                                          getProductSupplySummary(
+                                            selectedTaskProduct.productId,
+                                            selectedTaskProduct.offerId,
+                                            supplies,
+                                          ),
+                                        )
+                                      : ''
 
-                                  return selectedTaskProduct ? (
-                                    <div className="task-form-modal-preview-wrap">
-                                      <TaskProductPreview product={selectedTaskProduct} />
-                                      {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
-                                    </div>
-                                  ) : (
-                                    <div className="task-form-modal-preview task-form-modal-preview-empty">
-                                      <span>Выберите товар для превью</span>
-                                    </div>
-                                  )
-                                })()}
-                                <div className="task-form-modal-actions">
-                                  <input
-                                    className="task-quantity-input task-form-modal-qty"
-                                    type="number"
-                                    min="1"
-                                    placeholder="Кол-во"
-                                    value={taskQuantity}
-                                    onChange={(event) => setTaskQuantity(event.target.value)}
-                                  />
-                                  <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
-                                    Добавить
-                                  </button>
+                                    return selectedTaskProduct ? (
+                                      <div className="task-form-modal-preview-wrap">
+                                        <TaskProductPreview product={selectedTaskProduct} />
+                                        {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
+                                      </div>
+                                    ) : (
+                                      <div className="task-form-modal-preview task-form-modal-preview-empty">
+                                        <span>Выберите товар для превью</span>
+                                      </div>
+                                    )
+                                  })()}
+                                  <div className="task-form-modal-actions">
+                                    <input
+                                      className="task-quantity-input task-form-modal-qty"
+                                      type="number"
+                                      min="1"
+                                      placeholder="Кол-во"
+                                      value={taskQuantity}
+                                      onChange={(event) => setTaskQuantity(event.target.value)}
+                                    />
+                                    <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
+                                      Добавить
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
-                            </>
+
+                              <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
+                                <strong>Новинка</strong>
+                                <NovinkaSearchInput
+                                  listId="task-novinka-products"
+                                  products={novinkaProductionCatalogItems}
+                                  selectedOfferId={selectedTaskNovinkaOfferId}
+                                  onOfferIdChange={setSelectedTaskNovinkaOfferId}
+                                  placeholder="Начните писать название или артикул"
+                                  showClearButton
+                                />
+                                <div className="task-form-modal-compose supply-form-compose">
+                                  {(() => {
+                                    const selectedTaskNovinka = novinkaProductionCatalogItems.find(
+                                      (item) => item.offerId === selectedTaskNovinkaOfferId,
+                                    )
+
+                                    return selectedTaskNovinka ? (
+                                      <NovinkaProductPreview item={selectedTaskNovinka} token={token} />
+                                    ) : (
+                                      <div className="task-form-modal-preview task-form-modal-preview-empty">
+                                        <span>Выберите новинку для превью</span>
+                                      </div>
+                                    )
+                                  })()}
+                                  <div className="task-form-modal-actions">
+                                    <input
+                                      className="task-quantity-input task-form-modal-qty"
+                                      type="number"
+                                      min="1"
+                                      placeholder="Кол-во"
+                                      value={taskNovinkaQuantity}
+                                      onChange={(event) => setTaskNovinkaQuantity(event.target.value)}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="task-form-modal-btn"
+                                      onClick={addDraftNovinkaToOzonTask}
+                                    >
+                                      Добавить
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           ) : (
-                            <div className="novinka-task-compose">
+                            <div className="supply-form-block supply-form-block-novinka task-novinka-create-block">
+                              <strong>Новая новинка</strong>
+                              <span className="product-type-editor-hint">
+                                Укажите наименование и ссылку на товар. Файлы производства добавятся при выполнении задачи.
+                              </span>
                               <div className="novinka-task-fields">
                                 <label className="novinka-task-field">
                                   <span>Наименование товара</span>
@@ -4632,12 +5067,16 @@ function App() {
                                 </label>
                               </div>
                               <div className="novinka-task-compose-actions">
-                                {novinkaProductLink.trim() && (
+                                {novinkaProductLink.trim() ? (
                                   <LinkHoverPreview
                                     url={novinkaProductLink}
                                     name={novinkaProductName || 'Новинка'}
                                     token={token}
                                   />
+                                ) : (
+                                  <div className="task-form-modal-preview task-form-modal-preview-empty">
+                                    <span>Превью появится после ввода ссылки</span>
+                                  </div>
                                 )}
                                 <button
                                   type="button"
@@ -4662,16 +5101,29 @@ function App() {
                             <span></span>
                           </div>
                           {draftTaskItems.map((item) => {
-                            const draftSupplyHint = formatProductSupplyHint(
-                              getProductSupplySummary(item.ozonProductId, item.offerId, supplies),
-                            )
+                            const draftSupplyHint = item.isNovinka
+                              ? ''
+                              : formatProductSupplyHint(
+                                  getProductSupplySummary(item.ozonProductId, item.offerId, supplies),
+                                )
 
                             return (
                             <div className="table-row task-draft-row" key={item.tempId}>
                               <span className="product-mini task-draft-product-mini">
-                                <ProductThumb imageUrl={item.imageUrl} name={item.productName} large />
+                                {item.isNovinka && item.productLink ? (
+                                  <LinkHoverPreview
+                                    url={item.productLink}
+                                    name={item.productName}
+                                    token={token}
+                                  />
+                                ) : (
+                                  <ProductThumb imageUrl={item.imageUrl} name={item.productName} large />
+                                )}
                                 <span>
                                   <strong>{item.productName}</strong>
+                                  {item.isNovinka && (
+                                    <small className="task-product-supply-hint-inline">Новинка · файлы на товаре</small>
+                                  )}
                                   {draftSupplyHint && (
                                     <small className="task-product-supply-hint-inline">{draftSupplyHint}</small>
                                   )}
@@ -4808,6 +5260,7 @@ function App() {
 
                   <ProductionTaskTable
                     tasks={filteredNewTasksBySource}
+                    tableContext={taskSourceSubTab}
                     products={ozonProducts}
                     productionFiles={productionFiles}
                     token={token}
@@ -4829,6 +5282,7 @@ function App() {
               {productionSubTab === 'inProgress' && (
                 <ProductionTaskTable
                   tasks={filteredInProgressProductionTasks}
+                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
                   products={ozonProducts}
                   productionFiles={productionFiles}
                   token={token}
@@ -4848,6 +5302,7 @@ function App() {
               {productionSubTab === 'cancelled' && (
                 <ProductionTaskTable
                   tasks={filteredCancelledProductionTasks}
+                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
                   products={ozonProducts}
                   productionFiles={productionFiles}
                   token={token}
@@ -4870,6 +5325,7 @@ function App() {
               {productionSubTab === 'completed' && (
                 <ProductionTaskArchiveTable
                   tasks={filteredCompletedProductionTasks}
+                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
                   products={ozonProducts}
                   productionFiles={productionFiles}
                   token={token}
@@ -4899,6 +5355,7 @@ function App() {
                   </div>
                   <ProductionTaskArchiveTable
                     tasks={filteredArchivedProductionTasks}
+                    tableContext="mixed"
                     products={ozonProducts}
                     productionFiles={productionFiles}
                     token={token}
@@ -5044,7 +5501,7 @@ function App() {
                 </button>
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
-                {analyticsSubTab === 'summary' && (
+                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && (
                   <div className="date-filter">
                     <label>
                       <span>С</span>
@@ -5294,8 +5751,12 @@ function App() {
                   <div className="ozon-status">
                     <strong>Товары без единой продажи</strong>
                     <span>
-                      Сравнение каталога Ozon с заказами за последние 2 года · найдено:{' '}
-                      {filteredUnsoldAnalyticsProducts.length}
+                      Сравнение каталога Ozon с заказами за период{' '}
+                      {analyticsDateFrom && analyticsDateTo
+                        ? `${analyticsDateFrom} — ${analyticsDateTo}`
+                        : 'не выбран'}
+                      {' · '}
+                      найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'
                         ? ` из ${unsoldAnalyticsProducts.length}`
                         : ''}
@@ -5327,6 +5788,8 @@ function App() {
                       <span>Товар</span>
                       <span>Артикул</span>
                       <span>SKU</span>
+                      <span>В продаже с</span>
+                      <span>Дней без продаж</span>
                       <span>Статус</span>
                       <span>Остаток</span>
                       <span>Цена</span>
@@ -5345,6 +5808,8 @@ function App() {
                         </span>
                         <span>{row.offerId || '-'}</span>
                         <span>{row.sku || '-'}</span>
+                        <span>{formatOzonCreatedAt(row.ozonSellingSince)}</span>
+                        <span>{formatDaysWithoutSales(row.daysWithoutSales)}</span>
                         <span>{translateProductStatus(row.status)}</span>
                         <span>{row.stockTotal}</span>
                         <span>{formatMoney(row.price, row.currencyCode)}</span>
@@ -6226,9 +6691,11 @@ function App() {
                     <button type="button" onClick={() => changeUserPassword(item.id)}>
                       Сменить пароль
                     </button>
-                    <button type="button" className="danger" onClick={() => deleteUser(item.id)}>
-                      Удалить
-                    </button>
+                    {item.id !== SYSTEM_USER_ID && (
+                      <button type="button" className="danger" onClick={() => deleteUser(item.id)}>
+                        Удалить
+                      </button>
+                    )}
                     <details className="user-settings-panel">
                       <summary>Настройки пользователя</summary>
                       <div className="user-settings-grid">
@@ -6313,6 +6780,271 @@ function App() {
             </section>
           )}
 
+          {activeTab === 'integrations' && hasFeature('integrations') && (
+            <section className="integrations-panel">
+              <div className="section-title">
+                <div>
+                  <h2>Интеграции</h2>
+                  <p>Подключение Ozon API и персональные Telegram-оповещения</p>
+                </div>
+                <span className="section-actions">
+                  <button type="button" className="header-action" onClick={() => void loadIntegrationsTelegram()}>
+                    Обновить Telegram
+                  </button>
+                  {user?.role === 'Admin' && (
+                    <button type="button" className="header-action" onClick={() => void loadIntegrationsOzon()}>
+                      Обновить Ozon
+                    </button>
+                  )}
+                </span>
+              </div>
+
+              {user?.role === 'Admin' && (
+                <article className="integration-card">
+                  <div className="integration-card-head">
+                    <div>
+                      <h3>Ozon Seller API</h3>
+                      <p>{ozonSettingsStatus || 'Client ID и API Key хранятся в базе данных'}</p>
+                    </div>
+                    <span className={`integration-badge ${ozonSettingsData?.configured ? 'ok' : 'warn'}`}>
+                      {ozonSettingsData?.configured ? 'Настроено' : 'Не настроено'}
+                    </span>
+                  </div>
+
+                  {ozonSettingsData && (
+                    <div className="integration-meta">
+                      <small>Client ID: {ozonSettingsData.clientIdMasked || '—'}</small>
+                      <small>API Key: {ozonSettingsData.apiKeyMasked || '—'}</small>
+                      {ozonSettingsData.updatedAt && (
+                        <small>Обновлено: {formatDateTime(ozonSettingsData.updatedAt)}</small>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="integration-form-grid">
+                    <label>
+                      <span>Client ID</span>
+                      <input
+                        type="text"
+                        value={ozonSettingsForm.clientId}
+                        onChange={(event) =>
+                          setOzonSettingsForm((current) => ({ ...current, clientId: event.target.value }))
+                        }
+                        placeholder={ozonSettingsData?.hasStoredClientId ? 'Оставьте пустым, чтобы не менять' : 'Введите Client ID'}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label>
+                      <span>API Key</span>
+                      <input
+                        type="password"
+                        value={ozonSettingsForm.apiKey}
+                        onChange={(event) =>
+                          setOzonSettingsForm((current) => ({ ...current, apiKey: event.target.value }))
+                        }
+                        placeholder={ozonSettingsData?.hasStoredApiKey ? 'Оставьте пустым, чтобы не менять' : 'Введите API Key'}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label>
+                      <span>Base URL</span>
+                      <input
+                        type="url"
+                        value={ozonSettingsForm.baseUrl}
+                        onChange={(event) =>
+                          setOzonSettingsForm((current) => ({ ...current, baseUrl: event.target.value }))
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div className="integration-actions">
+                    <button
+                      type="button"
+                      className="header-action"
+                      disabled={ozonSettingsSaving}
+                      onClick={() => void saveIntegrationsOzon()}
+                    >
+                      {ozonSettingsSaving ? 'Сохранение...' : 'Сохранить Ozon'}
+                    </button>
+                    <button type="button" className="header-action secondary" onClick={() => void testIntegrationsOzon()}>
+                      Проверить подключение
+                    </button>
+                  </div>
+                </article>
+              )}
+
+              <article className="integration-card">
+                <div className="integration-card-head">
+                  <div>
+                    <h3>Telegram-бот</h3>
+                    <p>{telegramStatus || 'Персональные оповещения для вашего аккаунта'}</p>
+                  </div>
+                  <span
+                    className={`integration-badge ${
+                      telegramIntegration?.connected ? 'ok' : telegramIntegration?.botConfigured ? 'warn' : 'off'
+                    }`}
+                  >
+                    {telegramIntegration?.connected
+                      ? 'Подключён'
+                      : telegramIntegration?.botConfigured
+                        ? 'Не подключён'
+                        : 'Бот не настроен'}
+                  </span>
+                </div>
+
+                {telegramIntegration?.botConfigured && (
+                  <div className="integration-meta">
+                    {telegramIntegration.botDisplayName && (
+                      <small>
+                        Бот: {telegramIntegration.botDisplayName}
+                        {telegramIntegration.botUsername ? ` (@${telegramIntegration.botUsername})` : ''}
+                      </small>
+                    )}
+                    {telegramIntegration.connected && telegramIntegration.chatIdMasked && (
+                      <small>Chat ID: {telegramIntegration.chatIdMasked}</small>
+                    )}
+                    {telegramIntegration.connectUrl && !telegramIntegration.connected && (
+                      <a href={telegramIntegration.connectUrl} target="_blank" rel="noreferrer">
+                        Открыть бота в Telegram
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                <div className="integration-actions">
+                  {!telegramIntegration?.connected ? (
+                    <button
+                      type="button"
+                      className="header-action"
+                      disabled={!telegramIntegration?.botConfigured}
+                      onClick={() => void connectTelegramBot()}
+                    >
+                      Подключить Telegram
+                    </button>
+                  ) : (
+                    <>
+                      <button type="button" className="header-action" onClick={() => void testTelegramNotification()}>
+                        Тестовое сообщение
+                      </button>
+                      <button
+                        type="button"
+                        className="header-action secondary"
+                        onClick={() => void disconnectTelegramBot()}
+                      >
+                        Отключить
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {telegramIntegration?.connected && telegramEventGroups.length > 0 && (
+                  <div className="telegram-preferences">
+                    <div className="telegram-preferences-head">
+                      <div>
+                        <h4>Оповещения</h4>
+                        <p>
+                          Выбрано {telegramSelectedEvents.length} из {telegramEvents.length}. Настройки сохраняются
+                          только для вашего пользователя.
+                        </p>
+                      </div>
+                      <span className="telegram-preferences-actions">
+                        <button type="button" onClick={expandAllTelegramGroups}>
+                          Развернуть все
+                        </button>
+                        <button type="button" onClick={collapseAllTelegramGroups}>
+                          Свернуть все
+                        </button>
+                        <button type="button" onClick={selectAllTelegramEvents}>
+                          Выбрать все
+                        </button>
+                        <button type="button" onClick={clearTelegramEvents}>
+                          Снять все
+                        </button>
+                        <button
+                          type="button"
+                          className="header-action"
+                          disabled={telegramSaving}
+                          onClick={() => void saveTelegramPreferences()}
+                        >
+                          {telegramSaving ? 'Сохранение...' : 'Сохранить оповещения'}
+                        </button>
+                      </span>
+                    </div>
+
+                    <div className="telegram-event-groups">
+                      {telegramEventColumns.map((column, columnIndex) => (
+                        <div key={columnIndex} className="telegram-event-column">
+                          {column.map(([group, events]) => {
+                            const selectedInGroup = events.filter((event) =>
+                              telegramSelectedEvents.includes(event.id),
+                            ).length
+                            const allSelected = selectedInGroup === events.length
+                            const isExpanded = Boolean(telegramExpandedGroups[group])
+
+                            return (
+                              <div
+                                key={group}
+                                className={`telegram-event-group${isExpanded ? ' is-expanded' : ''}`}
+                              >
+                                <div className="telegram-event-group-head">
+                                  <button
+                                    type="button"
+                                    className="telegram-event-group-toggle"
+                                    aria-expanded={isExpanded}
+                                    onClick={() =>
+                                      setTelegramExpandedGroups((current) => ({
+                                        ...current,
+                                        [group]: !isExpanded,
+                                      }))
+                                    }
+                                  >
+                                    <span className="telegram-event-group-title">{group}</span>
+                                    <small>
+                                      {selectedInGroup}/{events.length}
+                                    </small>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="telegram-event-group-select"
+                                    onClick={() => toggleTelegramGroup(group, !allSelected)}
+                                  >
+                                    {allSelected ? 'Снять группу' : 'Выбрать группу'}
+                                  </button>
+                                </div>
+                                {isExpanded ? (
+                                  <div className="telegram-event-list">
+                                    {events.map((event) => (
+                                      <label key={event.id} className="telegram-event-item">
+                                        <input
+                                          type="checkbox"
+                                          checked={telegramSelectedEvents.includes(event.id)}
+                                          onChange={() => toggleTelegramEvent(event.id)}
+                                        />
+                                        <span>{event.label}</span>
+                                        <small>{event.id}</small>
+                                      </label>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {!telegramIntegration?.botConfigured && (
+                  <p className="integration-hint">
+                    Администратор должен добавить <code>TELEGRAM_BOT_TOKEN</code> в файл <code>.env</code> на сервере.
+                  </p>
+                )}
+              </article>
+            </section>
+          )}
+
           {activeTab === 'settings' && user?.role === 'Admin' && (
             <section className="admin-panel">
               <div className="section-title">
@@ -6355,26 +7087,6 @@ function App() {
                   <span>Сервер</span>
                   <strong>{systemHealth ? 'Работает' : 'Проверка...'}</strong>
                   <small>{systemHealth ? 'Сервер приложения доступен.' : 'Статус загружается'}</small>
-                </div>
-                <div>
-                  <span>Ozon API</span>
-                  <strong>
-                    {ozonIntegration
-                      ? ozonIntegration.success
-                        ? 'Подключен'
-                        : 'Нужна проверка'
-                      : 'Проверка...'}
-                  </strong>
-                  <small>{ozonIntegrationStatus || 'Ключи не показываются полностью.'}</small>
-                  {ozonIntegration && (
-                    <small>
-                      ClientId: {ozonIntegration.clientIdMasked} | ApiKey:{' '}
-                      {ozonIntegration.apiKeyMasked}
-                    </small>
-                  )}
-                  <button type="button" className="settings-card-action" onClick={loadOzonIntegrationStatus}>
-                    Проверить Ozon
-                  </button>
                 </div>
               </div>
 
@@ -6427,7 +7139,47 @@ function App() {
                     value={auditSearch}
                     onChange={(event) => setAuditSearch(event.target.value)}
                   />
+                  <label className="audit-filter-field">
+                    <span>Дата с</span>
+                    <input
+                      type="date"
+                      value={auditDateFrom}
+                      onChange={(event) => setAuditDateFrom(event.target.value)}
+                    />
+                  </label>
+                  <label className="audit-filter-field">
+                    <span>Дата по</span>
+                    <input
+                      type="date"
+                      value={auditDateTo}
+                      onChange={(event) => setAuditDateTo(event.target.value)}
+                    />
+                  </label>
+                  <label className="audit-filter-field">
+                    <span>Исполнитель</span>
+                    <select value={auditUserId} onChange={(event) => setAuditUserId(event.target.value)}>
+                      <option value="">Все пользователи</option>
+                      {users.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.displayName || entry.userName} ({entry.userName})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <button type="submit">Найти</button>
+                  <button
+                    type="button"
+                    className="audit-filter-reset"
+                    onClick={() => {
+                      setAuditSearch('')
+                      setAuditDateFrom('')
+                      setAuditDateTo('')
+                      setAuditUserId('')
+                      void loadAuditLogs('', { dateFrom: '', dateTo: '', userId: '' })
+                    }}
+                  >
+                    Сбросить
+                  </button>
                 </form>
 
                 <div className="data-table audit-table">
@@ -7983,9 +8735,12 @@ function ProductionTaskTypeFilterTabs({
   )
 }
 
-function getProductionTaskTableMode(tasks: ProductionTask[]) {
+function getProductionTaskTableMode(
+  tasks: ProductionTask[],
+  whenEmpty: 'ozon' | 'novinka' | 'mixed' = 'ozon',
+) {
   if (tasks.length === 0) {
-    return 'empty' as const
+    return whenEmpty
   }
 
   if (tasks.every((task) => isNovinkaTask(task))) {
@@ -7997,6 +8752,29 @@ function getProductionTaskTableMode(tasks: ProductionTask[]) {
   }
 
   return 'mixed' as const
+}
+
+function getProductionTaskTableLabels(tableMode: ReturnType<typeof getProductionTaskTableMode>) {
+  const showQuantityColumns = tableMode === 'ozon' || tableMode === 'mixed'
+  const showTypeColumn = tableMode === 'ozon' || tableMode === 'mixed'
+
+  return {
+    showQuantityColumns,
+    showTypeColumn,
+    skuHeaderLabel:
+      tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул',
+    neededHeaderLabel: tableMode === 'mixed' ? 'План' : 'Нужно',
+  }
+}
+
+function resolveProductionTaskTableContext(
+  filter: 'all' | 'ozon' | 'novinka',
+): 'ozon' | 'novinka' | 'mixed' {
+  if (filter === 'all') {
+    return 'mixed'
+  }
+
+  return filter
 }
 
 function renderNovinkaItemLink(item: ProductionTaskItem) {
@@ -8259,6 +9037,7 @@ function ProductionFilesModal({
 
 function ProductionTaskTable({
   tasks,
+  tableContext = 'ozon',
   products,
   productionFiles,
   token,
@@ -8299,19 +9078,24 @@ function ProductionTaskTable({
   onEdit?: (task: ProductionTask) => void
   completed?: boolean
   cancelled?: boolean
+  tableContext?: 'ozon' | 'novinka' | 'mixed'
 }) {
-  const tableMode = getProductionTaskTableMode(tasks)
-  const skuHeaderLabel =
-    tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул'
+  const tableMode = getProductionTaskTableMode(tasks, tableContext)
+  const { showQuantityColumns, showTypeColumn, skuHeaderLabel, neededHeaderLabel } =
+    getProductionTaskTableLabels(tableMode)
 
   return (
     <div className={`data-table production-task-table production-task-table-${tableMode}`}>
       <div className="table-row task-row table-head">
         <span className="task-col-product">Товар</span>
         <span className="task-col-sku">{skuHeaderLabel}</span>
-        <span className="task-col-type">Тип</span>
-        <span className="task-col-needed">Нужно</span>
-        <span className="task-col-fact">Факт</span>
+        {showTypeColumn && <span className="task-col-type">Тип</span>}
+        {showQuantityColumns && (
+          <>
+            <span className="task-col-needed">{neededHeaderLabel}</span>
+            <span className="task-col-fact">Факт</span>
+          </>
+        )}
         <span className="task-col-status">Статус</span>
         <span className="task-col-creator">Создатель</span>
         <span className="task-col-assignee">Исполнитель</span>
@@ -8369,23 +9153,29 @@ function ProductionTaskTable({
                   ))
               : taskItems.map((item) => item.offerId || '-').join(', ')}
           </span>
-          <span className="task-col-type">
-            <span className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}>
-              {getProductionTaskTypeLabel(task)}
+          {showTypeColumn && (
+            <span className="task-col-type">
+              <span className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}>
+                {getProductionTaskTypeLabel(task)}
+              </span>
             </span>
-          </span>
-          <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
-          <span className="task-col-fact">
-            {novinka ? (
-              <small>—</small>
-            ) : completed ? (
-              getProductionTaskActualTotal(task)
-            ) : task.status === 'InProgress' ? (
-              <small>По товарам</small>
-            ) : (
-              <small>—</small>
-            )}
-          </span>
+          )}
+          {showQuantityColumns && (
+            <>
+              <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
+              <span className="task-col-fact">
+                {novinka ? (
+                  <small>—</small>
+                ) : completed ? (
+                  getProductionTaskActualTotal(task)
+                ) : task.status === 'InProgress' ? (
+                  <small>По товарам</small>
+                ) : (
+                  <small>—</small>
+                )}
+              </span>
+            </>
+          )}
           <span className="task-col-status">{translateProductionTaskStatus(task.status, task.isUrgent)}</span>
           <span className="task-col-creator">{task.createdByDisplayName || '-'}</span>
           <span className="task-col-assignee">{task.assignedUserName || '-'}</span>
@@ -8816,6 +9606,7 @@ function formatFileSize(value: number) {
 
 function ProductionTaskArchiveTable({
   tasks,
+  tableContext = 'mixed',
   products,
   productionFiles = [],
   token = '',
@@ -8836,19 +9627,24 @@ function ProductionTaskArchiveTable({
   onDelete?: (id: string) => void
   archiveView?: boolean
   emptyText?: string
+  tableContext?: 'ozon' | 'novinka' | 'mixed'
 }) {
-  const tableMode = getProductionTaskTableMode(tasks)
-  const skuHeaderLabel =
-    tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул'
+  const tableMode = getProductionTaskTableMode(tasks, tableContext)
+  const { showQuantityColumns, showTypeColumn, skuHeaderLabel, neededHeaderLabel } =
+    getProductionTaskTableLabels(tableMode)
 
   return (
     <div className={`data-table production-task-table production-task-table-${tableMode}`}>
       <div className={`table-row task-archive-row table-head ${archiveView ? 'task-archive-row-extended' : ''}`}>
         <span>Что было в задаче</span>
         <span className="task-col-sku">{skuHeaderLabel}</span>
-        <span className="task-col-type">Тип</span>
-        <span className="task-col-needed">План</span>
-        <span className="task-col-fact">Факт</span>
+        {showTypeColumn && <span className="task-col-type">Тип</span>}
+        {showQuantityColumns && (
+          <>
+            <span className="task-col-needed">{neededHeaderLabel}</span>
+            <span className="task-col-fact">Факт</span>
+          </>
+        )}
         {archiveView && <span>Статус</span>}
         <span>Кто выполнял</span>
         <span>Взял в работу</span>
@@ -8878,17 +9674,23 @@ function ProductionTaskArchiveTable({
                   ))
               : taskItems.map((item) => item.offerId || '-').join(', ')}
           </span>
-          <span className="task-col-type">
-            <span
-              className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}
-            >
-              {getProductionTaskTypeLabel(task)}
+          {showTypeColumn && (
+            <span className="task-col-type">
+              <span
+                className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}
+              >
+                {getProductionTaskTypeLabel(task)}
+              </span>
             </span>
-          </span>
-          <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
-          <span className="task-col-fact">
-            {novinka ? '—' : task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}
-          </span>
+          )}
+          {showQuantityColumns && (
+            <>
+              <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
+              <span className="task-col-fact">
+                {novinka ? '—' : task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}
+              </span>
+            </>
+          )}
           {archiveView && <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>}
           <span>{task.assignedUserName || '-'}</span>
           <span>{task.startedAt ? formatDateTime(task.startedAt) : '-'}</span>
@@ -9682,6 +10484,31 @@ function formatSupplyDisplayStatus(item: { status: SupplyStatus; isArchived?: bo
   }
 
   return translateSupplyStatus(item.status)
+}
+
+function formatOzonCreatedAt(value?: string) {
+  if (!value) {
+    return '-'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function formatDaysWithoutSales(value?: number | null) {
+  if (value === null || value === undefined) {
+    return '-'
+  }
+
+  return `${value} дн.`
 }
 
 function formatDateTime(value: string) {

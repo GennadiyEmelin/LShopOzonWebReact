@@ -7,6 +7,7 @@ using System.Xml.Linq;
 using System.IO.Compression;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Hubs;
+using LShopOzonWebReact.Api.Integrations;
 using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
 using LShopOzonWebReact.Api.Security;
@@ -24,10 +25,18 @@ builder.Services.AddOpenApi();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")));
 builder.Services.Configure<OzonOptions>(builder.Configuration.GetSection("Ozon"));
+builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection("Telegram"));
+builder.Services.AddSingleton<OzonRuntimeCredentials>();
+builder.Services.AddHttpClient(nameof(TelegramNotificationService));
+builder.Services.AddHttpClient(nameof(TelegramBotHostedService));
+builder.Services.AddSingleton<TelegramNotificationService>();
+builder.Services.AddHostedService<TelegramBotHostedService>();
 builder.Services.AddHttpClient<OzonApiClient>((serviceProvider, client) =>
 {
-    var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OzonOptions>>().Value;
-    client.BaseAddress = new Uri(options.BaseUrl);
+    var credentials = serviceProvider.GetRequiredService<OzonRuntimeCredentials>();
+    client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(credentials.BaseUrl)
+        ? "https://api-seller.ozon.ru"
+        : credentials.BaseUrl);
 });
 builder.Services.AddScoped<JwtTokenService>();
 builder.Services
@@ -90,6 +99,14 @@ if (app.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
     await SystemUserBootstrap.EnsureExistsAsync(db);
+    var credentials = scope.ServiceProvider.GetRequiredService<OzonRuntimeCredentials>();
+    await credentials.LoadFromDatabaseAsync(db);
+}
+else
+{
+    using var scope = app.Services.CreateScope();
+    var credentials = scope.ServiceProvider.GetRequiredService<OzonRuntimeCredentials>();
+    await credentials.LoadFromDatabaseAsync(scope.ServiceProvider.GetRequiredService<AppDbContext>());
 }
 
 // Configure the HTTP request pipeline.
@@ -116,6 +133,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapHub<AppHub>("/hubs/live").RequireAuthorization();
+app.MapIntegrationRoutes();
 
 app.MapPost("/api/setup/admin", async (CreateInitialAdminRequest request, AppDbContext db) =>
 {
@@ -491,6 +509,9 @@ app.MapGet("/api/admin/audit-logs", async (
     string? search,
     string? action,
     string? entityType,
+    string? dateFrom,
+    string? dateTo,
+    string? userId,
     AppDbContext db) =>
 {
     var query = db.AuditLogs.AsNoTracking();
@@ -515,6 +536,23 @@ app.MapGet("/api/admin/audit-logs", async (
     if (!string.IsNullOrWhiteSpace(entityType))
     {
         query = query.Where(log => log.EntityType == entityType);
+    }
+
+    if (!string.IsNullOrWhiteSpace(dateFrom) && DateOnly.TryParse(dateFrom, out var parsedDateFrom))
+    {
+        var from = new DateTimeOffset(parsedDateFrom.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        query = query.Where(log => log.CreatedAt >= from);
+    }
+
+    if (!string.IsNullOrWhiteSpace(dateTo) && DateOnly.TryParse(dateTo, out var parsedDateTo))
+    {
+        var toExclusive = new DateTimeOffset(parsedDateTo.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        query = query.Where(log => log.CreatedAt < toExclusive);
+    }
+
+    if (Guid.TryParse(userId, out var parsedUserId))
+    {
+        query = query.Where(log => log.UserId == parsedUserId);
     }
 
     return await query
@@ -1678,7 +1716,8 @@ app.MapGet("/api/ozon/analytics", async (
             return Results.BadRequest("Дата начала не может быть позже даты окончания.");
         }
 
-        var result = await ozonApi.GetAnalyticsAsync(from, to, cancellationToken);
+        var supplyArrivalDates = await SupplyAnalyticsHelper.BuildAcceptedSupplyArrivalDatesAsync(db);
+        var result = await ozonApi.GetAnalyticsAsync(from, to, supplyArrivalDates, cancellationToken);
         return Results.Ok(result);
     }
     catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
@@ -2101,7 +2140,8 @@ app.MapPost("/api/production/tasks", async (
     CreateProductionTaskRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var taskType = ProductionTaskResponses.NormalizeTaskType(request.TaskType);
     var requestItems = request.Items is { Count: > 0 }
@@ -2121,7 +2161,7 @@ app.MapPost("/api/production/tasks", async (
             return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
         }
     }
-    else if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    else if (requestItems.Any(item => !ProductionTaskResponses.IsValidOzonTaskItemRequest(item)))
     {
         return Results.BadRequest("Выберите товар и укажите количество больше нуля.");
     }
@@ -2160,6 +2200,17 @@ app.MapPost("/api/production/tasks", async (
     var result = ProductionTaskResponses.ToListItem(task);
 
     await hub.Clients.All.SendAsync("ProductionTasksChanged", result);
+
+    var createdEventId = task.IsUrgent
+        ? "production.task.new.urgent"
+        : taskType == ProductionTaskTypes.Novinka
+            ? "production.task.new.novinka"
+            : "production.task.new.ozon";
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        createdEventId,
+        ProductionTaskResponses.BuildNewTaskTelegramMessage(task));
 
     return Results.Created($"/api/production/tasks/{task.Id}", result);
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
@@ -2201,7 +2252,7 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
             return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
         }
     }
-    else if (requestItems.Any(item => item.OzonProductId <= 0 || item.RequiredQuantity <= 0))
+    else if (requestItems.Any(item => !ProductionTaskResponses.IsValidOzonTaskItemRequest(item)))
     {
         return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
     }
@@ -2322,7 +2373,8 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
     CancelProductionTaskRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var comment = request.Comment?.Trim() ?? string.Empty;
     if (comment.Length < 3)
@@ -2395,6 +2447,12 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
     }
 
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.task.cancelled",
+        ProductionTaskResponses.BuildCancelledTaskTelegramMessage(task, cancelledByName, comment));
 
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
@@ -2659,7 +2717,8 @@ app.MapPost("/api/supplies", async (
     CreateSupplyRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
     {
@@ -2693,6 +2752,11 @@ app.MapPost("/api/supplies", async (
     AuditLogWriter.Add(db, principal, "Создание поставки", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("SuppliesChanged");
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "supply.created",
+        $"Создана поставка: {supply.Items.Count} поз.");
 
     return Results.Created($"/api/supplies/{supply.Id}", new SupplyListItem(
         supply.Id,
@@ -3259,6 +3323,50 @@ record OzonIntegrationStatusResponse(
     string ApiKeyMasked,
     DateTimeOffset CheckedAt);
 
+static class SupplyAnalyticsHelper
+{
+    public static async Task<Dictionary<string, string>> BuildAcceptedSupplyArrivalDatesAsync(AppDbContext db)
+    {
+        var items = await (
+            from item in db.SupplyItems.AsNoTracking()
+            join supply in db.Supplies.AsNoTracking() on item.SupplyId equals supply.Id
+            where !item.IsReserve &&
+                  supply.Status == SupplyStatuses.Accepted &&
+                  supply.AcceptedAt != null
+            select new
+            {
+                item.OfferId,
+                item.OzonProductId,
+                AcceptedAt = supply.AcceptedAt!.Value
+            }).ToListAsync();
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            var date = item.AcceptedAt.ToString("yyyy-MM-dd");
+            if (!string.IsNullOrWhiteSpace(item.OfferId))
+            {
+                var key = $"offer:{item.OfferId.Trim()}";
+                if (!map.TryGetValue(key, out var existing) || string.Compare(date, existing, StringComparison.Ordinal) > 0)
+                {
+                    map[key] = date;
+                }
+            }
+
+            if (item.OzonProductId is > 0)
+            {
+                var key = $"product:{item.OzonProductId.Value}";
+                if (!map.TryGetValue(key, out var existing) || string.Compare(date, existing, StringComparison.Ordinal) > 0)
+                {
+                    map[key] = date;
+                }
+            }
+        }
+
+        return map;
+    }
+}
+
 static class AuditLogWriter
 {
     public static void Add(
@@ -3482,6 +3590,151 @@ static class ProductionTaskResponses
             task.ArchivedAt,
             MapItems(task));
 
+    public static string BuildNewTaskTelegramMessage(ProductionTask task)
+    {
+        var taskType = NormalizeTaskType(task.TaskType);
+        var isNovinka = taskType == ProductionTaskTypes.Novinka;
+        var items = task.Items.Count > 0
+            ? task.Items.OrderBy(item => item.ProductName).ToList()
+            :
+            [
+                new ProductionTaskItem
+                {
+                    OfferId = task.OfferId,
+                    ProductName = task.ProductName,
+                    RequiredQuantity = task.RequiredQuantity
+                }
+            ];
+
+        var builder = new StringBuilder();
+        builder.Append("Новая задача");
+        if (task.IsUrgent)
+        {
+            builder.Append(" (срочно)");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine($"Тип: {(isNovinka ? "Новинка" : "Ozon")}");
+
+        if (items.Count == 1)
+        {
+            var item = items[0];
+            builder.AppendLine($"Товар: {ShortenText(item.ProductName)}");
+            if (!string.IsNullOrWhiteSpace(item.OfferId))
+            {
+                builder.AppendLine($"Артикул: {item.OfferId.Trim()}");
+            }
+
+            if (!isNovinka && item.RequiredQuantity > 0)
+            {
+                builder.AppendLine($"Количество: {item.RequiredQuantity} шт.");
+            }
+
+            if (isNovinka && !string.IsNullOrWhiteSpace(item.ProductLink))
+            {
+                builder.AppendLine($"Ссылка: {ShortenText(item.ProductLink, 96)}");
+            }
+        }
+        else
+        {
+            builder.AppendLine($"Позиций: {items.Count}");
+            foreach (var item in items.Take(5))
+            {
+                var line = new StringBuilder($"• {ShortenText(item.ProductName, 52)}");
+                if (!isNovinka && item.RequiredQuantity > 0)
+                {
+                    line.Append($" — {item.RequiredQuantity} шт.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(item.OfferId))
+                {
+                    line.Append($" · {item.OfferId.Trim()}");
+                }
+
+                builder.AppendLine(line.ToString());
+            }
+
+            if (items.Count > 5)
+            {
+                builder.AppendLine($"• … ещё {items.Count - 5}");
+            }
+        }
+
+        var executor = string.IsNullOrWhiteSpace(task.AssignedUserName)
+            ? "не назначен"
+            : task.AssignedUserName.Trim();
+        builder.AppendLine($"Исполнитель: {executor}");
+
+        var creator = string.IsNullOrWhiteSpace(task.CreatedByDisplayName)
+            ? "—"
+            : task.CreatedByDisplayName.Trim();
+        builder.AppendLine($"Создал: {creator}");
+
+        return builder.ToString().TrimEnd();
+    }
+
+    public static string BuildCancelledTaskTelegramMessage(
+        ProductionTask task,
+        string cancelledByName,
+        string comment)
+    {
+        var items = task.Items.Count > 0
+            ? task.Items.OrderBy(item => item.ProductName).ToList()
+            :
+            [
+                new ProductionTaskItem
+                {
+                    OfferId = task.OfferId,
+                    ProductName = task.ProductName,
+                    RequiredQuantity = task.RequiredQuantity
+                }
+            ];
+
+        var builder = new StringBuilder();
+        builder.AppendLine("Задача отменена");
+        builder.AppendLine($"Товар: {ShortenText(items.Count == 1 ? items[0].ProductName : task.ProductName)}");
+
+        if (items.Count == 1 && !string.IsNullOrWhiteSpace(items[0].OfferId))
+        {
+            builder.AppendLine($"Артикул: {items[0].OfferId.Trim()}");
+        }
+        else if (items.Count > 1)
+        {
+            builder.AppendLine($"Позиций: {items.Count}");
+        }
+
+        if (items.Count == 1 && items[0].RequiredQuantity > 0)
+        {
+            builder.AppendLine($"Количество: {items[0].RequiredQuantity} шт.");
+        }
+
+        builder.AppendLine($"Отменил: {cancelledByName.Trim()}");
+
+        var creator = string.IsNullOrWhiteSpace(task.CreatedByDisplayName)
+            ? "—"
+            : task.CreatedByDisplayName.Trim();
+        builder.AppendLine($"Создал: {creator}");
+        builder.AppendLine($"Причина: {comment.Trim()}");
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string ShortenText(string? value, int maxLength = 72)
+    {
+        var trimmed = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        while (trimmed.Contains("  ", StringComparison.Ordinal))
+        {
+            trimmed = trimmed.Replace("  ", " ", StringComparison.Ordinal);
+        }
+
+        if (trimmed.Length <= maxLength)
+        {
+            return trimmed;
+        }
+
+        return trimmed[..(maxLength - 1)].TrimEnd() + "…";
+    }
+
     private static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
         task.Items.Count == 0
             ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false)]
@@ -3525,9 +3778,26 @@ static class ProductionTaskResponses
             OzonProductId = itemRequest.OzonProductId,
             OfferId = itemRequest.OfferId.Trim(),
             ProductName = itemRequest.ProductName.Trim(),
+            ProductLink = itemRequest.ProductLink?.Trim() ?? string.Empty,
             RequiredQuantity = itemRequest.RequiredQuantity,
             EnforceMinimumQuantity = itemRequest.EnforceMinimumQuantity
         }).ToList();
+    }
+
+    public static bool IsValidOzonTaskItemRequest(CreateProductionTaskItemRequest item)
+    {
+        if (item.RequiredQuantity <= 0)
+        {
+            return false;
+        }
+
+        if (item.OzonProductId > 0)
+        {
+            return !string.IsNullOrWhiteSpace(item.OfferId) || !string.IsNullOrWhiteSpace(item.ProductName);
+        }
+
+        return !string.IsNullOrWhiteSpace(item.OfferId) ||
+               (!string.IsNullOrWhiteSpace(item.ProductName) && !string.IsNullOrWhiteSpace(item.ProductLink));
     }
 
     public static async Task<List<ProductionCatalogItem>> BuildCatalogAsync(
@@ -3766,7 +4036,8 @@ static class FeatureAccess
         Supplies,
         "supplies.create",
         "supplies.all",
-        Chats
+        Chats,
+        "integrations"
     ];
 
     public static readonly string[] All =
@@ -3793,7 +4064,8 @@ static class FeatureAccess
         "supplies.all",
         "supplies.archive",
         "supplies.analytics",
-        Chats
+        Chats,
+        "integrations"
     ];
 
     public static List<string> Parse(string value) =>

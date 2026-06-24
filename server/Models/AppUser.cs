@@ -13,6 +13,10 @@ public class AppUser
     public bool IsActive { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? LastSeenAt { get; set; }
+    public string TelegramChatId { get; set; } = string.Empty;
+    public string TelegramConnectToken { get; set; } = string.Empty;
+    public string TelegramNotifyEvents { get; set; } = string.Empty;
+    public DateTimeOffset? TelegramConnectedAt { get; set; }
 }
 
 public static class UserRoles

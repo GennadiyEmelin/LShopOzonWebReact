@@ -15,6 +15,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatGroup> ChatGroups => Set<ChatGroup>();
     public DbSet<ChatGroupMember> ChatGroupMembers => Set<ChatGroupMember>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<AppIntegrationSettings> AppIntegrationSettings => Set<AppIntegrationSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -27,6 +28,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(user => user.AvatarFileName).HasMaxLength(260);
             entity.Property(user => user.AllowedFeatures).HasMaxLength(2000);
             entity.Property(user => user.Role).HasMaxLength(32);
+            entity.Property(user => user.TelegramChatId).HasMaxLength(32);
+            entity.Property(user => user.TelegramConnectToken).HasMaxLength(64);
+            entity.Property(user => user.TelegramNotifyEvents).HasMaxLength(4000);
+        });
+
+        modelBuilder.Entity<AppIntegrationSettings>(entity =>
+        {
+            entity.HasKey(settings => settings.Id);
+            entity.Property(settings => settings.Id).ValueGeneratedNever();
+            entity.Property(settings => settings.OzonClientId).HasMaxLength(120);
+            entity.Property(settings => settings.OzonApiKey).HasMaxLength(240);
+            entity.Property(settings => settings.OzonBaseUrl).HasMaxLength(240);
         });
 
         modelBuilder.Entity<ProductionFile>(entity =>

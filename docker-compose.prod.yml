@@ -38,6 +38,7 @@ services:
       Ozon__BaseUrl: ${OZON_BASE_URL}
       Ozon__ClientId: ${OZON_CLIENT_ID}
       Ozon__ApiKey: ${OZON_API_KEY}
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
 
   adminer:
     image: adminer:latest

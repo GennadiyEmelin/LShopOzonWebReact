@@ -1233,7 +1233,7 @@
 }
 
 .unsold-products-row {
-  grid-template-columns: minmax(320px, 2.2fr) minmax(130px, 0.8fr) minmax(120px, 0.7fr) minmax(130px, 0.8fr) minmax(90px, 0.5fr) minmax(130px, 0.8fr);
+  grid-template-columns: minmax(280px, 2fr) minmax(120px, 0.8fr) minmax(100px, 0.6fr) minmax(130px, 0.8fr) minmax(110px, 0.7fr) minmax(120px, 0.7fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr);
 }
 
 .unsold-product-name {
@@ -1435,6 +1435,26 @@
   width: 100%;
 }
 
+.task-novinka-create-block {
+  margin: 0 20px 16px;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.task-novinka-create-block .novinka-task-fields,
+.task-novinka-create-block .novinka-task-compose-actions,
+.task-novinka-create-block .product-type-editor-hint {
+  grid-column: 1 / -1;
+}
+
+.task-novinka-create-block .novinka-task-compose-actions {
+  justify-content: space-between;
+}
+
+.task-novinka-create-block .task-form-modal-preview-empty {
+  min-height: 72px;
+}
+
 .product-type-editor-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -1634,22 +1654,11 @@
   font-size: 12px;
 }
 
-.production-task-table-novinka .task-col-needed,
-.production-task-table-novinka .task-col-fact {
-  display: none;
-}
-
-.production-task-table-mixed .task-row-novinka .task-col-needed,
-.production-task-table-mixed .task-row-novinka .task-col-fact {
-  color: #98a2b3;
-}
-
 .production-task-table-novinka .task-row,
 .production-task-table-novinka .task-archive-row {
   grid-template-columns:
     minmax(280px, 2fr)
-    minmax(120px, 0.8fr)
-    minmax(90px, 0.45fr)
+    minmax(140px, 0.9fr)
     minmax(110px, 0.7fr)
     minmax(120px, 0.7fr)
     minmax(130px, 0.8fr)
@@ -1659,13 +1668,17 @@
 .production-task-table-novinka .task-archive-row-extended {
   grid-template-columns:
     minmax(240px, 2fr)
-    minmax(120px, 0.8fr)
-    minmax(90px, 0.45fr)
+    minmax(140px, 0.9fr)
     minmax(100px, 0.55fr)
-    minmax(120px, 0.7fr)
     minmax(130px, 0.8fr)
     minmax(180px, 1fr)
-    minmax(110px, 0.7fr);
+    minmax(110px, 0.7fr)
+    minmax(170px, 0.9fr);
+}
+
+.production-task-table-mixed .task-row-novinka .task-col-needed,
+.production-task-table-mixed .task-row-novinka .task-col-fact {
+  color: #98a2b3;
 }
 
 .task-items-table-novinka .task-item-table-row {
@@ -2961,6 +2974,278 @@
   color: #677083;
 }
 
+.integrations-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.integration-card {
+  border: 1px solid #d9dee7;
+  border-radius: 12px;
+  background: #fff;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.integration-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.integration-card-head h3 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.integration-card-head p {
+  margin: 0;
+  color: #677083;
+  font-size: 0.92rem;
+}
+
+.integration-badge {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.integration-badge.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.integration-badge.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.integration-badge.off {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.integration-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.integration-meta small,
+.integration-meta a {
+  color: #677083;
+}
+
+.integration-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.integration-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.integration-form-grid label span {
+  font-size: 0.85rem;
+  color: #677083;
+}
+
+.integration-form-grid input {
+  border: 1px solid #d9dee7;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.integration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.integration-hint {
+  margin: 0;
+  color: #677083;
+  font-size: 0.9rem;
+}
+
+.telegram-preferences {
+  border-top: 1px solid #edf0f5;
+  padding-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.telegram-preferences-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.telegram-preferences-head h4 {
+  margin: 0 0 4px;
+}
+
+.telegram-preferences-head p {
+  margin: 0;
+  color: #677083;
+  font-size: 0.9rem;
+}
+
+.telegram-preferences-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.telegram-preferences-actions button {
+  border: 1px solid #d9dee7;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.telegram-event-groups {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.telegram-event-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.telegram-event-group {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.telegram-event-group.is-expanded {
+  border-color: #cfd6e3;
+}
+
+.telegram-event-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.telegram-event-group-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  color: inherit;
+  user-select: none;
+}
+
+.telegram-event-group-toggle:hover {
+  background: #f8fafc;
+}
+
+.telegram-event-group-select {
+  margin-right: 10px;
+  border: 1px solid #d9dee7;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.telegram-event-group-title::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-right: 2px solid #677083;
+  border-bottom: 2px solid #677083;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  vertical-align: middle;
+}
+
+.telegram-event-group.is-expanded .telegram-event-group-title::before {
+  transform: rotate(45deg);
+}
+
+.telegram-event-group-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+.telegram-event-group-toggle small {
+  color: #677083;
+  font-weight: 400;
+}
+
+.telegram-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 14px 14px;
+  max-height: min(420px, 55vh);
+  overflow-y: auto;
+  border-top: 1px solid #edf0f5;
+  background: #f8fafc;
+}
+
+.telegram-event-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #edf0f5;
+  cursor: pointer;
+}
+
+.telegram-event-item input {
+  grid-row: span 2;
+}
+
+.telegram-event-item span {
+  font-size: 0.92rem;
+}
+
+.telegram-event-item small {
+  grid-column: 2;
+  color: #9ca3af;
+  font-size: 0.75rem;
+}
+
 .settings-grid strong {
   display: block;
   margin: 6px 0;
@@ -3083,13 +3368,26 @@
 
 .audit-filter {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) auto;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(150px, 0.9fr)) auto auto;
   gap: 10px;
   padding: 16px 20px;
   border-bottom: 1px solid #edf0f5;
+  align-items: end;
 }
 
-.audit-filter input {
+.audit-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audit-filter-field span {
+  font-size: 0.82rem;
+  color: #677083;
+}
+
+.audit-filter input,
+.audit-filter select {
   width: 100%;
   border: 1px solid #cfd6e3;
   border-radius: 8px;
@@ -3108,6 +3406,11 @@
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+}
+
+.audit-filter-reset {
+  color: #121826 !important;
+  background: #eef2f7 !important;
 }
 
 .audit-row {
@@ -4172,9 +4475,14 @@
   .all-supply-card summary,
   .analytics-grid,
   .settings-grid,
+  .integration-form-grid,
   .audit-filter,
   .users-list li {
     grid-template-columns: 1fr;
+  }
+
+  .telegram-event-groups {
+    flex-direction: column;
   }
 
   .search-form,
