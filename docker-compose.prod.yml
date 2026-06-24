@@ -26,6 +26,7 @@ services:
       - "${APP_PORT:-8080}:8080"
     volumes:
       - ./backups:/app/backups:ro
+      - ./user-avatars:/app/user-avatars
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080

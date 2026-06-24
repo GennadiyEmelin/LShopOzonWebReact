@@ -30,6 +30,7 @@ server/obj/
 *.zip
 *.bak
 backups/
+user-avatars/
 
 # OS files
 Thumbs.db
