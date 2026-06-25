@@ -204,6 +204,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var financeRowsForOrders = BuildFinanceRows(financeOperationsForOrders.Values);
         var orderRows = BuildOrderRows(postings, financeRowsForOrders);
         var cancelledLogisticsTotal = SumCancelledOrderExpenses(orderRows);
+        var cancelledMissedProfitTotal = SumCancelledMissedProfit(orderRows);
 
         var revenueTotal = productRows.Sum(row => row.Revenue);
         var commissionTotal = productRows.Sum(row => row.CommissionAmount);
@@ -254,6 +255,15 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .Where(posting => posting.Status.Equals("delivered", StringComparison.OrdinalIgnoreCase))
             .SelectMany(posting => posting.Products)
             .Sum(product => product.Quantity);
+        var awaitingDeliverPostings = nonCancelledPostings
+            .Where(posting => IsCollectingStatus(posting.Status))
+            .ToList();
+        var awaitingDeliverCount = awaitingDeliverPostings
+            .SelectMany(posting => posting.Products)
+            .Sum(product => product.Quantity);
+        var awaitingDeliverAmount = awaitingDeliverPostings
+            .SelectMany(posting => posting.Products)
+            .Sum(product => product.Price * product.Quantity);
         var cancelledCount = postings
             .Where(posting => posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
             .SelectMany(posting => posting.Products)
@@ -371,7 +381,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             payoutTotal,
             logisticsTotal,
             financeOperations.Where(operation => operation.Type == "services").Sum(operation => operation.Amount),
-            orderRows.Count(row => IsCollectingStatus(row.Status)),
+            (int)awaitingDeliverCount,
+            awaitingDeliverAmount,
             postings.Count(posting => posting.Status == "delivering"),
             postings.Count(posting => posting.Status == "delivered"),
             salesTotalCount,
@@ -383,11 +394,43 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             cancelledCount,
             cancelledAmount,
             cancelledLogisticsTotal,
+            cancelledMissedProfitTotal,
             accountBalance,
             accountBalanceCurrency,
             productStatusSummary.Selling,
             productStatusSummary.ReadyForSale,
             productStatusSummary.Archived,
+            DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    public async Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var productsForStatus = await GetProductSummariesAsync(1000, cancellationToken);
+        var productStatusSummary = GetProductStatusSummary(productsForStatus);
+        decimal? accountBalance = null;
+        var accountBalanceCurrency = string.Empty;
+
+        try
+        {
+            var balanceDateTo = DateOnly.FromDateTime(DateTime.UtcNow);
+            var balanceDateFrom = balanceDateTo.AddDays(-27);
+            var balance = await GetFinanceBalanceAsync(balanceDateFrom, balanceDateTo, cancellationToken);
+            accountBalance = balance.Total.ClosingBalance.Value;
+            accountBalanceCurrency = balance.Total.ClosingBalance.CurrencyCode;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        {
+            accountBalance = null;
+            accountBalanceCurrency = string.Empty;
+        }
+
+        return new OzonAnalyticsSnapshot(
+            productsForStatus.Count,
+            productStatusSummary.Selling,
+            productStatusSummary.ReadyForSale,
+            productStatusSummary.Archived,
+            accountBalance,
+            accountBalanceCurrency,
             DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
@@ -927,6 +970,80 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 var payoutExpense = row.Payout < 0 ? Math.Abs(row.Payout) : 0m;
                 return logisticsExpense + payoutExpense;
             });
+
+    private static decimal SumCancelledMissedProfit(IEnumerable<OzonAnalyticsRow> orderRows)
+    {
+        var cancelledRows = orderRows
+            .Where(row => row.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (cancelledRows.Count == 0)
+        {
+            return 0m;
+        }
+
+        var fallbackCommissionRate = CalculateAverageCommissionRate(
+            orderRows.Where(row => !row.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)));
+
+        var totalRevenue = cancelledRows.Sum(row => row.Revenue);
+        var totalRowLogistics = cancelledRows.Sum(row => Math.Abs(row.LogisticsAmount));
+        var totalExpenses = SumCancelledOrderExpenses(cancelledRows);
+        var extraLogisticsPool = Math.Max(0m, totalExpenses - totalRowLogistics);
+
+        return cancelledRows.Sum(row =>
+            CalculateCancelledMissedProfitRow(
+                row,
+                fallbackCommissionRate,
+                totalRevenue,
+                extraLogisticsPool));
+    }
+
+    private static decimal CalculateAverageCommissionRate(IEnumerable<OzonAnalyticsRow> rows)
+    {
+        var eligible = rows
+            .Where(row => row.Revenue > 0 && row.CommissionAmount > 0)
+            .ToList();
+        if (eligible.Count == 0)
+        {
+            return 0m;
+        }
+
+        var totalRevenue = eligible.Sum(row => row.Revenue);
+        var totalCommission = eligible.Sum(row => row.CommissionAmount);
+        return totalRevenue > 0 ? Math.Round(totalCommission / totalRevenue * 100m, 2) : 0m;
+    }
+
+    private static decimal CalculateCancelledMissedProfitRow(
+        OzonAnalyticsRow row,
+        decimal fallbackCommissionRate,
+        decimal totalCancelledRevenue,
+        decimal extraLogisticsPool)
+    {
+        var revenue = row.Revenue;
+        if (revenue <= 0)
+        {
+            return 0m;
+        }
+
+        if (row.Payout > 0)
+        {
+            return row.Payout;
+        }
+
+        var commission = row.CommissionAmount;
+        if (commission <= 0 && fallbackCommissionRate > 0)
+        {
+            commission = Math.Round(revenue * fallbackCommissionRate / 100m, 2);
+        }
+
+        var logistics = Math.Abs(row.LogisticsAmount);
+        if (logistics <= 0 && extraLogisticsPool > 0 && totalCancelledRevenue > 0)
+        {
+            logistics = Math.Round(extraLogisticsPool * revenue / totalCancelledRevenue, 2);
+        }
+
+        return Math.Max(0m, Math.Round(revenue - commission - logistics, 2));
+    }
 
     private static List<OzonAnalyticsRow> BuildOrderRows(
         IReadOnlyList<OzonPosting> postings,
@@ -1805,6 +1922,15 @@ public record OzonImportPriceItem(
 
 public record OzonPriceUpdateResult(bool Success, string Message, JsonElement Raw);
 
+public record OzonAnalyticsSnapshot(
+    int TotalProductsCount,
+    int SellingProductsCount,
+    int ReadyForSaleProductsCount,
+    int ArchivedProductsCount,
+    decimal? AccountBalance,
+    string AccountBalanceCurrency,
+    string Timestamp);
+
 public record OzonAnalyticsResult(
     IReadOnlyList<OzonAnalyticsRow> Rows,
     IReadOnlyList<OzonAnalyticsRow> OrderRows,
@@ -1817,6 +1943,7 @@ public record OzonAnalyticsResult(
     decimal LogisticsTotal,
     decimal ServicesTotal,
     int AwaitingDeliverCount,
+    decimal AwaitingDeliverAmount,
     int DeliveringCount,
     int DeliveredCount,
     decimal SalesTotalCount,
@@ -1828,6 +1955,7 @@ public record OzonAnalyticsResult(
     decimal CancelledCount,
     decimal CancelledAmount,
     decimal CancelledLogisticsTotal,
+    decimal CancelledMissedProfitTotal,
     decimal? AccountBalance,
     string AccountBalanceCurrency,
     int SellingProductsCount,

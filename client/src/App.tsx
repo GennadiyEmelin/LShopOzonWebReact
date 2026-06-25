@@ -135,6 +135,16 @@ type OzonStock = {
   imageUrl: string
 }
 
+type OzonAnalyticsSnapshot = {
+  totalProductsCount: number
+  sellingProductsCount: number
+  readyForSaleProductsCount: number
+  archivedProductsCount: number
+  accountBalance?: number | null
+  accountBalanceCurrency: string
+  timestamp: string
+}
+
 type OzonAnalytics = {
   rows: Array<{
     sku: number
@@ -194,6 +204,7 @@ type OzonAnalytics = {
   logisticsTotal: number
   servicesTotal: number
   awaitingDeliverCount: number
+  awaitingDeliverAmount: number
   deliveringCount: number
   deliveredCount: number
   salesTotalCount: number
@@ -205,6 +216,7 @@ type OzonAnalytics = {
   cancelledCount: number
   cancelledAmount: number
   cancelledLogisticsTotal: number
+  cancelledMissedProfitTotal: number
   accountBalance?: number | null
   accountBalanceCurrency: string
   sellingProductsCount: number
@@ -487,6 +499,7 @@ function App() {
   const [editingPrices, setEditingPrices] = useState<Record<number, string>>({})
   const [analyticsStatus, setAnalyticsStatus] = useState('')
   const [analytics, setAnalytics] = useState<OzonAnalytics | null>(null)
+  const [analyticsSnapshot, setAnalyticsSnapshot] = useState<OzonAnalyticsSnapshot | null>(null)
   const [homeAnalytics, setHomeAnalytics] = useState<OzonAnalytics | null>(null)
   const [homeAnalyticsStatus, setHomeAnalyticsStatus] = useState('')
   const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>('summary')
@@ -1235,6 +1248,7 @@ function App() {
 
     setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
     setAnalyticsDateTo(getDefaultAnalyticsDateTo())
+    void loadAnalyticsSnapshot()
   }, [activeTab, token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
@@ -2822,8 +2836,24 @@ function App() {
     }
   }
 
+  async function loadAnalyticsSnapshot() {
+    const response = await fetch('/api/ozon/analytics/snapshot', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось получить сводку Ozon'))
+      return
+    }
+
+    const data: OzonAnalyticsSnapshot = await response.json()
+    setAnalyticsSnapshot(data)
+  }
+
   async function loadAnalytics() {
-    setAnalyticsStatus('Загружаем аналитику Ozon...')
+    setAnalyticsStatus('Загружаем аналитику Ozon за период...')
 
     const params = new URLSearchParams()
     if (analyticsDateFrom) {
@@ -2846,7 +2876,11 @@ function App() {
 
     const data: OzonAnalytics = await response.json()
     setAnalytics(data)
-    setAnalyticsStatus(`Аналитика обновлена: ${data.timestamp}`)
+    setAnalyticsStatus(`Аналитика за период обновлена: ${data.timestamp}`)
+  }
+
+  async function refreshAnalytics() {
+    await Promise.all([loadAnalyticsSnapshot(), loadAnalytics()])
   }
 
   async function exportAnalyticsOrderRowsExcel(
@@ -5522,109 +5556,14 @@ function App() {
                   </div>
                 )}
                 <div className="analytics-toolbar-actions">
-                  <button type="button" onClick={loadAnalytics}>
+                  <button type="button" onClick={() => void refreshAnalytics()}>
                     Обновить аналитику
                   </button>
                 </div>
               </div>
               {analyticsSubTab === 'summary' && (
                 <>
-                  <div className="analytics-dashboard">
-                    <div className="analytics-grid analytics-grid-main">
-                      <div>
-                        <span>Товары Ozon</span>
-                        <strong>{ozonProducts.length || '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Продается</span>
-                        <strong>{analytics?.sellingProductsCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Готово к продаже</span>
-                        <strong>{analytics?.readyForSaleProductsCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Баланс Ozon</span>
-                        <strong>
-                          {analytics?.accountBalance === null || analytics?.accountBalance === undefined
-                            ? '-'
-                            : formatMoney(analytics.accountBalance, analytics.accountBalanceCurrency || 'KZT')}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Выкуплено, шт.</span>
-                        <strong>{analytics?.deliveredProductCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Всего продаж</span>
-                        <strong>{analytics?.salesTotalCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Выручка</span>
-                        <strong>{analytics ? formatMoney(analytics.revenueTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Заказано на сумму</span>
-                        <strong>{analytics ? formatMoney(analytics.salesAmountTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div>
-                        <span>К выплате</span>
-                        <strong>{analytics ? formatMoney(analytics.payoutTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Собираются</span>
-                        <strong>{analytics?.awaitingDeliverCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Едут</span>
-                        <strong>{analytics?.inTransitCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Доставлены</span>
-                        <strong>{analytics?.deliveredProductCount ?? '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Едет на сумму</span>
-                        <strong>{analytics ? formatMoney(analytics.inTransitAmount, 'KZT') : '-'}</strong>
-                      </div>
-                      <div>
-                        <span>Доставлено на сумму</span>
-                        <strong>{analytics ? formatMoney(analytics.deliveredAmount, 'KZT') : '-'}</strong>
-                      </div>
-                    </div>
-                    <div className="analytics-grid analytics-grid-losses">
-                      <div className="analytics-grid-loss">
-                        <span>В архиве</span>
-                        <strong>{analytics?.archivedProductsCount ?? '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Комиссия Ozon</span>
-                        <strong>{analytics ? formatLossMoney(analytics.commissionTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Логистика</span>
-                        <strong>{analytics ? formatLossMoney(analytics.logisticsTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Прочие услуги</span>
-                        <strong>{analytics ? formatLossMoney(analytics.servicesTotal, 'KZT') : '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Отменено</span>
-                        <strong>{analytics?.cancelledCount ?? '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Упущенная выручка</span>
-                        <strong>{analytics ? formatLossMoney(analytics.cancelledAmount, 'KZT') : '-'}</strong>
-                      </div>
-                      <div className="analytics-grid-loss">
-                        <span>Логистика отменённых</span>
-                        <strong>
-                          {analytics ? formatLossMoney(analytics.cancelledLogisticsTotal, 'KZT') : '-'}
-                        </strong>
-                      </div>
-                    </div>
-                  </div>
+                  <AnalyticsPipelineBoard snapshot={analyticsSnapshot} analytics={analytics} />
                   <div className="analytics-table-toolbar">
                     <input
                       className="toolbar-search"
@@ -10342,6 +10281,134 @@ function getApiErrorMessage(errorText: string, fallback: string) {
   } catch {
     return errorText.length > 180 ? `${errorText.slice(0, 180)}...` : errorText
   }
+}
+
+function AnalyticsPipelineBoard({
+  snapshot,
+  analytics,
+}: {
+  snapshot: OzonAnalyticsSnapshot | null
+  analytics: OzonAnalytics | null
+}) {
+  const currency = 'KZT'
+  const balanceCurrency = snapshot?.accountBalanceCurrency || currency
+  const totalDeductions = analytics
+    ? analytics.commissionTotal +
+      analytics.logisticsTotal +
+      analytics.servicesTotal +
+      analytics.cancelledLogisticsTotal
+    : null
+
+  return (
+    <div className="analytics-pipeline">
+      <section className="analytics-pipeline-panel analytics-pipeline-panel--summary">
+        <div className="analytics-pipeline-grid analytics-pipeline-grid--summary">
+          <div className="analytics-pipeline-card analytics-pipeline-cell--s1c1">
+            <span>Всего позиций</span>
+            <strong>{snapshot?.totalProductsCount ?? '—'}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-cell--s1c2">
+            <span>Товаров в продаже</span>
+            <strong>{snapshot?.sellingProductsCount ?? '—'}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-cell--s1c3">
+            <span>Готовых к продаже</span>
+            <strong>{snapshot?.readyForSaleProductsCount ?? '—'}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell--s1c4">
+            <span>В архиве</span>
+            <strong>{snapshot?.archivedProductsCount ?? '—'}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--balance analytics-pipeline-cell--s1c6">
+            <span>Баланс на OZON</span>
+            <strong>
+              {snapshot?.accountBalance === null || snapshot?.accountBalance === undefined
+                ? '—'
+                : formatMoney(snapshot.accountBalance, balanceCurrency)}
+            </strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="analytics-pipeline-panel analytics-pipeline-panel--metrics">
+        <div className="analytics-pipeline-grid analytics-pipeline-grid--metrics">
+        <div className="analytics-pipeline-card analytics-pipeline-cell analytics-pipeline-cell--r1c1">
+          <span>Заказано товаров</span>
+          <strong>{analytics?.salesTotalCount ?? '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-progress analytics-pipeline-cell analytics-pipeline-cell--r1c2">
+          <span>В сборке</span>
+          <strong>{analytics?.awaitingDeliverCount ?? '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-progress analytics-pipeline-cell analytics-pipeline-cell--r1c3">
+          <span>В пути</span>
+          <strong>{analytics?.inTransitCount ?? '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success analytics-pipeline-cell analytics-pipeline-cell--r1c4">
+          <span>Выкуплено товаров</span>
+          <strong>{analytics?.deliveredProductCount ?? '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r1c5">
+          <span>Возврат товаров</span>
+          <strong>{analytics?.cancelledCount ?? '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r1c6">
+          <span>Возвращено товаров на сумму</span>
+          <strong>{analytics ? formatLossMoney(analytics.cancelledAmount, currency) : '—'}</strong>
+        </div>
+
+        <div className="analytics-pipeline-card analytics-pipeline-cell analytics-pipeline-cell--r2c1">
+          <span>Заказано товаров на сумму</span>
+          <strong>{analytics ? formatMoney(analytics.salesAmountTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-progress analytics-pipeline-cell analytics-pipeline-cell--r2c2">
+          <span>В сборке товаров на сумму</span>
+          <strong>{analytics ? formatMoney(analytics.awaitingDeliverAmount, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-progress analytics-pipeline-cell analytics-pipeline-cell--r2c3">
+          <span>В пути товаров на сумму</span>
+          <strong>{analytics ? formatMoney(analytics.inTransitAmount, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-success analytics-pipeline-cell analytics-pipeline-cell--r2c4">
+          <span>Выкуплено товаров на сумму</span>
+          <strong>{analytics ? formatMoney(analytics.revenueTotal, currency) : '—'}</strong>
+        </div>
+
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c1">
+          <span>Комиссия OZON</span>
+          <strong>{analytics ? formatLossMoney(analytics.commissionTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c2">
+          <span>Логистика</span>
+          <strong>{analytics ? formatLossMoney(analytics.logisticsTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c3">
+          <span>Прочие услуги OZON</span>
+          <strong>{analytics ? formatLossMoney(analytics.servicesTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--highlight-danger analytics-pipeline-cell analytics-pipeline-cell--r3c4">
+          <span>Итого всех удержаний на сумму</span>
+          <strong>{totalDeductions !== null ? formatLossMoney(totalDeductions, currency) : '—'}</strong>
+        </div>
+
+        <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success analytics-pipeline-cell analytics-pipeline-cell--r4c4">
+          <span>Остаток к выплате</span>
+          <strong>{analytics ? formatMoney(analytics.payoutTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r4c5">
+          <span>Логистика отмененных товаров</span>
+          <strong>{analytics ? formatLossMoney(analytics.cancelledLogisticsTotal, currency) : '—'}</strong>
+        </div>
+        <div className="analytics-pipeline-card analytics-pipeline-card--highlight-danger analytics-pipeline-cell analytics-pipeline-cell--r4c6">
+          <span>Упущенная прибыль в возвратах</span>
+          <strong>
+            {analytics ? formatMoney(analytics.cancelledMissedProfitTotal, currency) : '—'}
+          </strong>
+        </div>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function formatMoney(value: number, currency: string) {

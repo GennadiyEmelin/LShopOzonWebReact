@@ -1726,6 +1726,28 @@ app.MapGet("/api/ozon/analytics", async (
     }
 }).RequireAuthorization();
 
+app.MapGet("/api/ozon/analytics/snapshot", async (
+    OzonApiClient ozonApi,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+    {
+        return Results.Forbid();
+    }
+
+    try
+    {
+        var result = await ozonApi.GetAnalyticsSnapshotAsync(cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+    {
+        return Results.Problem(exception.Message);
+    }
+}).RequireAuthorization();
+
 app.MapGet("/api/production/files", async (string? search, AppDbContext db, ClaimsPrincipal principal) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
