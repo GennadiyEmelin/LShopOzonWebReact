@@ -26,7 +26,7 @@ public static class IntegrationRoutes
             OzonRuntimeCredentials credentials,
             ClaimsPrincipal principal) =>
         {
-            if (!principal.IsInRole(UserRoles.Admin))
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsOzon))
             {
                 return Results.Forbid();
             }
@@ -51,7 +51,7 @@ public static class IntegrationRoutes
             TelegramNotificationService telegram,
             ClaimsPrincipal principal) =>
         {
-            if (!principal.IsInRole(UserRoles.Admin))
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsOzonEdit))
             {
                 return Results.Forbid();
             }
@@ -114,7 +114,7 @@ public static class IntegrationRoutes
             ClaimsPrincipal principal,
             CancellationToken cancellationToken) =>
         {
-            if (!principal.IsInRole(UserRoles.Admin))
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsOzon))
             {
                 return Results.Forbid();
             }
@@ -146,6 +146,11 @@ public static class IntegrationRoutes
             ClaimsPrincipal principal,
             CancellationToken cancellationToken) =>
         {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegram))
+            {
+                return Results.Forbid();
+            }
+
             var userId = GetCurrentUserId(principal);
             if (userId is null)
             {
@@ -155,7 +160,8 @@ public static class IntegrationRoutes
             var user = await db.Users.FirstAsync(entry => entry.Id == userId.Value, cancellationToken);
             var botInfo = await telegram.GetBotInfoAsync(cancellationToken);
             var connected = !string.IsNullOrWhiteSpace(user.TelegramChatId);
-            var connectUrl = botInfo is not null && !string.IsNullOrWhiteSpace(user.TelegramConnectToken)
+            var connectAllowed = FeatureAccess.AllowsTelegramConnect(user);
+            var connectUrl = connectAllowed && botInfo is not null && !string.IsNullOrWhiteSpace(user.TelegramConnectToken)
                 ? telegram.BuildConnectUrl(botInfo.Username, user.TelegramConnectToken)
                 : null;
 
@@ -168,7 +174,8 @@ public static class IntegrationRoutes
                 user.TelegramConnectedAt,
                 connectUrl,
                 TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
-                TelegramNotificationEvents.All.Select(definition => definition.Id).ToList()));
+                TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+                connectAllowed));
         }).RequireAuthorization();
 
         app.MapPost("/api/integrations/telegram/connect", async (
@@ -177,10 +184,21 @@ public static class IntegrationRoutes
             ClaimsPrincipal principal,
             CancellationToken cancellationToken) =>
         {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramConnect))
+            {
+                return Results.Forbid();
+            }
+
             var userId = GetCurrentUserId(principal);
             if (userId is null)
             {
                 return Results.Unauthorized();
+            }
+
+            var user = await db.Users.FirstAsync(entry => entry.Id == userId.Value, cancellationToken);
+            if (!FeatureAccess.AllowsTelegramConnect(user))
+            {
+                return Results.BadRequest("Администратор не разрешил вам подключение Telegram.");
             }
 
             if (!telegram.IsBotConfigured)
@@ -194,7 +212,6 @@ public static class IntegrationRoutes
                 return Results.BadRequest("Не удалось получить данные Telegram-бота.");
             }
 
-            var user = await db.Users.FirstAsync(entry => entry.Id == userId.Value, cancellationToken);
             user.TelegramConnectToken = telegram.GenerateConnectToken();
             await db.SaveChangesAsync(cancellationToken);
 
@@ -202,29 +219,9 @@ public static class IntegrationRoutes
             return Results.Ok(new TelegramConnectResponse(connectUrl, user.TelegramConnectToken));
         }).RequireAuthorization();
 
-        app.MapPut("/api/integrations/telegram/preferences", async (
-            UpdateTelegramPreferencesRequest request,
-            AppDbContext db,
-            ClaimsPrincipal principal) =>
-        {
-            var userId = GetCurrentUserId(principal);
-            if (userId is null)
-            {
-                return Results.Unauthorized();
-            }
-
-            var user = await db.Users.FirstAsync(entry => entry.Id == userId.Value);
-            if (string.IsNullOrWhiteSpace(user.TelegramChatId))
-            {
-                return Results.BadRequest("Сначала подключите Telegram-бота.");
-            }
-
-            user.TelegramNotifyEvents = TelegramNotificationEvents.Serialize(request.Events ?? []);
-            await db.SaveChangesAsync();
-
-            return Results.Ok(new TelegramPreferencesResponse(
-                TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList()));
-        }).RequireAuthorization();
+        app.MapPut("/api/integrations/telegram/preferences", () =>
+            Results.BadRequest("Оповещения Telegram настраивает администратор в разделе «Интеграции»."))
+            .RequireAuthorization();
 
         app.MapPost("/api/integrations/telegram/test", async (
             AppDbContext db,
@@ -232,6 +229,11 @@ public static class IntegrationRoutes
             ClaimsPrincipal principal,
             CancellationToken cancellationToken) =>
         {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegram))
+            {
+                return Results.Forbid();
+            }
+
             var userId = GetCurrentUserId(principal);
             if (userId is null)
             {
@@ -258,6 +260,11 @@ public static class IntegrationRoutes
             AppDbContext db,
             ClaimsPrincipal principal) =>
         {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramConnect))
+            {
+                return Results.Forbid();
+            }
+
             var userId = GetCurrentUserId(principal);
             if (userId is null)
             {
@@ -275,11 +282,8 @@ public static class IntegrationRoutes
         }).RequireAuthorization();
     }
 
-    private static Guid? GetCurrentUserId(ClaimsPrincipal principal)
-    {
-        var raw = principal.FindFirstValue(ClaimTypes.NameIdentifier);
-        return Guid.TryParse(raw, out var userId) ? userId : null;
-    }
+    private static Guid? GetCurrentUserId(ClaimsPrincipal principal) =>
+        UserRoleResolver.GetUserId(principal);
 }
 
 public record OzonIntegrationSettingsResponse(
@@ -303,10 +307,11 @@ public record TelegramIntegrationResponse(
     DateTimeOffset? ConnectedAt,
     string? ConnectUrl,
     IReadOnlyList<string> EnabledEvents,
-    IReadOnlyList<string> AvailableEvents);
+    IReadOnlyList<string> AvailableEvents,
+    bool ConnectAllowed);
 
 public record TelegramConnectResponse(string ConnectUrl, string ConnectToken);
-public record UpdateTelegramPreferencesRequest(IReadOnlyList<string>? Events);
+public record UpdateTelegramPreferencesRequest(List<string>? Events);
 public record TelegramPreferencesResponse(IReadOnlyList<string> EnabledEvents);
 
 public static class IntegrationNotificationPublisher
@@ -319,4 +324,29 @@ public static class IntegrationNotificationPublisher
         IEnumerable<Guid>? onlyUserIds = null,
         Guid? excludeUserId = null) =>
         telegram.SendToUsersAsync(db, eventId, message, onlyUserIds, excludeUserId);
+}
+
+public static class ChatNotificationText
+{
+    public static string BuildPreview(string senderName, string text, bool hasAttachment)
+    {
+        var sender = string.IsNullOrWhiteSpace(senderName) ? "Пользователь" : senderName.Trim();
+        var trimmedText = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (trimmedText.Length > 180)
+        {
+            trimmedText = trimmedText[..177].TrimEnd() + "…";
+        }
+
+        if (hasAttachment && string.IsNullOrWhiteSpace(trimmedText))
+        {
+            return $"{sender}: [вложение]";
+        }
+
+        if (hasAttachment)
+        {
+            return $"{sender}: {trimmedText}\n[вложение]";
+        }
+
+        return $"{sender}: {trimmedText}";
+    }
 }

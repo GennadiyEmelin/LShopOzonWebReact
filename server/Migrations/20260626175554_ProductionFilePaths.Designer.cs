@@ -3,6 +3,7 @@ using System;
 using LShopOzonWebReact.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LShopOzonWebReact.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260626175554_ProductionFilePaths")]
+    partial class ProductionFilePaths
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -316,91 +319,6 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.HasIndex("SenderId", "ReceiverId", "CreatedAt");
 
                     b.ToTable("ChatMessages");
-                });
-
-            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductionAnalyticsTaskRecord", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<int?>("ActualQuantity")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("AssignedUserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("AssignedUserName")
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)");
-
-                    b.Property<DateTimeOffset>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedByDisplayName")
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)");
-
-                    b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("IsUrgent")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("ItemsJson")
-                        .IsRequired()
-                        .HasMaxLength(8000)
-                        .HasColumnType("character varying(8000)");
-
-                    b.Property<string>("OfferId")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<long>("OzonProductId")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("ProductName")
-                        .IsRequired()
-                        .HasMaxLength(240)
-                        .HasColumnType("character varying(240)");
-
-                    b.Property<DateTimeOffset>("RecordedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("RequiredQuantity")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("SourceTaskId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("StartedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("TaskType")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<DateTimeOffset?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("UpdatedByUserId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AssignedUserId");
-
-                    b.HasIndex("CompletedAt");
-
-                    b.HasIndex("SourceTaskId")
-                        .IsUnique();
-
-                    b.ToTable("ProductionAnalyticsTaskRecords");
                 });
 
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductionFile", b =>

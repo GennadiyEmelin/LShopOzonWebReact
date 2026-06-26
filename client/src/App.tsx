@@ -5,6 +5,12 @@ import './App.css'
 
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000001'
 
+type HomeBlockConfig = {
+  id: string
+  enabled: boolean
+  actions: string[]
+}
+
 type User = {
   id: string
   userName: string
@@ -13,9 +19,47 @@ type User = {
   role: string
   avatarUrl: string
   allowedFeatures: string[]
+  homeBlocks?: HomeBlockConfig[]
+  canChangeOtherUserPasswords?: boolean
+  telegramConnected?: boolean
+  telegramConnectedAt?: string | null
+  telegramConnectAllowed?: boolean
   isOnline?: boolean
   lastSeenAt?: string
   unreadCount?: number
+}
+
+type RoleProfile = {
+  role: string
+  displayName: string
+  allowedFeatures: string[]
+  homeBlocks: HomeBlockConfig[]
+  canChangeOtherUserPasswords: boolean
+}
+
+type AdminUserTelegram = {
+  connected: boolean
+  chatIdMasked: string
+  connectedAt: string | null
+  enabledEvents: string[]
+  availableEvents: string[]
+  connectAllowed: boolean
+}
+
+type AdminUserReport = {
+  enabled: boolean
+  reportTime: string
+  timezone: string
+  enabledSections: string[]
+  availableSections: string[]
+  lastSentOn: string | null
+  telegramConnected: boolean
+}
+
+type ReportSection = {
+  id: string
+  group: string
+  label: string
 }
 
 type ChatMessage = {
@@ -98,6 +142,7 @@ type TelegramIntegrationInfo = {
   connectUrl: string | null
   enabledEvents: string[]
   availableEvents: string[]
+  connectAllowed: boolean
 }
 
 type BackupFile = {
@@ -143,6 +188,30 @@ type OzonAnalyticsSnapshot = {
   accountBalance?: number | null
   accountBalanceCurrency: string
   timestamp: string
+}
+
+type HomeSalesChartMetric = 'orders' | 'revenue'
+type HomeSalesChartGroupBy = 'day' | 'month'
+
+type HomeSalesChartConfig = {
+  metric: HomeSalesChartMetric
+  groupBy: HomeSalesChartGroupBy
+  dateFrom: string
+  dateTo: string
+}
+
+type HomeSalesChartPoint = {
+  label: string
+  periodKey: string
+  orders: number
+  revenue: number
+}
+
+type HomeSalesChartData = {
+  points: HomeSalesChartPoint[]
+  currencyCode: string
+  totalOrders: number
+  totalRevenue: number
 }
 
 type OzonAnalytics = {
@@ -237,6 +306,16 @@ type ProductionFile = {
   createdAt: string
 }
 
+type ProductionFilePath = {
+  id: string
+  ozonProductId?: number
+  offerId: string
+  productName: string
+  productLink?: string
+  path: string
+  createdAt: string
+}
+
 type ProductionCatalogItem = {
   offerId: string
   ozonProductId?: number
@@ -280,6 +359,7 @@ type ProductionTaskItem = {
   requiredQuantity: number
   actualQuantity?: number
   enforceMinimumQuantity?: boolean
+  filePath?: string
 }
 
 type SupplyStatus = 'Created' | 'Sent' | 'Accepted'
@@ -351,6 +431,8 @@ type DraftNovinkaItem = {
   tempId: string
   productName: string
   productLink: string
+  imageFile?: File
+  imagePreviewUrl?: string
 }
 
 function createTempId() {
@@ -359,6 +441,17 @@ function createTempId() {
   }
 
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function groupItemsByField<T>(items: T[], getKey: (item: T) => string): Array<[string, T[]]> {
+  const map = new Map<string, T[]>()
+  for (const item of items) {
+    const key = getKey(item)
+    const bucket = map.get(key) ?? []
+    bucket.push(item)
+    map.set(key, bucket)
+  }
+  return Array.from(map.entries())
 }
 
 function formatInputDate(date: Date) {
@@ -378,23 +471,69 @@ function getDefaultAnalyticsDateTo() {
   return formatInputDate(new Date())
 }
 
+function getYearChartDefaultFrom() {
+  const date = new Date()
+  return formatInputDate(new Date(date.getFullYear(), 0, 1))
+}
+
+function getMonthChartDefaultFrom() {
+  const date = new Date()
+  return formatInputDate(new Date(date.getFullYear(), date.getMonth(), 1))
+}
+
+function createDefaultYearChartConfig(): HomeSalesChartConfig {
+  return {
+    metric: 'orders',
+    groupBy: 'month',
+    dateFrom: getYearChartDefaultFrom(),
+    dateTo: getDefaultAnalyticsDateTo(),
+  }
+}
+
+function createDefaultMonthChartConfig(): HomeSalesChartConfig {
+  return {
+    metric: 'orders',
+    groupBy: 'day',
+    dateFrom: getMonthChartDefaultFrom(),
+    dateTo: getDefaultAnalyticsDateTo(),
+  }
+}
+
+const reportTimezoneOptions = [
+  { value: 'Europe/Moscow', label: 'Москва' },
+  { value: 'Asia/Almaty', label: 'Алматы' },
+] as const
+
+function normalizeReportTimezone(timezone?: string) {
+  if (timezone === 'Europe/Moscow' || timezone === 'Russian Standard Time') {
+    return 'Europe/Moscow'
+  }
+
+  if (timezone === 'Asia/Almaty') {
+    return 'Asia/Almaty'
+  }
+
+  return 'Asia/Almaty'
+}
+
 const tabs = [
   { id: 'home', label: 'Главная' },
   { id: 'production', label: 'Производство' },
   { id: 'products', label: 'Товары' },
   { id: 'analytics', label: 'Аналитика' },
-  { id: 'pooling', label: 'Складчина' },
+  { id: 'pooling', label: 'Склад' },
   { id: 'supplies', label: 'Поставки' },
   { id: 'chats', label: 'Чаты' },
   { id: 'integrations', label: 'Интеграции' },
-  { id: 'users', label: 'Пользователи', adminOnly: true },
-  { id: 'settings', label: 'Настройки', adminOnly: true },
+  { id: 'users', label: 'Пользователи' },
+  { id: 'settings', label: 'Настройки' },
 ] as const
 
 const featureGroups = [
   {
     title: 'Главная',
     items: [{ id: 'home', label: 'Раздел' }],
+    homeBlocks: true,
   },
   {
     title: 'Производство',
@@ -407,11 +546,19 @@ const featureGroups = [
       { id: 'production.completed', label: 'Выполненные' },
       { id: 'production.archive', label: 'Архив задач' },
       { id: 'production.createTask', label: 'Создание задач' },
+      { id: 'production.editTasks', label: 'Редактирование задач' },
+      { id: 'production.cancelTasks', label: 'Отмена задач' },
+      { id: 'production.editProducts', label: 'Редактирование товара' },
+      { id: 'production.deleteFiles', label: 'Удаление файлов' },
+      { id: 'production.deleteFilePaths', label: 'Удаление путей к файлам' },
     ],
   },
   {
     title: 'Товары',
-    items: [{ id: 'products', label: 'Раздел' }],
+    items: [
+      { id: 'products', label: 'Раздел' },
+      { id: 'products.edit', label: 'Изменение данных' },
+    ],
   },
   {
     title: 'Аналитика',
@@ -420,10 +567,11 @@ const featureGroups = [
       { id: 'analytics.summary', label: 'Сводка аналитики' },
       { id: 'analytics.topProducts', label: 'Топ товары' },
       { id: 'analytics.noSales', label: 'Без продаж' },
+      { id: 'analytics.production', label: 'Производство' },
     ],
   },
   {
-    title: 'Складчина',
+    title: 'Склад',
     items: [
       { id: 'pooling', label: 'Раздел' },
       { id: 'pooling.editPrices', label: 'Редактирование цен' },
@@ -438,24 +586,146 @@ const featureGroups = [
       { id: 'supplies.all', label: 'Все поставки' },
       { id: 'supplies.archive', label: 'Архив поставок' },
       { id: 'supplies.analytics', label: 'Аналитика поставок' },
+      { id: 'supplies.edit', label: 'Изменение поставок' },
     ],
   },
   {
     title: 'Чаты',
-    items: [{ id: 'chats', label: 'Раздел' }],
+    items: [
+      { id: 'chats', label: 'Раздел' },
+      { id: 'chats.edit', label: 'Отправка сообщений' },
+      { id: 'chats.groups', label: 'Создание групп' },
+    ],
   },
   {
     title: 'Интеграции',
-    items: [{ id: 'integrations', label: 'Раздел' }],
+    items: [
+      { id: 'integrations', label: 'Раздел' },
+      { id: 'integrations.ozon', label: 'Ozon: просмотр' },
+      { id: 'integrations.ozon.edit', label: 'Ozon: настройка' },
+      { id: 'integrations.telegram', label: 'Telegram: просмотр' },
+      { id: 'integrations.telegram.connect', label: 'Telegram: подключение' },
+      { id: 'integrations.telegram.notifications', label: 'Оповещения: просмотр' },
+      { id: 'integrations.telegram.notifications.edit', label: 'Оповещения: настройка' },
+      { id: 'integrations.telegram.reports', label: 'Отчёты: просмотр' },
+      { id: 'integrations.telegram.reports.edit', label: 'Отчёты: настройка' },
+    ],
+  },
+  {
+    title: 'Пользователи',
+    items: [
+      { id: 'users', label: 'Раздел' },
+      { id: 'users.create', label: 'Добавление пользователей' },
+      { id: 'users.edit', label: 'Управление' },
+    ],
+  },
+  {
+    title: 'Настройки',
+    items: [
+      { id: 'settings', label: 'Раздел' },
+      { id: 'settings.edit', label: 'Изменение настроек' },
+    ],
   },
 ]
-const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'integrations']
+const appRoles = [
+  { value: 'Production', label: 'Производство' },
+  { value: 'Designer', label: 'Дизайнер' },
+  { value: 'Leadership', label: 'Руководство' },
+  { value: 'Admin', label: 'Администратор' },
+] as const
+
+const homeBlockDefinitions = [
+  {
+    id: 'production',
+    label: 'Производство',
+    actions: [
+      { id: 'production.tasks', label: 'Задачи' },
+      { id: 'production.inProgress', label: 'В работе' },
+      { id: 'production.cancelled', label: 'Отменённые' },
+      { id: 'production.completed', label: 'Выполненные' },
+      { id: 'production.createTask', label: 'Создание задач' },
+    ],
+  },
+  {
+    id: 'analytics',
+    label: 'Аналитика',
+    actions: [
+      { id: 'analytics.summary', label: 'Сводка' },
+      { id: 'analytics.topProducts', label: 'Топ товары' },
+      { id: 'analytics.noSales', label: 'Без продаж' },
+      { id: 'analytics.production', label: 'Производство' },
+    ],
+  },
+  {
+    id: 'supplies',
+    label: 'Поставки',
+    actions: [
+      { id: 'supplies.create', label: 'Создать' },
+      { id: 'supplies.all', label: 'Все поставки' },
+      { id: 'supplies.editor', label: 'Редактор' },
+      { id: 'supplies.analytics', label: 'Аналитика' },
+    ],
+  },
+  {
+    id: 'products',
+    label: 'Товары',
+    actions: [{ id: 'products', label: 'Каталог' }],
+  },
+] as const
+
+function resolveUserHomeBlocks(user: User, roleProfiles: RoleProfile[]): HomeBlockConfig[] {
+  if (user.homeBlocks && user.homeBlocks.length > 0) {
+    return user.homeBlocks
+  }
+
+  return getRoleProfileHomeBlocks(user.role, roleProfiles)
+}
+
+function getRoleProfileHomeBlocks(role: string, roleProfiles: RoleProfile[]): HomeBlockConfig[] {
+  if (role === 'Admin') {
+    return homeBlockDefinitions.map((block) => ({
+      id: block.id,
+      enabled: true,
+      actions: block.actions.map((action) => action.id),
+    }))
+  }
+
+  return roleProfiles.find((entry) => entry.role === role)?.homeBlocks ?? []
+}
+
+function getRoleLabel(role: string) {
+  return appRoles.find((item) => item.value === role)?.label ?? role
+}
+
+const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'chats.edit', 'integrations', 'integrations.telegram', 'integrations.telegram.connect']
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
 type ProductionCatalogTab = 'ozon' | 'novinka' | 'editor'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
-type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales'
+type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales' | 'production'
+
+type ProductionAnalyticsSummaryRow = {
+  userId?: string
+  userName: string
+  role: string
+  avatarUrl: string
+  taskCount: number
+  itemCount: number
+}
+
+type ProductionAnalyticsReport = {
+  summary: ProductionAnalyticsSummaryRow[]
+  tasks: ProductionTask[]
+}
+
+type ProductionAnalyticsAssignee = {
+  id: string
+  displayName: string
+  userName: string
+  role: string
+  avatarUrl: string
+}
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('authToken') ?? '')
@@ -464,6 +734,7 @@ function App() {
     return value ? JSON.parse(value) : null
   })
   const [users, setUsers] = useState<User[]>([])
+  const [usersLoadError, setUsersLoadError] = useState('')
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [auditSearch, setAuditSearch] = useState('')
   const [auditDateFrom, setAuditDateFrom] = useState('')
@@ -478,10 +749,7 @@ function App() {
   const [ozonSettingsSaving, setOzonSettingsSaving] = useState(false)
   const [telegramIntegration, setTelegramIntegration] = useState<TelegramIntegrationInfo | null>(null)
   const [telegramEvents, setTelegramEvents] = useState<TelegramNotificationEvent[]>([])
-  const [telegramSelectedEvents, setTelegramSelectedEvents] = useState<string[]>([])
   const [telegramStatus, setTelegramStatus] = useState('')
-  const [telegramSaving, setTelegramSaving] = useState(false)
-  const [telegramExpandedGroups, setTelegramExpandedGroups] = useState<Record<string, boolean>>({})
   const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
   const [backupStatus, setBackupStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('home')
@@ -505,6 +773,14 @@ function App() {
   const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>('summary')
   const [analyticsDateFrom, setAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
   const [analyticsDateTo, setAnalyticsDateTo] = useState(getDefaultAnalyticsDateTo)
+  const [productionAnalyticsDateFrom, setProductionAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
+  const [productionAnalyticsDateTo, setProductionAnalyticsDateTo] = useState(getDefaultAnalyticsDateTo)
+  const [productionAnalyticsUserId, setProductionAnalyticsUserId] = useState('')
+  const [productionAnalyticsAssignees, setProductionAnalyticsAssignees] = useState<ProductionAnalyticsAssignee[]>([])
+  const [productionAnalyticsReport, setProductionAnalyticsReport] = useState<ProductionAnalyticsReport | null>(null)
+  const [productionAnalyticsStatus, setProductionAnalyticsStatus] = useState('')
+  const [productionAnalyticsDetailUserName, setProductionAnalyticsDetailUserName] = useState<string | null>(null)
+  const [productionAnalyticsEditingTask, setProductionAnalyticsEditingTask] = useState<ProductionTask | null>(null)
   const [analyticsRowSearch, setAnalyticsRowSearch] = useState('')
   const [analyticsStatusFilter, setAnalyticsStatusFilter] = useState<
     'all' | 'awaiting_deliver' | 'delivering' | 'delivered' | 'cancelled'
@@ -513,7 +789,7 @@ function App() {
   const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
   const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
-  const [taskSourceSubTab, setTaskSourceSubTab] = useState<'ozon' | 'novinka'>('ozon')
+  const [taskFormMode, setTaskFormMode] = useState<'ozon' | 'novinka'>('ozon')
   const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>('ozon')
   const [editorNovinkaOfferId, setEditorNovinkaOfferId] = useState('')
   const [editorOzonProductId, setEditorOzonProductId] = useState('')
@@ -522,8 +798,11 @@ function App() {
   const [draftNovinkaItems, setDraftNovinkaItems] = useState<DraftNovinkaItem[]>([])
   const [novinkaProductName, setNovinkaProductName] = useState('')
   const [novinkaProductLink, setNovinkaProductLink] = useState('')
+  const [novinkaProductImageFile, setNovinkaProductImageFile] = useState<File>()
+  const [novinkaProductImagePreviewUrl, setNovinkaProductImagePreviewUrl] = useState('')
   const [selectedNovinkaOfferId, setSelectedNovinkaOfferId] = useState('')
   const [productionFiles, setProductionFiles] = useState<ProductionFile[]>([])
+  const [productionFilePaths, setProductionFilePaths] = useState<ProductionFilePath[]>([])
   const [productionFilesModal, setProductionFilesModal] = useState<{
     productName: string
     files: ProductionFile[]
@@ -531,7 +810,6 @@ function App() {
   const [productionTasks, setProductionTasks] = useState<ProductionTask[]>([])
   const [taskSearch, setTaskSearch] = useState('')
   const [taskUrgencyFilter, setTaskUrgencyFilter] = useState<'all' | 'urgent' | 'normal'>('all')
-  const [productionTaskTypeFilter, setProductionTaskTypeFilter] = useState<'all' | 'ozon' | 'novinka'>('all')
   const [archiveTaskStatusFilter, setArchiveTaskStatusFilter] = useState<'all' | 'Completed' | 'Cancelled'>('all')
   const [productionStatus, setProductionStatus] = useState('')
   const [taskStatus, setTaskStatus] = useState('')
@@ -573,10 +851,24 @@ function App() {
     displayName: '',
     position: '',
     password: '',
-    role: 'User',
+    role: 'Production',
     allowedFeatures: defaultUserFeatures,
   })
   const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
+  const [roleProfiles, setRoleProfiles] = useState<RoleProfile[]>([])
+  const [roleProfileEdits, setRoleProfileEdits] = useState<Record<string, RoleProfile>>({})
+  const [roleProfilesStatus, setRoleProfilesStatus] = useState('')
+  const [userTelegramData, setUserTelegramData] = useState<Record<string, AdminUserTelegram>>({})
+  const [userTelegramEvents, setUserTelegramEvents] = useState<Record<string, string[]>>({})
+  const [userTelegramStatus, setUserTelegramStatus] = useState<Record<string, string>>({})
+  const [userReportData, setUserReportData] = useState<Record<string, AdminUserReport>>({})
+  const [userReportSections, setUserReportSections] = useState<Record<string, string[]>>({})
+  const [userReportStatus, setUserReportStatus] = useState<Record<string, string>>({})
+  const [reportSections, setReportSections] = useState<ReportSection[]>([])
+  const [reportsStatus, setReportsStatus] = useState('')
+  const [integrationsSubTab, setIntegrationsSubTab] = useState<'connections' | 'telegram-notifications' | 'telegram-reports'>('connections')
+  const [integrationAdminUserId, setIntegrationAdminUserId] = useState('')
+  const [profilePasswordForm, setProfilePasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
   const [profileModalUser, setProfileModalUser] = useState<User | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', position: '' })
@@ -619,6 +911,7 @@ function App() {
   const [seenCompletedTaskNotificationIds, setSeenCompletedTaskNotificationIds] = useState<string[]>([])
   const [seenCreatedSupplyIds, setSeenCreatedSupplyIds] = useState<string[]>([])
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
+  const knownCancelledForCreatorRef = useRef<Set<string> | null>(null)
   const knownNewSupplyIdsRef = useRef<Set<string> | null>(null)
   const productionTaskStatusRef = useRef<Record<string, ProductionTask['status']>>({})
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
@@ -673,13 +966,33 @@ function App() {
       : true,
   ))].sort((left, right) => left.offerId.localeCompare(right.offerId, 'ru'))
   const normalizedTaskSearch = taskSearch.trim().toLowerCase()
+  const visibleProductionTasks = useMemo(
+    () =>
+      productionTasks.filter((task) => {
+        if (!user?.role || user.role === 'Admin') {
+          return true
+        }
+
+        if (user.role === 'Designer') {
+          return isNovinkaTask(task)
+        }
+
+        if (user.role === 'Production') {
+          return !isNovinkaTask(task)
+        }
+
+        return true
+      }),
+    [productionTasks, user?.role],
+  )
+  const roleTaskTableContext = user?.role === 'Designer' ? 'novinka' : user?.role === 'Production' ? 'ozon' : 'mixed'
   const filteredProductionTasks = normalizedTaskSearch
-    ? productionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
-    : productionTasks
-  const allNewProductionTasks = productionTasks.filter((task) => task.status === 'New' && !task.isArchived)
-  const allInProgressProductionTasks = productionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
-  const allCancelledProductionTasks = productionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived)
-  const allCompletedProductionTasks = productionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
+    ? visibleProductionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
+    : visibleProductionTasks
+  const allNewProductionTasks = visibleProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
+  const allInProgressProductionTasks = visibleProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
+  const allCancelledProductionTasks = visibleProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived)
+  const allCompletedProductionTasks = visibleProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
   const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const filteredNewProductionTasks = sortProductionTasksByUrgency(
     newProductionTasks.filter((task) => {
@@ -694,32 +1007,15 @@ function App() {
     return true
     }),
   )
-  const filteredNewTasksBySource = filteredNewProductionTasks.filter((task) =>
-    taskSourceSubTab === 'novinka' ? isNovinkaTask(task) : !isNovinkaTask(task),
-  )
-  const filterTasksByProductionType = (tasks: ProductionTask[]) => {
-    if (productionTaskTypeFilter === 'all') {
-      return tasks
-    }
-
-    if (productionTaskTypeFilter === 'novinka') {
-      return tasks.filter((task) => isNovinkaTask(task))
-    }
-
-    return tasks.filter((task) => !isNovinkaTask(task))
-  }
   const inProgressProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived),
   )
-  const filteredInProgressProductionTasks = filterTasksByProductionType(inProgressProductionTasks)
   const cancelledProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived),
   )
-  const filteredCancelledProductionTasks = filterTasksByProductionType(cancelledProductionTasks)
   const completedProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived),
   )
-  const filteredCompletedProductionTasks = filterTasksByProductionType(completedProductionTasks)
   const archivedProductionTasks = filteredProductionTasks.filter((task) => task.isArchived)
   const filteredArchivedProductionTasks = archivedProductionTasks.filter(
     (task) => archiveTaskStatusFilter === 'all' || task.status === archiveTaskStatusFilter,
@@ -889,31 +1185,68 @@ function App() {
   )
   const chatUnreadTotal = chatThreads.reduce((sum, item) => sum + (item.unreadCount ?? 0), 0)
   const unseenNewProductionTasks = allNewProductionTasks.filter(
-    (task) => !seenNewTaskNotificationIds.includes(task.id),
+    (task) =>
+      !seenNewTaskNotificationIds.includes(task.id) &&
+      !isSameUserId(task.createdByUserId, user?.id),
   )
-  const unseenNewOzonTasks = unseenNewProductionTasks.filter((task) => !isNovinkaTask(task))
-  const unseenNewNovinkaTasks = unseenNewProductionTasks.filter((task) => isNovinkaTask(task))
   const unseenInProgressProductionTasks = allInProgressProductionTasks.filter(
     (task) => !seenInProgressTaskNotificationIds.includes(task.id),
   )
-  const unseenInProgressOzonTasks = unseenInProgressProductionTasks.filter((task) => !isNovinkaTask(task))
-  const unseenInProgressNovinkaTasks = unseenInProgressProductionTasks.filter((task) => isNovinkaTask(task))
   const unseenCancelledProductionTasks = allCancelledProductionTasks.filter(
     (task) => !seenCancelledTaskNotificationIds.includes(task.id),
   )
-  const unseenCancelledOzonTasks = unseenCancelledProductionTasks.filter((task) => !isNovinkaTask(task))
-  const unseenCancelledNovinkaTasks = unseenCancelledProductionTasks.filter((task) => isNovinkaTask(task))
+  const unseenCancelledForCreator = allCancelledProductionTasks.filter(
+    (task) =>
+      !seenCancelledTaskNotificationIds.includes(task.id) &&
+      isSameUserId(task.createdByUserId, user?.id) &&
+      !isSameUserId(task.cancelledByUserId, user?.id),
+  )
   const unseenCompletedProductionTasks = allCompletedProductionTasks.filter(
     (task) => !seenCompletedTaskNotificationIds.includes(task.id),
   )
-  const unseenCompletedOzonTasks = unseenCompletedProductionTasks.filter((task) => !isNovinkaTask(task))
-  const unseenCompletedNovinkaTasks = unseenCompletedProductionTasks.filter((task) => isNovinkaTask(task))
   const allActiveSupplies = supplies.filter((supply) => !supply.isArchived)
   const unseenSupplies = allActiveSupplies.filter((supply) => !seenCreatedSupplyIds.includes(supply.id))
   const unseenCreatedSupplies = unseenSupplies.filter((supply) => supply.status === 'Created')
   const hasFeature = (feature: string) =>
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
   const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
+  const canViewIntegrationsOzon = () => hasFeature('integrations.ozon')
+  const canEditIntegrationsOzon = () => hasFeature('integrations.ozon.edit')
+  const canViewIntegrationsTelegram = () => hasFeature('integrations.telegram')
+  const canConnectIntegrationsTelegram = () => hasFeature('integrations.telegram.connect')
+  const canViewIntegrationsNotifications = () => hasFeature('integrations.telegram.notifications')
+  const canEditIntegrationsNotifications = () => hasFeature('integrations.telegram.notifications.edit')
+  const canViewIntegrationsReports = () => hasFeature('integrations.telegram.reports')
+  const canEditIntegrationsReports = () => hasFeature('integrations.telegram.reports.edit')
+  const canManageIntegrationUsers =
+    canViewIntegrationsNotifications() || canViewIntegrationsReports()
+  const canEditProductionTasks = () => hasFeature('production.editTasks')
+  const canCreateProductionTasks = () => hasFeature('production.createTask')
+  const canCancelProductionTasks = () => hasFeature('production.cancelTasks')
+  const canEditProductionProducts = () => hasFeature('production.editProducts')
+  const canDeleteProductionFiles = () => hasFeature('production.deleteFiles')
+  const canArchiveProductionTasks = () => hasFeature('production.archive')
+  const canEditChats = () => hasFeature('chats.edit')
+  const canManageChatGroups = () => hasFeature('chats.groups')
+  const canEditPoolingPrices = () => hasFeature('pooling.editPrices')
+  const canViewUsers = () =>
+    user?.role === 'Admin' ||
+    hasFeature('users') ||
+    hasFeature('users.create') ||
+    hasFeature('users.edit')
+  const canCreateUsers = () =>
+    user?.role === 'Admin' || hasFeature('users.create') || hasFeature('users.edit')
+  const canEditUsers = () => user?.role === 'Admin' || hasFeature('users.edit')
+  const canViewSettings = () => hasFeature('settings')
+  const canEditSettings = () => hasFeature('settings.edit')
+  const isHomeBlockEnabled = (blockId: string) =>
+    user?.role === 'Admin' || Boolean(user?.homeBlocks?.some((block) => block.id === blockId && block.enabled))
+  const hasHomeAction = (blockId: string, action: string) =>
+    user?.role === 'Admin' ||
+    Boolean(
+      user?.homeBlocks?.some((block) => block.id === blockId && block.enabled && block.actions.includes(action)),
+    )
+  const canChangeOtherPasswords = user?.role === 'Admin' || Boolean(user?.canChangeOtherUserPasswords)
   const canSeeProductionNotifications = hasFeature('production')
   const canSeeSupplyNotifications = hasFeature('supplies')
   const canSeeChatNotifications = hasFeature('chats')
@@ -923,6 +1256,14 @@ function App() {
           key: `task-new-${task.id}`,
           label: `Новая задача: ${getProductionTaskSummary(task)}`,
           target: 'tasks' as const,
+          taskId: task.id,
+        }))
+      : []),
+    ...(canSeeProductionNotifications
+      ? unseenCancelledForCreator.map((task) => ({
+          key: `task-cancelled-${task.id}`,
+          label: `Задача отменена: ${getProductionTaskSummary(task)}`,
+          target: 'cancelled' as const,
           taskId: task.id,
         }))
       : []),
@@ -946,7 +1287,9 @@ function App() {
           }))
       : []),
   ]
-  const productionNotificationTotal = canSeeProductionNotifications ? unseenNewProductionTasks.length : 0
+  const productionNotificationTotal = canSeeProductionNotifications
+    ? unseenNewProductionTasks.length + unseenCancelledForCreator.length
+    : 0
   const supplyNotificationTotal = canSeeSupplyNotifications ? unseenCreatedSupplies.length : 0
   const notificationTotal =
     productionNotificationTotal + supplyNotificationTotal + (canSeeChatNotifications ? chatUnreadTotal : 0)
@@ -955,33 +1298,14 @@ function App() {
       return Boolean(user)
     }
 
-    if ('adminOnly' in tab) {
-      return user?.role === 'Admin'
+    if (tab.id === 'users') {
+      return canViewUsers()
     }
 
     return hasFeature(tab.id)
   })
-  const telegramEventGroups = useMemo(() => {
-    const groups = new Map<string, TelegramNotificationEvent[]>()
-    for (const event of telegramEvents) {
-      const list = groups.get(event.group) ?? []
-      list.push(event)
-      groups.set(event.group, list)
-    }
-
-    return Array.from(groups.entries())
-  }, [telegramEvents])
-  const telegramEventColumns = useMemo(() => {
-    const columns: Array<Array<[string, TelegramNotificationEvent[]]>> = [[], []]
-
-    telegramEventGroups.forEach((entry, index) => {
-      columns[index % 2].push(entry)
-    })
-
-    return columns
-  }, [telegramEventGroups])
   const homeProductionStats = useMemo(() => {
-    const activeTasks = productionTasks.filter((task) => !task.isArchived)
+    const activeTasks = visibleProductionTasks.filter((task) => !task.isArchived)
 
     return {
       new: activeTasks.filter((task) => task.status === 'New').length,
@@ -991,7 +1315,7 @@ function App() {
       urgent: activeTasks.filter((task) => task.isUrgent).length,
       total: activeTasks.length,
     }
-  }, [productionTasks])
+  }, [visibleProductionTasks])
   const homeSupplyStats = useMemo(() => {
     const active = supplies.filter((supply) => !supply.isArchived)
 
@@ -1097,11 +1421,20 @@ function App() {
       ['summary', 'analytics.summary'],
       ['topProducts', 'analytics.topProducts'],
       ['noSales', 'analytics.noSales'],
+      ['production', 'analytics.production'],
     ]
     if (activeTab === 'analytics' && !hasSubFeature(`analytics.${analyticsSubTab}`, 'analytics')) {
       setAnalyticsSubTab(analyticsFallbacks.find(([, feature]) => hasSubFeature(feature, 'analytics'))?.[0] ?? 'summary')
     }
-  }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab])
+
+    if (
+      productionSubTab === 'products' &&
+      productionCatalogTab === 'editor' &&
+      !canEditProductionProducts()
+    ) {
+      setProductionCatalogTab('ozon')
+    }
+  }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab, productionCatalogTab])
 
   useEffect(() => {
     if (!token || activeTab !== 'production' || productionSubTab !== 'products') {
@@ -1118,22 +1451,43 @@ function App() {
   }, [token, activeTab, productionSubTab, productionCatalogTab, ozonProducts.length])
 
   useEffect(() => {
-    if (!token || user?.role !== 'Admin') {
+    if (!token) {
       return
     }
 
-    loadUsers()
-    loadAuditLogs()
-    loadSystemHealth()
-    loadBackups()
+    if (canViewUsers() || canManageIntegrationUsers) {
+      void loadUsers()
+    }
+
+    if (canViewSettings()) {
+      void loadRoleProfiles()
+      void loadAuditLogs()
+      void loadSystemHealth()
+      void loadBackups()
+    }
+
+    if (user?.role === 'Admin' || canEditIntegrationsNotifications() || canEditIntegrationsReports()) {
+      void loadTelegramNotificationEvents()
+      void loadReportSections()
+    }
+
+    if (!canViewSettings() && !canViewUsers() && !canManageIntegrationUsers) {
+      return
+    }
+
     const intervalId = window.setInterval(() => {
-      loadUsers()
-      loadAuditLogs()
-      loadSystemHealth()
-      loadBackups()
+      if (canViewUsers() || canManageIntegrationUsers) {
+        void loadUsers()
+      }
+
+      if (canViewSettings()) {
+        void loadAuditLogs()
+        void loadSystemHealth()
+        void loadBackups()
+      }
     }, 30000)
     return () => window.clearInterval(intervalId)
-  }, [token, user?.role])
+  }, [token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
     setProfileForm({
@@ -1215,7 +1569,7 @@ function App() {
   }, [token, user?.id])
 
   useEffect(() => {
-    if (!token) {
+    if (!token || !user) {
       return
     }
 
@@ -1223,7 +1577,7 @@ function App() {
     loadProductionTasks()
     loadSupplies()
     loadSupplyAnalytics()
-  }, [token])
+  }, [token, user?.id, user?.role])
 
   useEffect(() => {
     if (!token) {
@@ -1234,7 +1588,7 @@ function App() {
   }, [token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
-    if (!token || activeTab !== 'home' || !hasFeature('analytics')) {
+    if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics')) {
       return
     }
 
@@ -1264,16 +1618,107 @@ function App() {
   }, [analyticsDateFrom, analyticsDateTo, activeTab, token, user?.role, user?.allowedFeatures])
 
   useEffect(() => {
+    if (!token || activeTab !== 'analytics' || analyticsSubTab !== 'production') {
+      return
+    }
+
+    if (!hasFeature('analytics.production')) {
+      return
+    }
+
+    setProductionAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
+    setProductionAnalyticsDateTo(getDefaultAnalyticsDateTo())
+    void loadProductionAnalyticsAssignees()
+  }, [activeTab, analyticsSubTab, token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || analyticsSubTab !== 'production') {
+      return
+    }
+
+    if (!hasFeature('analytics.production')) {
+      return
+    }
+
+    if (!productionAnalyticsDateFrom || !productionAnalyticsDateTo) {
+      return
+    }
+
+    void loadProductionAnalyticsReport()
+  }, [
+    productionAnalyticsDateFrom,
+    productionAnalyticsDateTo,
+    productionAnalyticsUserId,
+    activeTab,
+    analyticsSubTab,
+    token,
+    user?.role,
+    user?.allowedFeatures,
+  ])
+
+  useEffect(() => {
     if (!token || activeTab !== 'integrations' || !hasFeature('integrations')) {
       return
     }
 
     void loadTelegramNotificationEvents()
-    void loadIntegrationsTelegram()
-    if (user?.role === 'Admin') {
+    if (canViewIntegrationsTelegram()) {
+      void loadIntegrationsTelegram()
+    }
+    if (canViewIntegrationsOzon()) {
       void loadIntegrationsOzon()
     }
+    if (canManageIntegrationUsers) {
+      void loadUsers()
+      void loadReportSections()
+    }
   }, [activeTab, token, user?.role, user?.allowedFeatures])
+
+  useEffect(() => {
+    if (!canManageIntegrationUsers || activeTab !== 'integrations') {
+      return
+    }
+
+    if (!integrationAdminUserId && users.length > 0) {
+      const firstUser = users.find((item) => item.id !== SYSTEM_USER_ID) ?? users[0]
+      setIntegrationAdminUserId(firstUser.id)
+    }
+  }, [activeTab, canManageIntegrationUsers, users, integrationAdminUserId])
+
+  useEffect(() => {
+    if (!canManageIntegrationUsers || activeTab !== 'integrations' || !integrationAdminUserId) {
+      return
+    }
+
+    if (integrationsSubTab === 'telegram-notifications') {
+      void loadUserTelegram(integrationAdminUserId)
+    }
+
+    if (integrationsSubTab === 'telegram-reports') {
+      void loadUserReport(integrationAdminUserId)
+    }
+  }, [activeTab, canManageIntegrationUsers, integrationsSubTab, integrationAdminUserId])
+
+  useEffect(() => {
+    if (activeTab !== 'integrations' || !hasFeature('integrations')) {
+      return
+    }
+
+    const available: Array<'connections' | 'telegram-notifications' | 'telegram-reports'> = []
+    if (canViewIntegrationsOzon() || canViewIntegrationsTelegram()) {
+      available.push('connections')
+    }
+    if (canViewIntegrationsNotifications()) {
+      available.push('telegram-notifications')
+    }
+    if (canViewIntegrationsReports()) {
+      available.push('telegram-reports')
+    }
+
+    if (available.length > 0 && !available.includes(integrationsSubTab)) {
+      setIntegrationsSubTab(available[0])
+    }
+  }, [activeTab, user?.role, user?.allowedFeatures, integrationsSubTab])
 
   useEffect(() => {
     if (!token) {
@@ -1352,6 +1797,7 @@ function App() {
     setSelectedChatId('')
     setChatGroupDetail(null)
     knownNewTaskIdsRef.current = null
+    knownCancelledForCreatorRef.current = null
     knownNewSupplyIdsRef.current = null
     productionTaskStatusRef.current = {}
     knownChatUnreadCountsRef.current = null
@@ -1418,11 +1864,216 @@ function App() {
     })
 
     if (!response.ok) {
+      const message = await response.text()
+      setUsers([])
+      setUsersLoadError(message || `Не удалось загрузить пользователей (${response.status})`)
       return
     }
 
+    setUsersLoadError('')
     const data: User[] = await response.json()
     setUsers(data)
+  }
+
+  async function loadRoleProfiles() {
+    const response = await fetch('/api/admin/role-profiles', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const data: RoleProfile[] = await response.json()
+    setRoleProfiles(data)
+    setRoleProfileEdits(
+      Object.fromEntries(data.map((profile) => [profile.role, profile])),
+    )
+  }
+
+  async function saveRoleProfile(role: string) {
+    const edit = roleProfileEdits[role]
+    if (!edit) {
+      return
+    }
+
+    setRoleProfilesStatus(`Сохраняем роль «${getRoleLabel(role)}»...`)
+    const response = await fetch(`/api/admin/role-profiles/${encodeURIComponent(role)}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        displayName: edit.displayName,
+        allowedFeatures: edit.allowedFeatures,
+        homeBlocks: edit.homeBlocks,
+        canChangeOtherUserPasswords: edit.canChangeOtherUserPasswords,
+      }),
+    })
+
+    if (!response.ok) {
+      setRoleProfilesStatus('Не удалось сохранить настройки роли')
+      return
+    }
+
+    const updated: RoleProfile = await response.json()
+    setRoleProfiles((current) => current.map((item) => (item.role === role ? updated : item)))
+    setRoleProfileEdits((current) => ({ ...current, [role]: updated }))
+    setRoleProfilesStatus(`Роль «${updated.displayName}» сохранена`)
+  }
+
+  async function loadUserTelegram(userId: string) {
+    const response = await fetch(`/api/admin/users/${userId}/telegram`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setUserTelegramStatus((current) => ({ ...current, [userId]: 'Не удалось загрузить Telegram' }))
+      return
+    }
+
+    const data: AdminUserTelegram = await response.json()
+    setUserTelegramData((current) => ({ ...current, [userId]: data }))
+    setUserTelegramEvents((current) => ({ ...current, [userId]: data.enabledEvents }))
+    setUserTelegramStatus((current) => ({ ...current, [userId]: '' }))
+  }
+
+  async function saveUserTelegramPreferences(userId: string) {
+    const events = userTelegramEvents[userId] ?? []
+    setUserTelegramStatus((current) => ({ ...current, [userId]: 'Сохраняем оповещения...' }))
+
+    const response = await fetch(`/api/admin/users/${userId}/telegram/preferences`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ events }),
+    })
+
+    if (!response.ok) {
+      const message = (await response.text()) || 'Не удалось сохранить оповещения'
+      setUserTelegramStatus((current) => ({
+        ...current,
+        [userId]: message,
+      }))
+      return
+    }
+
+    const data: AdminUserTelegram = await response.json()
+    setUserTelegramData((current) => ({ ...current, [userId]: data }))
+    setUserTelegramEvents((current) => ({ ...current, [userId]: data.enabledEvents }))
+    setUserTelegramStatus((current) => ({ ...current, [userId]: 'Оповещения сохранены' }))
+  }
+
+  async function loadReportSections() {
+    const response = await fetch('/api/admin/report-sections', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      return
+    }
+    const data: ReportSection[] = await response.json()
+    setReportSections(data)
+    setReportsStatus(`Метрик в отчёте: ${data.length}`)
+  }
+
+  async function loadUserReport(userId: string) {
+    const response = await fetch(`/api/admin/users/${userId}/telegram/report`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      setUserReportStatus((current) => ({ ...current, [userId]: 'Не удалось загрузить отчёт' }))
+      return
+    }
+    const data: AdminUserReport = await response.json()
+    setUserReportData((current) => ({ ...current, [userId]: data }))
+    setUserReportSections((current) => ({ ...current, [userId]: data.enabledSections }))
+    setUserReportStatus((current) => ({ ...current, [userId]: '' }))
+  }
+
+  async function saveUserReport(userId: string) {
+    const report = userReportData[userId]
+    if (!report) {
+      return
+    }
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Сохраняем отчёт...' }))
+    const response = await fetch(`/api/admin/users/${userId}/telegram/report`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        enabled: report.enabled,
+        reportTime: report.reportTime,
+        timezone: report.timezone,
+        sections: userReportSections[userId] ?? report.enabledSections,
+      }),
+    })
+    if (!response.ok) {
+      const message = (await response.text()) || 'Не удалось сохранить отчёт'
+      setUserReportStatus((current) => ({
+        ...current,
+        [userId]: message,
+      }))
+      return
+    }
+    const data: AdminUserReport = await response.json()
+    setUserReportData((current) => ({ ...current, [userId]: data }))
+    setUserReportSections((current) => ({ ...current, [userId]: data.enabledSections }))
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Настройки отчёта сохранены' }))
+  }
+
+  async function testUserReport(userId: string) {
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Отправляем тестовый отчёт...' }))
+    const response = await fetch(`/api/admin/users/${userId}/telegram/report/test`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      const message = (await response.text()) || 'Не удалось отправить отчёт'
+      setUserReportStatus((current) => ({
+        ...current,
+        [userId]: message,
+      }))
+      return
+    }
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Тестовый отчёт отправлен' }))
+  }
+
+  async function changeOwnPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (profilePasswordForm.newPassword !== profilePasswordForm.confirmPassword) {
+      setProfileStatus('Новый пароль и подтверждение не совпадают')
+      return
+    }
+
+    setProfileStatus('Меняем пароль...')
+    const response = await fetch('/api/profile/password', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        currentPassword: profilePasswordForm.currentPassword,
+        newPassword: profilePasswordForm.newPassword,
+      }),
+    })
+
+    if (!response.ok) {
+      setProfileStatus((await response.text()) || 'Не удалось сменить пароль')
+      return
+    }
+
+    setProfilePasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
+    setProfileStatus('Пароль изменён')
   }
 
   async function loadAuditLogs(
@@ -1467,7 +2118,21 @@ function App() {
   }
 
   async function exportAuditLogs() {
-    const response = await fetch('/api/admin/audit-logs/export', {
+    const params = new URLSearchParams()
+    if (auditSearch.trim()) {
+      params.set('search', auditSearch.trim())
+    }
+    if (auditDateFrom.trim()) {
+      params.set('dateFrom', auditDateFrom.trim())
+    }
+    if (auditDateTo.trim()) {
+      params.set('dateTo', auditDateTo.trim())
+    }
+    if (auditUserId.trim()) {
+      params.set('userId', auditUserId.trim())
+    }
+
+    const response = await fetch(`/api/admin/audit-logs/export?${params.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -1482,9 +2147,10 @@ function App() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`
+    link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.xlsx`
     link.click()
     URL.revokeObjectURL(url)
+    setAuditStatus('Журнал выгружен в Excel')
   }
 
   async function loadSystemHealth() {
@@ -1612,7 +2278,6 @@ function App() {
 
     const data: TelegramIntegrationInfo = await response.json()
     setTelegramIntegration(data)
-    setTelegramSelectedEvents(data.enabledEvents ?? [])
     setTelegramStatus(
       data.connected
         ? `Telegram подключён${data.connectedAt ? ` · ${formatDateTime(data.connectedAt)}` : ''}`
@@ -1639,30 +2304,6 @@ function App() {
     setTelegramStatus('Откройте ссылку в Telegram и нажмите Start')
     void loadIntegrationsTelegram()
     window.open(data.connectUrl, '_blank', 'noopener,noreferrer')
-  }
-
-  async function saveTelegramPreferences() {
-    setTelegramSaving(true)
-    setTelegramStatus('Сохранение оповещений...')
-    const response = await fetch('/api/integrations/telegram/preferences', {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ events: telegramSelectedEvents }),
-    })
-
-    setTelegramSaving(false)
-    if (!response.ok) {
-      const message = await response.text()
-      setTelegramStatus(message || 'Не удалось сохранить оповещения')
-      return
-    }
-
-    const data: { enabledEvents: string[] } = await response.json()
-    setTelegramSelectedEvents(data.enabledEvents)
-    setTelegramStatus(`Сохранено оповещений: ${data.enabledEvents.length}`)
   }
 
   async function testTelegramNotification() {
@@ -1694,46 +2335,8 @@ function App() {
       return
     }
 
-    setTelegramSelectedEvents([])
     setTelegramStatus('Telegram отключён')
     void loadIntegrationsTelegram()
-  }
-
-  function toggleTelegramEvent(eventId: string) {
-    setTelegramSelectedEvents((current) =>
-      current.includes(eventId) ? current.filter((item) => item !== eventId) : [...current, eventId],
-    )
-  }
-
-  function toggleTelegramGroup(group: string, enabled: boolean) {
-    const groupEventIds = telegramEvents.filter((item) => item.group === group).map((item) => item.id)
-    setTelegramSelectedEvents((current) => {
-      const next = new Set(current)
-      groupEventIds.forEach((eventId) => {
-        if (enabled) {
-          next.add(eventId)
-        } else {
-          next.delete(eventId)
-        }
-      })
-      return Array.from(next)
-    })
-  }
-
-  function selectAllTelegramEvents() {
-    setTelegramSelectedEvents(telegramEvents.map((item) => item.id))
-  }
-
-  function clearTelegramEvents() {
-    setTelegramSelectedEvents([])
-  }
-
-  function expandAllTelegramGroups() {
-    setTelegramExpandedGroups(Object.fromEntries(telegramEventGroups.map(([group]) => [group, true])))
-  }
-
-  function collapseAllTelegramGroups() {
-    setTelegramExpandedGroups(Object.fromEntries(telegramEventGroups.map(([group]) => [group, false])))
   }
 
   async function loadBackups() {
@@ -2490,7 +3093,7 @@ function App() {
       displayName: '',
       position: '',
       password: '',
-      role: 'User',
+      role: 'Production',
       allowedFeatures: defaultUserFeatures,
     })
   }
@@ -2512,6 +3115,7 @@ function App() {
         position: edit.position,
         role: edit.role,
         allowedFeatures: edit.allowedFeatures,
+        homeBlocks: edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles),
       }),
     })
 
@@ -2521,6 +3125,10 @@ function App() {
 
     const updatedUser: User = await response.json()
     setUsers((current) => current.map((item) => (item.id === id ? updatedUser : item)))
+    if (user?.id === id) {
+      setUser(updatedUser)
+      localStorage.setItem('authUser', JSON.stringify(updatedUser))
+    }
     setUserSettingsEdits((current) => {
       const next = { ...current }
       delete next[id]
@@ -2634,6 +3242,7 @@ function App() {
     setProfileModalUser(null)
     setProfileAvatar(null)
     setProfileStatus('')
+    setProfilePasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
   }
 
   function openUserProfileFromThread(thread: ChatThread) {
@@ -2648,7 +3257,7 @@ function App() {
         userName: thread.title,
         displayName: thread.title,
         position: thread.subtitle,
-        role: 'User',
+        role: 'Production',
         avatarUrl: thread.avatarUrl,
         allowedFeatures: [],
         isOnline: thread.isOnline,
@@ -2664,7 +3273,7 @@ function App() {
         userName: member.userName,
         displayName: member.displayName || member.userName,
         position: member.position,
-        role: 'User',
+        role: 'Production',
         avatarUrl: member.avatarUrl,
         allowedFeatures: [],
       },
@@ -2679,7 +3288,7 @@ function App() {
         userName: displayName || 'Пользователь',
         displayName: displayName || 'Пользователь',
         position: '',
-        role: 'User',
+        role: 'Production',
         avatarUrl: '',
         allowedFeatures: [],
       },
@@ -2880,7 +3489,139 @@ function App() {
   }
 
   async function refreshAnalytics() {
+    if (analyticsSubTab === 'production') {
+      await loadProductionAnalyticsReport()
+      return
+    }
+
     await Promise.all([loadAnalyticsSnapshot(), loadAnalytics()])
+  }
+
+  async function loadProductionAnalyticsAssignees() {
+    const response = await fetch('/api/production/analytics/assignees', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductionAnalyticsAssignees([])
+      return
+    }
+
+    const data: ProductionAnalyticsAssignee[] = await response.json()
+    setProductionAnalyticsAssignees(data)
+  }
+
+  async function loadProductionAnalyticsReport() {
+    setProductionAnalyticsStatus('Загружаем отчёт по производству...')
+
+    const params = new URLSearchParams()
+    if (productionAnalyticsDateFrom) {
+      params.set('dateFrom', productionAnalyticsDateFrom)
+    }
+    if (productionAnalyticsDateTo) {
+      params.set('dateTo', productionAnalyticsDateTo)
+    }
+    if (productionAnalyticsUserId.trim()) {
+      params.set('userId', productionAnalyticsUserId.trim())
+    }
+
+    const response = await fetch(`/api/production/analytics/report?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductionAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить отчёт'))
+      return
+    }
+
+    const data: ProductionAnalyticsReport = await response.json()
+    setProductionAnalyticsReport(data)
+    setProductionAnalyticsStatus(
+      `Отчёт обновлён: ${data.summary.length} исполнителей · ${data.tasks.length} задач`,
+    )
+  }
+
+  async function exportProductionAnalyticsExcel(userId?: string) {
+    const params = new URLSearchParams()
+    if (productionAnalyticsDateFrom) {
+      params.set('dateFrom', productionAnalyticsDateFrom)
+    }
+    if (productionAnalyticsDateTo) {
+      params.set('dateTo', productionAnalyticsDateTo)
+    }
+    const targetUserId = userId ?? productionAnalyticsUserId.trim()
+    if (targetUserId) {
+      params.set('userId', targetUserId)
+    }
+
+    const response = await fetch(`/api/production/analytics/export?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductionAnalyticsStatus('Не удалось выгрузить Excel')
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `production-analytics-${new Date().toISOString().slice(0, 10)}.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+    setProductionAnalyticsStatus('Отчёт выгружен в Excel')
+  }
+
+  async function saveProductionAnalyticsRecord(task: ProductionTask) {
+    const response = await fetch(`/api/production/analytics/records/${task.id}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        completedAt: task.completedAt ? new Date(task.completedAt).toISOString() : undefined,
+        assignedUserName: task.assignedUserName ?? '',
+        ozonProductId: task.ozonProductId,
+        offerId: task.offerId,
+        productName: task.productName,
+        requiredQuantity: task.requiredQuantity,
+        actualQuantity: task.actualQuantity ?? 0,
+        taskType: task.taskType ?? 'Ozon',
+        isUrgent: task.isUrgent,
+        createdByDisplayName: task.createdByDisplayName ?? '',
+        createdAt: task.createdAt ? new Date(task.createdAt).toISOString() : undefined,
+        startedAt: task.startedAt ? new Date(task.startedAt).toISOString() : undefined,
+        items: getProductionTaskItems(task).map((item) => ({
+          id: item.id,
+          ozonProductId: item.ozonProductId,
+          offerId: item.offerId,
+          productName: item.productName,
+          productLink: item.productLink ?? '',
+          requiredQuantity: item.requiredQuantity,
+          actualQuantity: item.actualQuantity ?? 0,
+          enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+          filePath: item.filePath ?? '',
+        })),
+      }),
+    })
+
+    if (!response.ok) {
+      setProductionAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить запись'))
+      return false
+    }
+
+    setProductionAnalyticsEditingTask(null)
+    await loadProductionAnalyticsReport()
+    setProductionAnalyticsStatus('Запись аналитики обновлена')
+    return true
   }
 
   async function exportAnalyticsOrderRowsExcel(
@@ -2959,19 +3700,36 @@ function App() {
       params.set('search', search.trim())
     }
 
-    const response = await fetch(`/api/production/files?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const query = params.toString()
+    const suffix = query ? `?${query}` : ''
+    const [filesResponse, pathsResponse] = await Promise.all([
+      fetch(`/api/production/files${suffix}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      fetch(`/api/production/file-paths${suffix}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+    ])
 
-    if (!response.ok) {
+    if (!filesResponse.ok) {
       setProductionStatus('Не удалось загрузить данные производства')
+      setProductionFiles([])
+      setProductionFilePaths([])
       return
     }
 
-    const data: ProductionFile[] = await response.json()
+    const data: ProductionFile[] = await filesResponse.json()
     setProductionFiles(data)
+    if (pathsResponse.ok) {
+      const paths: ProductionFilePath[] = await pathsResponse.json()
+      setProductionFilePaths(paths)
+    } else {
+      setProductionFilePaths([])
+    }
     setProductionStatus(data.length ? `Найдено записей: ${data.length}` : 'Записей пока нет')
   }
 
@@ -2999,6 +3757,28 @@ function App() {
 
     setTaskStatus('Файл загружен')
     await loadProductionFiles(productionSearch)
+  }
+
+  async function uploadNovinkaImageForTaskItem(item: ProductionTaskItem, file: File) {
+    const formData = new FormData()
+    formData.append('ozonProductId', '0')
+    formData.append('offerId', item.offerId)
+    formData.append('productName', item.productName)
+    formData.append('productLink', item.productLink ?? '')
+    formData.append('notes', 'Фото товара')
+    formData.append('file', file)
+
+    const response = await fetch('/api/production/files', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      throw new Error('Не удалось загрузить картинку новинки')
+    }
   }
 
   async function downloadProductionFile(id: string) {
@@ -3074,7 +3854,6 @@ function App() {
 
       if (reworkTaskCreated) {
         setProductionSubTab('tasks')
-        setTaskSourceSubTab('novinka')
       }
 
       setProductionFilesModal((current) => {
@@ -3146,6 +3925,7 @@ function App() {
 
   function markVisibleNotificationsSeen() {
     markTaskNotificationsSeen('new', unseenNewProductionTasks.map((task) => task.id))
+    markTaskNotificationsSeen('cancelled', unseenCancelledForCreator.map((task) => task.id))
     markSupplyNotificationsSeen(unseenCreatedSupplies.map((supply) => supply.id))
     chatThreads
       .filter((item) => (item.unreadCount ?? 0) > 0)
@@ -3186,7 +3966,10 @@ function App() {
     }
 
     if (previousTaskIds) {
-      const arrivedTasks = newTasks.filter((task) => !previousTaskIds.has(task.id))
+      const arrivedTasks = newTasks.filter(
+        (task) =>
+          !previousTaskIds.has(task.id) && !isSameUserId(task.createdByUserId, user?.id),
+      )
       if (arrivedTasks.length > 0) {
         showBrowserNotification(
           'Новая задача',
@@ -3196,6 +3979,27 @@ function App() {
         )
       }
     }
+
+    const cancelledForCreator = data.filter(
+      (task) =>
+        task.status === 'Cancelled' &&
+        !task.isArchived &&
+        isSameUserId(task.createdByUserId, user?.id) &&
+        !isSameUserId(task.cancelledByUserId, user?.id),
+    )
+    const previousCancelledForCreator = knownCancelledForCreatorRef.current
+    if (previousCancelledForCreator) {
+      const newlyCancelled = cancelledForCreator.filter((task) => !previousCancelledForCreator.has(task.id))
+      if (newlyCancelled.length > 0) {
+        showBrowserNotification(
+          'Задача отменена',
+          newlyCancelled.length === 1
+            ? `${getProductionTaskSummary(newlyCancelled[0])}${newlyCancelled[0].cancellationComment ? `: ${newlyCancelled[0].cancellationComment}` : ''}`
+            : `Отменено ваших задач: ${newlyCancelled.length}`,
+        )
+      }
+    }
+    knownCancelledForCreatorRef.current = new Set(cancelledForCreator.map((task) => task.id))
 
     knownNewTaskIdsRef.current = nextTaskIds
     productionTaskStatusRef.current = Object.fromEntries(data.map((task) => [task.id, task.status]))
@@ -3208,6 +4012,8 @@ function App() {
     setDraftNovinkaItems([])
     setNovinkaProductName('')
     setNovinkaProductLink('')
+    setNovinkaProductImageFile(undefined)
+    setNovinkaProductImagePreviewUrl('')
     setTaskIsUrgent(false)
     setSelectedTaskProductId('')
     setSelectedTaskNovinkaOfferId('')
@@ -3216,7 +4022,59 @@ function App() {
     setEditingTaskId(null)
   }
 
+  function setNovinkaProductImage(file?: File) {
+    setNovinkaProductImageFile(file)
+    setNovinkaProductImagePreviewUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current)
+      }
+
+      return file ? URL.createObjectURL(file) : ''
+    })
+  }
+
+  function addDraftNovinkaToOzonTask() {
+    const quantity = Number(taskNovinkaQuantity)
+    const selectedNovinka = novinkaProductionCatalogItems.find(
+      (item) => item.offerId === selectedTaskNovinkaOfferId,
+    )
+
+    if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
+      setTaskFormStatus('Выберите новинку из списка и укажите количество')
+      return
+    }
+
+    if (selectedNovinka.fileCount <= 0) {
+      setTaskFormStatus('У выбранной новинки нет файлов производства')
+      return
+    }
+
+    setDraftTaskItems((current) => [
+      ...current,
+      {
+        tempId: createTempId(),
+        ozonProductId: selectedNovinka.ozonProductId ?? 0,
+        offerId: selectedNovinka.offerId,
+        productName: selectedNovinka.productName,
+        productLink: selectedNovinka.productLink,
+        imageUrl: '',
+        requiredQuantity: quantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+      },
+    ])
+    setSelectedTaskNovinkaOfferId('')
+    setTaskNovinkaQuantity('')
+    setTaskFormStatus('')
+    setTaskStatus('Новинка добавлена в задачу')
+  }
+
   async function convertNovinkaToOzon() {
+    if (!canEditProductionProducts()) {
+      setProductEditorStatus('Нет доступа к редактированию товара.')
+      return
+    }
+
     const sourceNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === editorNovinkaOfferId)
     const targetOzonProductId = Number(editorOzonProductId)
 
@@ -3284,19 +4142,29 @@ function App() {
 
     setDraftNovinkaItems((current) => [
       ...current,
-      { tempId: createTempId(), productName, productLink },
+      {
+        tempId: createTempId(),
+        productName,
+        productLink,
+        imageFile: novinkaProductImageFile,
+        imagePreviewUrl: novinkaProductImagePreviewUrl,
+      },
     ])
     setNovinkaProductName('')
     setNovinkaProductLink('')
+    setNovinkaProductImageFile(undefined)
+    setNovinkaProductImagePreviewUrl('')
     setTaskFormStatus('')
     setTaskStatus('Новинка добавлена в задачу')
   }
 
   function openCreateTaskModal() {
     resetTaskForm()
+    const defaultMode = user?.role === 'Designer' ? 'novinka' : 'ozon'
+    setTaskFormMode(defaultMode)
     setTaskFormStatus('')
     setShowCreateTaskModal(true)
-    if (taskSourceSubTab === 'ozon' && ozonProducts.length === 0) {
+    if (defaultMode !== 'novinka' && ozonProducts.length === 0) {
       void loadOzonProducts()
     }
     if (productionFiles.length === 0) {
@@ -3319,7 +4187,7 @@ function App() {
     setEditingTaskId(task.id)
     setTaskIsUrgent(task.isUrgent)
     if (isNovinkaTask(task)) {
-      setTaskSourceSubTab('novinka')
+      setTaskFormMode('novinka')
       setDraftNovinkaItems(
         getProductionTaskItems(task).map((item) => ({
           tempId: createTempId(),
@@ -3329,7 +4197,7 @@ function App() {
       )
       setDraftTaskItems([])
     } else {
-      setTaskSourceSubTab('ozon')
+      setTaskFormMode('ozon')
       setDraftTaskItems(
         getProductionTaskItems(task).map((item) => {
           const isNovinkaItem =
@@ -3382,44 +4250,9 @@ function App() {
     setTaskStatus('Товар добавлен в задачу')
   }
 
-  function addDraftNovinkaToOzonTask() {
-    const quantity = Number(taskNovinkaQuantity)
-    const selectedNovinka = novinkaProductionCatalogItems.find(
-      (item) => item.offerId === selectedTaskNovinkaOfferId,
-    )
-
-    if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
-      setTaskFormStatus('Выберите новинку из списка и укажите количество')
-      return
-    }
-
-    if (selectedNovinka.fileCount <= 0) {
-      setTaskFormStatus('У выбранной новинки нет файлов производства')
-      return
-    }
-
-    setDraftTaskItems((current) => [
-      ...current,
-      {
-        tempId: createTempId(),
-        ozonProductId: selectedNovinka.ozonProductId ?? 0,
-        offerId: selectedNovinka.offerId,
-        productName: selectedNovinka.productName,
-        productLink: selectedNovinka.productLink,
-        imageUrl: '',
-        requiredQuantity: quantity,
-        enforceMinimumQuantity: false,
-        isNovinka: true,
-      },
-    ])
-    setSelectedTaskNovinkaOfferId('')
-    setTaskNovinkaQuantity('')
-    setTaskFormStatus('')
-    setTaskStatus('Новинка добавлена в задачу')
-  }
-
   async function saveTaskFromDraft() {
-    const isNovinka = taskSourceSubTab === 'novinka'
+    const hasOzonProductionItems = draftTaskItems.some((item) => item.requiredQuantity > 0)
+    const isNovinka = taskFormMode === 'novinka' && !hasOzonProductionItems
     let novinkaItems = [...draftNovinkaItems]
     let ozonItems = [...draftTaskItems]
 
@@ -3427,7 +4260,16 @@ function App() {
       const productName = novinkaProductName.trim()
       const productLink = novinkaProductLink.trim()
       if (productName && productLink) {
-        novinkaItems = [...novinkaItems, { tempId: createTempId(), productName, productLink }]
+        novinkaItems = [
+          ...novinkaItems,
+          {
+            tempId: createTempId(),
+            productName,
+            productLink,
+            imageFile: novinkaProductImageFile,
+            imagePreviewUrl: novinkaProductImagePreviewUrl,
+          },
+        ]
       }
     } else {
       const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
@@ -3525,14 +4367,45 @@ function App() {
       if (!response.ok) {
         const message = await response.text()
         setTaskFormStatus(message || (editingTaskId ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу'))
+        setTaskFormSaving(false)
         return
       }
 
       const wasEdit = Boolean(editingTaskId)
+      const savedTask: ProductionTask | null = response.status === 204 ? null : await response.json()
+      let savedStatus = wasEdit ? 'Задача обновлена' : 'Задача создана'
+      if (!wasEdit && savedTask?.id && user?.id) {
+        markTaskNotificationsSeen('new', [savedTask.id])
+      }
+      if (!wasEdit && isNovinka && savedTask?.items?.length) {
+        const savedItems = getProductionTaskItems(savedTask)
+        const uploadDrafts = novinkaItems.filter((item) => item.imageFile)
+        if (uploadDrafts.length > 0) {
+          try {
+            for (const draft of uploadDrafts) {
+              const savedItem =
+                savedItems.find(
+                  (item) =>
+                    item.productName.trim() === draft.productName.trim() &&
+                    (item.productLink ?? '').trim() === draft.productLink.trim(),
+                ) ?? savedItems[novinkaItems.indexOf(draft)]
+
+              if (savedItem && draft.imageFile) {
+                await uploadNovinkaImageForTaskItem(savedItem, draft.imageFile)
+              }
+            }
+            await loadProductionFiles(productionSearch)
+          } catch {
+            savedStatus = 'Задача создана, но картинку новинки загрузить не удалось'
+          }
+        }
+      }
+      setTaskFormSaving(false)
       closeTaskFormModal()
-      setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
-      await loadProductionTasks()
-    } finally {
+      setTaskStatus(savedStatus)
+      void loadProductionTasks()
+    } catch {
+      setTaskFormStatus('Не удалось сохранить задачу')
       setTaskFormSaving(false)
     }
   }
@@ -3555,7 +4428,7 @@ function App() {
   }
 
   async function cancelProductionTask() {
-    if (!cancelTaskId || user?.role !== 'Admin') {
+    if (!cancelTaskId || !canCancelProductionTasks()) {
       return
     }
 
@@ -3575,7 +4448,8 @@ function App() {
     })
 
     if (!response.ok) {
-      setTaskStatus('Не удалось отменить задачу')
+      const message = await response.text()
+      setTaskStatus(message || 'Не удалось отменить задачу')
       return
     }
 
@@ -3593,8 +4467,15 @@ function App() {
       const missingFiles = taskItems.filter(
         (item) => getProductionFilesForTaskItem(item, productionFiles).length === 0,
       )
+      const missingPaths = taskItems.filter(
+        (item) => getProductionPathsForTaskItem(item, productionFilePaths).length === 0,
+      )
       if (missingFiles.length > 0) {
         setTaskStatus(`Добавьте файлы: ${missingFiles.map((item) => item.productName).join(', ')}`)
+        return
+      }
+      if (missingPaths.length > 0) {
+        setTaskStatus(`Укажите путь к файлу: ${missingPaths.map((item) => item.productName).join(', ')}`)
         return
       }
 
@@ -3668,6 +4549,10 @@ function App() {
   }
 
   async function archiveProductionTask(id: string) {
+    if (!canArchiveProductionTasks()) {
+      return
+    }
+
     const response = await fetch(`/api/production/tasks/${id}/archive`, {
       method: 'PUT',
       headers: {
@@ -4221,6 +5106,10 @@ function App() {
                         markTaskNotificationsSeen('new', [item.taskId])
                         setActiveTab('production')
                         setProductionSubTab('tasks')
+                      } else if (item.target === 'cancelled') {
+                        markTaskNotificationsSeen('cancelled', [item.taskId])
+                        setActiveTab('production')
+                        setProductionSubTab('cancelled')
                       } else if (item.target === 'supplies-all') {
                         markSupplyNotificationsSeen([item.supplyId])
                         setActiveTab('supplies')
@@ -4261,6 +5150,9 @@ function App() {
           onClose={closeUserProfile}
           onSaveProfile={saveProfile}
           onUploadAvatar={uploadProfileAvatar}
+          profilePasswordForm={profilePasswordForm}
+          setProfilePasswordForm={setProfilePasswordForm}
+          onChangePassword={changeOwnPassword}
         />
       )}
 
@@ -4271,7 +5163,7 @@ function App() {
           token={token}
           onClose={() => setProductionFilesModal(null)}
           onDownload={downloadProductionFile}
-          onDelete={deleteProductionFile}
+          onDelete={canDeleteProductionFiles() ? deleteProductionFile : undefined}
         />
       )}
 
@@ -4287,7 +5179,7 @@ function App() {
               </div>
 
               <div className="home-blocks">
-                {hasFeature('production') && (
+                {isHomeBlockEnabled('production') && (
                   <article className="home-block">
                     <div className="home-block-head">
                       <div>
@@ -4326,12 +5218,12 @@ function App() {
                       </div>
                     </div>
                     <div className="home-block-actions">
-                      {hasSubFeature('production.tasks', 'production') && (
+                      {hasHomeAction('production', 'production.tasks') && (
                         <button type="button" onClick={() => openTab('production', { production: 'tasks' })}>
                           Задачи
                         </button>
                       )}
-                      {hasSubFeature('production.tasks', 'production') && homeProductionStats.urgent > 0 && (
+                      {hasHomeAction('production', 'production.tasks') && homeProductionStats.urgent > 0 && (
                         <button
                           type="button"
                           className="home-block-urgent"
@@ -4340,17 +5232,17 @@ function App() {
                           Срочные
                         </button>
                       )}
-                      {hasSubFeature('production.inProgress', 'production') && (
+                      {hasHomeAction('production', 'production.inProgress') && (
                         <button type="button" onClick={() => openTab('production', { production: 'inProgress' })}>
                           В работе
                         </button>
                       )}
-                      {hasSubFeature('production.cancelled', 'production') && (
+                      {hasHomeAction('production', 'production.cancelled') && (
                         <button type="button" onClick={() => openTab('production', { production: 'cancelled' })}>
                           Отменённые
                         </button>
                       )}
-                      {hasSubFeature('production.completed', 'production') && (
+                      {hasHomeAction('production', 'production.completed') && (
                         <button type="button" onClick={() => openTab('production', { production: 'completed' })}>
                           Выполненные
                         </button>
@@ -4359,7 +5251,7 @@ function App() {
                   </article>
                 )}
 
-                {hasFeature('analytics') && (
+                {isHomeBlockEnabled('analytics') && (
                   <article className="home-block">
                     <div className="home-block-head">
                       <div>
@@ -4430,17 +5322,17 @@ function App() {
                       </div>
                     </div>
                     <div className="home-block-actions">
-                      {hasSubFeature('analytics.summary', 'analytics') && (
+                      {hasHomeAction('analytics', 'analytics.summary') && (
                         <button type="button" onClick={() => openTab('analytics', { analytics: 'summary' })}>
                           Общая аналитика
                         </button>
                       )}
-                      {hasSubFeature('analytics.topProducts', 'analytics') && (
+                      {hasHomeAction('analytics', 'analytics.topProducts') && (
                         <button type="button" onClick={() => openTab('analytics', { analytics: 'topProducts' })}>
                           Топ товары
                         </button>
                       )}
-                      {hasSubFeature('analytics.noSales', 'analytics') && (
+                      {hasHomeAction('analytics', 'analytics.noSales') && (
                         <button type="button" onClick={() => openTab('analytics', { analytics: 'noSales' })}>
                           Без продаж
                         </button>
@@ -4452,7 +5344,7 @@ function App() {
                   </article>
                 )}
 
-                {hasFeature('supplies') && (
+                {isHomeBlockEnabled('supplies') && (
                   <article className="home-block">
                     <div className="home-block-head">
                       <div>
@@ -4482,22 +5374,22 @@ function App() {
                       </div>
                     </div>
                     <div className="home-block-actions">
-                      {hasSubFeature('supplies.create', 'supplies') && (
+                      {hasHomeAction('supplies', 'supplies.create') && (
                         <button type="button" onClick={() => openTab('supplies', { supply: 'create' })}>
                           Создать
                         </button>
                       )}
-                      {hasSubFeature('supplies.all', 'supplies') && (
+                      {hasHomeAction('supplies', 'supplies.all') && (
                         <button type="button" onClick={() => openTab('supplies', { supply: 'all' })}>
                           Все поставки
                         </button>
                       )}
-                      {hasSubFeature('supplies.editor', 'supplies') && (
+                      {hasHomeAction('supplies', 'supplies.editor') && (
                         <button type="button" onClick={() => openTab('supplies', { supply: 'editor' })}>
                           Редактор
                         </button>
                       )}
-                      {hasSubFeature('supplies.analytics', 'supplies') && (
+                      {hasHomeAction('supplies', 'supplies.analytics') && (
                         <button type="button" onClick={() => openTab('supplies', { supply: 'analytics' })}>
                           Аналитика поставок
                         </button>
@@ -4506,7 +5398,7 @@ function App() {
                   </article>
                 )}
 
-                {hasFeature('products') && (
+                {isHomeBlockEnabled('products') && (
                   <article className="home-block">
                     <div className="home-block-head">
                       <div>
@@ -4548,12 +5440,29 @@ function App() {
                 )}
               </div>
 
-              {!hasFeature('production') &&
-                !hasFeature('analytics') &&
-                !hasFeature('supplies') &&
-                !hasFeature('products') && (
+              {!isHomeBlockEnabled('production') &&
+                !isHomeBlockEnabled('analytics') &&
+                !isHomeBlockEnabled('supplies') &&
+                !isHomeBlockEnabled('products') && (
                 <div className="empty-state">
                   <strong>Нет доступных блоков для главной страницы.</strong>
+                </div>
+              )}
+
+              {user?.role === 'Admin' && (
+                <div className="home-charts-grid">
+                  <HomeSalesChartBlock
+                    preset="year"
+                    token={token ?? ''}
+                    enabled={activeTab === 'home' && Boolean(token)}
+                    loadDelayMs={0}
+                  />
+                  <HomeSalesChartBlock
+                    preset="month"
+                    token={token ?? ''}
+                    enabled={activeTab === 'home' && Boolean(token)}
+                    loadDelayMs={400}
+                  />
                 </div>
               )}
             </section>
@@ -4583,7 +5492,7 @@ function App() {
                 </span>
               </div>
 
-              {cancelTaskId && user?.role === 'Admin' && (
+              {cancelTaskId && canCancelProductionTasks() && (
                 <div className="modal-backdrop" role="presentation">
                   <div className="modal-card" role="dialog" aria-modal="true">
                     <div className="modal-title-row">
@@ -4698,43 +5607,6 @@ function App() {
                 </div>
               )}
 
-              {(productionSubTab === 'inProgress' ||
-                productionSubTab === 'cancelled' ||
-                productionSubTab === 'completed') && (
-                <ProductionTaskTypeFilterTabs
-                  value={productionTaskTypeFilter}
-                  onChange={setProductionTaskTypeFilter}
-                  counts={
-                    productionSubTab === 'inProgress'
-                      ? {
-                          all: allInProgressProductionTasks.length,
-                          allUnseen: unseenInProgressProductionTasks.length,
-                          ozon: allInProgressProductionTasks.filter((task) => !isNovinkaTask(task)).length,
-                          ozonUnseen: unseenInProgressOzonTasks.length,
-                          novinka: allInProgressProductionTasks.filter((task) => isNovinkaTask(task)).length,
-                          novinkaUnseen: unseenInProgressNovinkaTasks.length,
-                        }
-                      : productionSubTab === 'cancelled'
-                        ? {
-                            all: allCancelledProductionTasks.length,
-                            allUnseen: unseenCancelledProductionTasks.length,
-                            ozon: allCancelledProductionTasks.filter((task) => !isNovinkaTask(task)).length,
-                            ozonUnseen: unseenCancelledOzonTasks.length,
-                            novinka: allCancelledProductionTasks.filter((task) => isNovinkaTask(task)).length,
-                            novinkaUnseen: unseenCancelledNovinkaTasks.length,
-                          }
-                        : {
-                            all: allCompletedProductionTasks.length,
-                            allUnseen: unseenCompletedProductionTasks.length,
-                            ozon: allCompletedProductionTasks.filter((task) => !isNovinkaTask(task)).length,
-                            ozonUnseen: unseenCompletedOzonTasks.length,
-                            novinka: allCompletedProductionTasks.filter((task) => isNovinkaTask(task)).length,
-                            novinkaUnseen: unseenCompletedNovinkaTasks.length,
-                          }
-                  }
-                />
-              )}
-
               {productionSubTab === 'products' && (
                 <>
                   <div className="production-tools">
@@ -4759,19 +5631,21 @@ function App() {
                       >
                         Новинки
                       </button>
-                      <button
-                        type="button"
-                        className={productionCatalogTab === 'editor' ? 'active' : ''}
-                        onClick={() => {
-                          setProductionCatalogTab('editor')
-                          setProductEditorStatus('')
-                          if (ozonProducts.length === 0) {
-                            void loadOzonProducts()
-                          }
-                        }}
-                      >
-                        Редактор товаров
-                      </button>
+                      {canEditProductionProducts() && (
+                        <button
+                          type="button"
+                          className={productionCatalogTab === 'editor' ? 'active' : ''}
+                          onClick={() => {
+                            setProductionCatalogTab('editor')
+                            setProductEditorStatus('')
+                            if (ozonProducts.length === 0) {
+                              void loadOzonProducts()
+                            }
+                          }}
+                        >
+                          Редактор товаров
+                        </button>
+                      )}
                     </div>
                     {productionCatalogTab !== 'editor' && (
                       <form
@@ -4795,7 +5669,7 @@ function App() {
                     )}
                   </div>
 
-                  {productionCatalogTab === 'editor' ? (
+                  {productionCatalogTab === 'editor' && canEditProductionProducts() ? (
                     <ProductTypeEditorPanel
                       token={token}
                       novinkaProducts={novinkaProductionCatalogItems}
@@ -4827,6 +5701,7 @@ function App() {
                       <span>Товар</span>
                       <span>{productionCatalogTab === 'ozon' ? 'Артикул' : 'Ссылка'}</span>
                       <span>Файлы</span>
+                      <span>Пути к файлу</span>
                       <span>Действия</span>
                     </div>
                     {filteredProductionCatalog.map((item) => {
@@ -4836,6 +5711,7 @@ function App() {
                           product.offerId === item.offerId,
                       )
                       const itemFiles = getProductionFilesForCatalogItem(item, productionFiles)
+                      const itemPaths = getProductionPathsForCatalogItem(item, productionFilePaths)
                       const catalogKey = item.offerId || item.productName
 
                       return (
@@ -4856,7 +5732,7 @@ function App() {
                             </span>
                             <span>
                               {productionCatalogTab === 'ozon' ? (
-                                item.offerId || '-'
+                                <OfferIdCell offerId={item.offerId} />
                               ) : item.productLink ? (
                                 <a href={item.productLink} target="_blank" rel="noreferrer">
                                   Открыть ссылку
@@ -4877,6 +5753,9 @@ function App() {
                               ) : (
                                 '—'
                               )}
+                            </span>
+                            <span>
+                              <ProductionPathsPanel paths={itemPaths} showCopy />
                             </span>
                             <span>
                               {productionCatalogTab === 'ozon' && ozonProduct?.productUrl ? (
@@ -4912,43 +5791,7 @@ function App() {
 
               {productionSubTab === 'tasks' && (
                 <>
-                  <div className="inner-tabs production-task-source-tabs">
-                    <button
-                      type="button"
-                      className={taskSourceSubTab === 'ozon' ? 'active' : ''}
-                      onClick={() => {
-                        markTaskNotificationsSeen(
-                          'new',
-                          allNewProductionTasks.filter((task) => !isNovinkaTask(task)).map((task) => task.id),
-                        )
-                        setTaskSourceSubTab('ozon')
-                      }}
-                    >
-                      Ozon
-                      {renderTabBadge(
-                        unseenNewOzonTasks.length ||
-                          allNewProductionTasks.filter((task) => !isNovinkaTask(task)).length,
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className={taskSourceSubTab === 'novinka' ? 'active' : ''}
-                      onClick={() => {
-                        markTaskNotificationsSeen(
-                          'new',
-                          allNewProductionTasks.filter((task) => isNovinkaTask(task)).map((task) => task.id),
-                        )
-                        setTaskSourceSubTab('novinka')
-                      }}
-                    >
-                      Новинки
-                      {renderTabBadge(
-                        unseenNewNovinkaTasks.length ||
-                          allNewProductionTasks.filter((task) => isNovinkaTask(task)).length,
-                      )}
-                    </button>
-                  </div>
-                  {user?.role === 'Admin' && hasSubFeature('production.createTask', 'production') && (
+                  {canCreateProductionTasks() && (
                     <div className="supply-create-bar">
                       <button type="button" onClick={openCreateTaskModal}>
                         Создать задачу
@@ -4956,16 +5799,16 @@ function App() {
                     </div>
                   )}
 
-                  {showCreateTaskModal && user?.role === 'Admin' && (
+                  {showCreateTaskModal && (canCreateProductionTasks() || (editingTaskId && canEditProductionTasks())) && (
                     <div className="modal-backdrop" role="presentation">
                       <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
                         <div className="modal-title-row">
                           <h3>
                             {editingTaskId
-                              ? taskSourceSubTab === 'novinka'
+                              ? taskFormMode === 'novinka'
                                 ? 'Редактировать задачу новинки'
                                 : 'Редактировать задачу'
-                              : taskSourceSubTab === 'novinka'
+                              : taskFormMode === 'novinka'
                                 ? 'Создать задачу новинки'
                                 : 'Создать задачу'}
                           </h3>
@@ -4974,8 +5817,27 @@ function App() {
                           </button>
                         </div>
 
+                        {!editingTaskId && (
+                          <div className="task-form-mode-tabs">
+                            <button
+                              type="button"
+                              className={`task-form-mode-tab ${taskFormMode === 'ozon' ? 'active' : ''}`}
+                              onClick={() => setTaskFormMode('ozon')}
+                            >
+                              Производство / Ozon
+                            </button>
+                            <button
+                              type="button"
+                              className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
+                              onClick={() => setTaskFormMode('novinka')}
+                            >
+                              Новинка
+                            </button>
+                          </div>
+                        )}
+
                         <div className="task-form task-form-modal">
-                          {taskSourceSubTab === 'ozon' ? (
+                          {taskFormMode === 'ozon' ? (
                             <div className="supply-forms">
                               <div className="supply-form-block supply-form-block-ozon">
                                 <strong>Товар из Ozon</strong>
@@ -5031,7 +5893,7 @@ function App() {
                               </div>
 
                               <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
-                                <strong>Новинка</strong>
+                                <strong>Новинки из каталога</strong>
                                 <NovinkaSearchInput
                                   listId="task-novinka-products"
                                   products={novinkaProductionCatalogItems}
@@ -5047,7 +5909,18 @@ function App() {
                                     )
 
                                     return selectedTaskNovinka ? (
-                                      <NovinkaProductPreview item={selectedTaskNovinka} token={token} />
+                                      <NovinkaProductPreview
+                                        item={selectedTaskNovinka}
+                                        token={token}
+                                        paths={getProductionPathsForCatalogItem(
+                                          selectedTaskNovinka,
+                                          productionFilePaths,
+                                        )}
+                                        files={getProductionFilesForCatalogItem(
+                                          selectedTaskNovinka,
+                                          productionFiles,
+                                        )}
+                                      />
                                     ) : (
                                       <div className="task-form-modal-preview task-form-modal-preview-empty">
                                         <span>Выберите новинку для превью</span>
@@ -5099,9 +5972,29 @@ function App() {
                                     onChange={(event) => setNovinkaProductLink(event.target.value)}
                                   />
                                 </label>
+                                <label className="novinka-task-field">
+                                  <span>Картинка товара</span>
+                                  <input
+                                    className="novinka-task-input"
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={(event) => setNovinkaProductImage(event.target.files?.[0])}
+                                  />
+                                </label>
                               </div>
                               <div className="novinka-task-compose-actions">
-                                {novinkaProductLink.trim() ? (
+                                {novinkaProductImagePreviewUrl ? (
+                                  <ProductImageHoverPreview
+                                    imageUrl={novinkaProductImagePreviewUrl}
+                                    name={novinkaProductName || 'Новинка'}
+                                  >
+                                    <ProductThumb
+                                      imageUrl={novinkaProductImagePreviewUrl}
+                                      name={novinkaProductName || 'Новинка'}
+                                      large
+                                    />
+                                  </ProductImageHoverPreview>
+                                ) : novinkaProductLink.trim() ? (
                                   <LinkHoverPreview
                                     url={novinkaProductLink}
                                     name={novinkaProductName || 'Новинка'}
@@ -5125,7 +6018,7 @@ function App() {
                         </div>
 
                         <div className="data-table modal-table">
-                          {taskSourceSubTab === 'ozon' ? (
+                          {taskFormMode === 'ozon' ? (
                             <>
                           <div className="table-row task-draft-row table-head">
                             <span>Товар</span>
@@ -5156,14 +6049,33 @@ function App() {
                                 <span>
                                   <strong>{item.productName}</strong>
                                   {item.isNovinka && (
-                                    <small className="task-product-supply-hint-inline">Новинка · файлы на товаре</small>
+                                    <>
+                                      <small className="task-product-supply-hint-inline">Новинка · файлы на товаре</small>
+                                      {(() => {
+                                        const catalogItem: ProductionCatalogItem = {
+                                          offerId: item.offerId,
+                                          ozonProductId: item.ozonProductId || undefined,
+                                          productName: item.productName,
+                                          productLink: item.productLink ?? '',
+                                          fileCount: 0,
+                                        }
+                                        const draftPaths = getProductionPathsForCatalogItem(catalogItem, productionFilePaths)
+                                        return (
+                                          <div className="task-draft-catalog-assets">
+                                            {draftPaths.length > 0 && (
+                                              <ProductionPathsPanel paths={draftPaths} showCopy />
+                                            )}
+                                          </div>
+                                        )
+                                      })()}
+                                    </>
                                   )}
                                   {draftSupplyHint && (
                                     <small className="task-product-supply-hint-inline">{draftSupplyHint}</small>
                                   )}
                                 </span>
                               </span>
-                              <span>{item.offerId}</span>
+                              <OfferIdCell offerId={item.offerId} />
                               <span>
                                 <input
                                   className="task-quantity-input"
@@ -5234,11 +6146,17 @@ function App() {
                               {draftNovinkaItems.map((item) => (
                                 <div className="table-row task-draft-row novinka-draft-row" key={item.tempId}>
                                   <span className="product-mini task-draft-product-mini">
-                                    <LinkHoverPreview
-                                      url={item.productLink}
-                                      name={item.productName}
-                                      token={token}
-                                    />
+                                    {item.imagePreviewUrl ? (
+                                      <ProductImageHoverPreview imageUrl={item.imagePreviewUrl} name={item.productName}>
+                                        <ProductThumb imageUrl={item.imagePreviewUrl} name={item.productName} large />
+                                      </ProductImageHoverPreview>
+                                    ) : (
+                                      <LinkHoverPreview
+                                        url={item.productLink}
+                                        name={item.productName}
+                                        token={token}
+                                      />
+                                    )}
                                     <span>
                                       <strong>{item.productName}</strong>
                                     </span>
@@ -5293,64 +6211,70 @@ function App() {
                   )}
 
                   <ProductionTaskTable
-                    tasks={filteredNewTasksBySource}
-                    tableContext={taskSourceSubTab}
+                    tasks={filteredNewProductionTasks}
+                    tableContext={roleTaskTableContext}
                     products={ozonProducts}
                     productionFiles={productionFiles}
+                    productionFilePaths={productionFilePaths}
                     token={token}
                     actualQuantities={actualQuantities}
                     setActualQuantities={setActualQuantities}
                     currentUserId={user?.id}
                     isAdmin={user?.role === 'Admin'}
+                    canCancelTasks={canCancelProductionTasks()}
                     onStart={startProductionTask}
                     onCancelRequest={setCancelTaskId}
                     onComplete={completeProductionTask}
                     onOpenFiles={openProductionFilesModal}
                     onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                    onDeleteFile={deleteProductionFile}
-                    onEdit={user?.role === 'Admin' ? openEditTaskModal : undefined}
+                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                    onEdit={canEditProductionTasks() ? openEditTaskModal : undefined}
                   />
                 </>
               )}
 
               {productionSubTab === 'inProgress' && (
                 <ProductionTaskTable
-                  tasks={filteredInProgressProductionTasks}
-                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
+                  tasks={inProgressProductionTasks}
+                  tableContext={roleTaskTableContext}
                   products={ozonProducts}
                   productionFiles={productionFiles}
+                  productionFilePaths={productionFilePaths}
                   token={token}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   currentUserId={user?.id}
                   isAdmin={user?.role === 'Admin'}
+                  canCancelTasks={canCancelProductionTasks()}
                   onStart={startProductionTask}
                   onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
                   onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                  onDeleteFile={deleteProductionFile}
-                />
-              )}
+                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                  />
+                )}
 
               {productionSubTab === 'cancelled' && (
                 <ProductionTaskTable
-                  tasks={filteredCancelledProductionTasks}
-                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
+                  tasks={cancelledProductionTasks}
+                  tableContext={roleTaskTableContext}
                   products={ozonProducts}
                   productionFiles={productionFiles}
+                  productionFilePaths={productionFilePaths}
                   token={token}
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   currentUserId={user?.id}
                   isAdmin={user?.role === 'Admin'}
+                  canCancelTasks={canCancelProductionTasks()}
                   onStart={startProductionTask}
                   onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
                   onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                  onDeleteFile={deleteProductionFile}
-                  onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
+                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                  onArchive={canArchiveProductionTasks() ? archiveProductionTask : undefined}
                   onRestore={user?.role === 'Admin' ? restoreProductionTask : undefined}
                   cancelled
                 />
@@ -5358,14 +6282,15 @@ function App() {
 
               {productionSubTab === 'completed' && (
                 <ProductionTaskArchiveTable
-                  tasks={filteredCompletedProductionTasks}
-                  tableContext={resolveProductionTaskTableContext(productionTaskTypeFilter)}
+                  tasks={completedProductionTasks}
+                  tableContext={roleTaskTableContext}
                   products={ozonProducts}
                   productionFiles={productionFiles}
+                  productionFilePaths={productionFilePaths}
                   token={token}
                   onOpenFiles={openProductionFilesModal}
-                  onDeleteFile={deleteProductionFile}
-                  onArchive={user?.role === 'Admin' ? archiveProductionTask : undefined}
+                  onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                  onArchive={canArchiveProductionTasks() ? archiveProductionTask : undefined}
                   emptyText="Выполненных задач пока нет."
                 />
               )}
@@ -5392,9 +6317,10 @@ function App() {
                     tableContext="mixed"
                     products={ozonProducts}
                     productionFiles={productionFiles}
+                    productionFilePaths={productionFilePaths}
                     token={token}
                     onOpenFiles={openProductionFilesModal}
-                    onDeleteFile={deleteProductionFile}
+                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                     archiveView
                     onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
                     emptyText="В архиве задач пока нет."
@@ -5475,7 +6401,7 @@ function App() {
                       <strong>{item.name}</strong>
                       <small>{item.productId}</small>
                     </span>
-                    <span>{item.offerId}</span>
+                    <OfferIdCell offerId={item.offerId} />
                     <span>{translateProductStatus(item.status)}</span>
                     <span>
                       {item.imageUrl ? (
@@ -5509,30 +6435,42 @@ function App() {
                 <p>{analyticsStatus || 'Продажи и выручка из Ozon API'}</p>
               </div>
               <div className="inner-tabs">
+                {hasFeature('analytics.summary') && (
                 <button
                   type="button"
                   className={analyticsSubTab === 'summary' ? 'active' : ''}
                   onClick={() => setAnalyticsSubTab('summary')}
-                  hidden={!hasSubFeature('analytics.summary', 'analytics')}
                 >
                   Общая аналитика
                 </button>
+                )}
+                {hasFeature('analytics.topProducts') && (
                 <button
                   type="button"
                   className={analyticsSubTab === 'topProducts' ? 'active' : ''}
                   onClick={() => setAnalyticsSubTab('topProducts')}
-                  hidden={!hasSubFeature('analytics.topProducts', 'analytics')}
                 >
                   Топ товары
                 </button>
+                )}
+                {hasFeature('analytics.noSales') && (
                 <button
                   type="button"
                   className={analyticsSubTab === 'noSales' ? 'active' : ''}
                   onClick={() => setAnalyticsSubTab('noSales')}
-                  hidden={!hasSubFeature('analytics.noSales', 'analytics')}
                 >
                   Без продаж
                 </button>
+                )}
+                {hasFeature('analytics.production') && (
+                <button
+                  type="button"
+                  className={analyticsSubTab === 'production' ? 'active' : ''}
+                  onClick={() => setAnalyticsSubTab('production')}
+                >
+                  Производство
+                </button>
+                )}
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
                 {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && (
@@ -5555,12 +6493,58 @@ function App() {
                     </label>
                   </div>
                 )}
+                {analyticsSubTab === 'production' && (
+                  <div className="date-filter production-analytics-filters">
+                    <label>
+                      <span>С</span>
+                      <input
+                        type="date"
+                        value={productionAnalyticsDateFrom}
+                        onChange={(event) => setProductionAnalyticsDateFrom(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>По</span>
+                      <input
+                        type="date"
+                        value={productionAnalyticsDateTo}
+                        onChange={(event) => setProductionAnalyticsDateTo(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Исполнитель</span>
+                      <select
+                        value={productionAnalyticsUserId}
+                        onChange={(event) => setProductionAnalyticsUserId(event.target.value)}
+                      >
+                        <option value="">Все пользователи</option>
+                        {productionAnalyticsAssignees.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.displayName || item.userName} ({getRoleLabel(item.role)})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
                 <div className="analytics-toolbar-actions">
                   <button type="button" onClick={() => void refreshAnalytics()}>
-                    Обновить аналитику
+                    {analyticsSubTab === 'production' ? 'Обновить отчёт' : 'Обновить аналитику'}
                   </button>
+                  {analyticsSubTab === 'production' && (
+                    <button
+                      type="button"
+                      className="analytics-export-button"
+                      onClick={() => void exportProductionAnalyticsExcel()}
+                    >
+                      Excel
+                    </button>
+                  )}
                 </div>
               </div>
+              {productionAnalyticsStatus && analyticsSubTab === 'production' && (
+                <p className="analytics-status-line">{productionAnalyticsStatus}</p>
+              )}
               {analyticsSubTab === 'summary' && (
                 <>
                   <AnalyticsPipelineBoard snapshot={analyticsSnapshot} analytics={analytics} />
@@ -5669,7 +6653,7 @@ function App() {
                           )}
                           <strong>{row.productName}</strong>
                         </span>
-                        <span>{row.offerId || '-'}</span>
+                        <OfferIdCell offerId={row.offerId} />
                         <span>{row.sku || '-'}</span>
                         <span>{row.quantity}</span>
                         <span>{row.stockTotal}</span>
@@ -5745,7 +6729,7 @@ function App() {
                           )}
                           <strong>{row.productName}</strong>
                         </span>
-                        <span>{row.offerId || '-'}</span>
+                        <OfferIdCell offerId={row.offerId} />
                         <span>{row.sku || '-'}</span>
                         <span>{formatOzonCreatedAt(row.ozonSellingSince)}</span>
                         <span>{formatDaysWithoutSales(row.daysWithoutSales)}</span>
@@ -5766,13 +6750,172 @@ function App() {
                   </div>
                 </>
               )}
+              {analyticsSubTab === 'production' && hasFeature('analytics.production') && (
+                <>
+                  <div className="production-analytics-board">
+                    <div className="production-analytics-board-head">
+                      <div>
+                        <strong>Выполненные задачи</strong>
+                        <span>
+                          {productionAnalyticsDateFrom} — {productionAnalyticsDateTo}
+                          {productionAnalyticsUserId
+                            ? ` · ${productionAnalyticsAssignees.find((entry) => entry.id === productionAnalyticsUserId)?.displayName ?? 'Пользователь'}`
+                            : ' · все исполнители'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="production-analytics-sections-grid">
+                  {(['designer', 'production'] as const).map((section) => {
+                    const sectionTitle = section === 'designer' ? 'Дизайнеры' : 'Производство'
+                    const sectionRows = (productionAnalyticsReport?.summary ?? []).filter((row) =>
+                      section === 'designer'
+                        ? row.role === 'Designer'
+                        : row.role !== 'Designer',
+                    )
+
+                    return (
+                      <section className="production-analytics-section" key={section}>
+                        <h3 className="production-analytics-section-title">{sectionTitle}</h3>
+                        {sectionRows.length === 0 ? (
+                          <div className="production-analytics-empty">
+                            За выбранный период выполненных задач нет.
+                          </div>
+                        ) : (
+                          <div className="production-analytics-cards">
+                          {sectionRows.map((row) => (
+                            <article className="production-analytics-user-card" key={`${section}-${row.userName}`}>
+                              <div className="production-analytics-user-card-main">
+                                <UserAvatarPreview
+                                  avatarUrl={row.avatarUrl}
+                                  displayName={row.userName}
+                                  className="production-analytics-avatar"
+                                />
+                                <div className="production-analytics-user-card-text">
+                                  <strong>{row.userName}</strong>
+                                  <span>{row.taskCount} задач · {row.itemCount} позиций</span>
+                                </div>
+                              </div>
+                              <div className="production-analytics-user-card-actions">
+                                <button
+                                  type="button"
+                                  className="text-action-button"
+                                  onClick={() => {
+                                    if (row.userId) {
+                                      setProductionAnalyticsUserId(row.userId)
+                                    }
+                                    setProductionAnalyticsDetailUserName(row.userName)
+                                  }}
+                                >
+                                  Подробнее
+                                </button>
+                                {row.userId && (
+                                  <button
+                                    type="button"
+                                    className="text-action-button"
+                                    onClick={() => void exportProductionAnalyticsExcel(row.userId)}
+                                  >
+                                    Excel
+                                  </button>
+                                )}
+                              </div>
+                            </article>
+                          ))}
+                          </div>
+                        )}
+                      </section>
+                    )
+                  })}
+                    </div>
+                    <section className="production-analytics-tasks-block">
+                      <div className="production-analytics-tasks-block-head">
+                        <h3>Позиции задач</h3>
+                        <span>{productionAnalyticsReport?.tasks.length ?? 0} задач за период</span>
+                      </div>
+                  <div className="production-analytics-tasks-table">
+                    <div
+                      className={`production-analytics-task-row production-analytics-task-row-head${user?.role === 'Admin' ? ' with-actions' : ''}`}
+                    >
+                      <span>Завершена</span>
+                      <span>Исполнитель</span>
+                      <span>Тип</span>
+                      <span>Товар</span>
+                      <span>Артикул</span>
+                      <span>План</span>
+                      <span>Факт</span>
+                      {user?.role === 'Admin' && <span>Действия</span>}
+                    </div>
+                    {(productionAnalyticsReport?.tasks ?? []).flatMap((task) => {
+                      const items = getProductionTaskItems(task)
+                      return items.map((item, itemIndex) => (
+                        <div
+                          className={`production-analytics-task-row${user?.role === 'Admin' ? ' with-actions' : ''}`}
+                          key={`${task.id}-${item.id ?? item.offerId}`}
+                        >
+                          <span>{task.completedAt ? formatDateTime(task.completedAt) : '—'}</span>
+                          <span>{task.assignedUserName || '—'}</span>
+                          <span>{getProductionTaskTypeLabel(task)}</span>
+                          <span>{item.productName}</span>
+                          <OfferIdCell offerId={item.offerId} />
+                          <span>{item.requiredQuantity}</span>
+                          <span>{item.actualQuantity ?? 0}</span>
+                          {user?.role === 'Admin' && (
+                            <span className="production-analytics-row-actions">
+                              {itemIndex === 0 && (
+                                <button
+                                  type="button"
+                                  className="text-action-button"
+                                  onClick={() => setProductionAnalyticsEditingTask(task)}
+                                >
+                                  Изменить
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    })}
+                    {(productionAnalyticsReport?.tasks.length ?? 0) === 0 && (
+                      <div className="production-analytics-empty">
+                        Нет задач для отображения.
+                      </div>
+                    )}
+                  </div>
+                    </section>
+                  </div>
+                  {productionAnalyticsDetailUserName && (
+                    <ProductionAnalyticsUserDetailModal
+                      userName={productionAnalyticsDetailUserName}
+                      summaryRow={
+                        productionAnalyticsReport?.summary.find(
+                          (row) => row.userName === productionAnalyticsDetailUserName,
+                        ) ?? null
+                      }
+                      tasks={(productionAnalyticsReport?.tasks ?? []).filter(
+                        (task) => (task.assignedUserName || '—') === productionAnalyticsDetailUserName,
+                      )}
+                      isAdmin={user?.role === 'Admin'}
+                      onClose={() => setProductionAnalyticsDetailUserName(null)}
+                      onExportExcel={(userId) => void exportProductionAnalyticsExcel(userId)}
+                      onEditTask={(task) => setProductionAnalyticsEditingTask(task)}
+                    />
+                  )}
+                  {productionAnalyticsEditingTask && (
+                    <ProductionAnalyticsRecordEditModal
+                      task={productionAnalyticsEditingTask}
+                      assignees={productionAnalyticsAssignees}
+                      onClose={() => setProductionAnalyticsEditingTask(null)}
+                      onSave={saveProductionAnalyticsRecord}
+                    />
+                  )}
+                </>
+              )}
             </section>
           )}
 
-          {activeTab === 'pooling' && (
+          {activeTab === 'pooling' && hasFeature('pooling') && (
             <section className="tab-panel">
               <div className="section-title">
-                <h2>Складчина</h2>
+                <h2>Склад</h2>
                 <p>{priceStatus || stockStatus || 'Остатки товаров на складе Ozon'}</p>
               </div>
               <div className="subtabs-placeholder">
@@ -5810,13 +6953,13 @@ function App() {
                 </span>
               </div>
               <div className="data-table stock-table">
-                <div className="table-row stock-row table-head">
+                <div className={`table-row stock-row table-head ${canEditPoolingPrices() ? '' : 'stock-row-readonly'}`}>
                   <span>Товар</span>
                   <span>Артикул</span>
                   <span>FBO</span>
                   <span>FBS</span>
                   <span>Цена</span>
-                  <span>Действие</span>
+                  {canEditPoolingPrices() && <span>Действие</span>}
                 </div>
                 {sortedOzonStocks.map((item) => (
                   <StockRow
@@ -5827,7 +6970,7 @@ function App() {
                       setEditingPrices((current) => ({ ...current, [item.productId]: value }))
                     }
                     onSave={() => updateOzonPrice(item)}
-                    canEditPrice={hasSubFeature('pooling.editPrices', 'pooling')}
+                    canEditPrice={canEditPoolingPrices()}
                   />
                 ))}
               </div>
@@ -5841,12 +6984,11 @@ function App() {
                   <h2>Поставки</h2>
                   <p>{supplyStatus || 'Создание, статусы и аналитика поставок'}</p>
                 </div>
-                {user?.role === 'Admin' && (
+                {hasSubFeature('supplies.archive', 'supplies') && (
                   <button
                     type="button"
                     className="header-action"
                     onClick={() => setSupplySubTab('archive')}
-                    hidden={!hasSubFeature('supplies.archive', 'supplies')}
                   >
                     Архив поставок
                   </button>
@@ -5862,12 +7004,11 @@ function App() {
                 >
                   Создать поставку
                 </button>
-                {user?.role === 'Admin' && (
+                {hasSubFeature('supplies.editor', 'supplies') && (
                   <button
                     type="button"
                     className={supplySubTab === 'editor' ? 'active' : ''}
                     onClick={() => setSupplySubTab('editor')}
-                    hidden={!hasSubFeature('supplies.editor', 'supplies')}
                   >
                     Редактор поставок
                     {renderTabBadge(createdSupplies.length)}
@@ -5885,12 +7026,11 @@ function App() {
                   Все поставки
                   {renderTabBadge(unseenSupplies.length || allActiveSupplies.length)}
                 </button>
-                {user?.role === 'Admin' && (
+                {hasSubFeature('supplies.analytics', 'supplies') && (
                   <button
                     type="button"
                     className={supplySubTab === 'analytics' ? 'active' : ''}
                     onClick={() => setSupplySubTab('analytics')}
-                    hidden={!hasSubFeature('supplies.analytics', 'supplies')}
                   >
                     Аналитика поставок
                     {renderTabBadge(supplyAnalytics.length)}
@@ -6116,12 +7256,14 @@ function App() {
                   <p>{chatStatus || 'Личные сообщения и групповые беседы'}</p>
                 </div>
                 <span className="section-actions">
-                  <button type="button" className="header-action" onClick={() => {
-                    setCreateGroupHint('')
-                    setShowCreateGroupModal(true)
-                  }}>
-                    Создать группу
-                  </button>
+                  {canManageChatGroups() && (
+                    <button type="button" className="header-action" onClick={() => {
+                      setCreateGroupHint('')
+                      setShowCreateGroupModal(true)
+                    }}>
+                      Создать группу
+                    </button>
+                  )}
                   <button type="button" className="header-action" onClick={loadChatThreads}>
                     Обновить
                   </button>
@@ -6463,6 +7605,7 @@ function App() {
                         <div ref={chatMessagesEndRef} />
                       </div>
 
+                      {canEditChats() ? (
                       <form className="chat-form" onSubmit={sendChatMessage}>
                         <div className="chat-compose">
                           <textarea
@@ -6496,6 +7639,9 @@ function App() {
                         </label>
                         <button type="submit">Отправить</button>
                       </form>
+                      ) : (
+                        <p className="integration-hint">Отправка сообщений недоступна. Включите право «Отправка сообщений» в настройках пользователя.</p>
+                      )}
                     </>
                   ) : (
                     <div className="empty-state">
@@ -6507,13 +7653,20 @@ function App() {
             </section>
           )}
 
-          {activeTab === 'users' && user?.role === 'Admin' && (
+          {activeTab === 'users' && canViewUsers() && (
             <section className="admin-panel">
               <div className="section-title">
                 <h2>Пользователи</h2>
-                <p>Добавляет только админ</p>
+                <p>
+                  {canEditUsers()
+                    ? 'Создание и редактирование учётных записей'
+                    : canCreateUsers()
+                      ? 'Добавление учётных записей'
+                      : 'Просмотр учётных записей'}
+                </p>
               </div>
 
+              {canCreateUsers() && (
               <form className="user-form" onSubmit={createUser}>
                 <label>
                   <span>Логин</span>
@@ -6555,16 +7708,31 @@ function App() {
                   <span>Роль</span>
                   <select
                     value={newUser.role}
-                    onChange={(event) => setNewUser({ ...newUser, role: event.target.value })}
+                    onChange={(event) => {
+                      const role = event.target.value
+                      const profile = roleProfiles.find((item) => item.role === role)
+                      setNewUser((current) => ({
+                        ...current,
+                        role,
+                        allowedFeatures: role === 'Admin'
+                          ? current.allowedFeatures
+                          : profile?.allowedFeatures ?? defaultUserFeatures,
+                      }))
+                    }}
                   >
-                    <option value="User">User</option>
-                    <option value="Admin">Admin</option>
+                    {appRoles
+                      .filter((role) => canEditUsers() || role.value !== 'Admin')
+                      .map((role) => (
+                      <option key={role.value} value={role.value}>
+                        {role.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <button type="submit" className="user-form-submit">
                   Добавить
                 </button>
-                <div className="feature-checks user-form-features">
+                <div className="feature-checks feature-checks-compact user-form-features">
                   {featureGroups.map((group) => (
                     <fieldset key={group.title}>
                       <legend>{group.title}</legend>
@@ -6590,12 +7758,46 @@ function App() {
                   ))}
                 </div>
               </form>
+              )}
+
+              {usersLoadError && (
+                <div className="empty-state users-load-error">
+                  <strong>Не удалось загрузить список пользователей</strong>
+                  <p>{usersLoadError}</p>
+                </div>
+              )}
 
               <ul className="users-list">
                 {users.map((item) => {
-                  const edit = userSettingsEdits[item.id] ?? item
+                  if (item.id === SYSTEM_USER_ID) {
+                    return (
+                      <li key={item.id} className="user-list-item user-list-item-system">
+                        <div className="user-list-row user-list-row-system">
+                          <span className="user-card-head">
+                            <UserAvatarPreview
+                              avatarUrl={item.avatarUrl}
+                              displayName={item.displayName || item.userName}
+                            />
+                            <span className="user-card-info">
+                              <strong>{item.displayName || item.userName}</strong>
+                              <small>Системный аккаунт · не настраивается</small>
+                            </span>
+                          </span>
+                          <span className="user-badge user-badge-role">Система</span>
+                        </div>
+                      </li>
+                    )
+                  }
+
+                  const edit = userSettingsEdits[item.id] ?? {
+                    ...item,
+                    homeBlocks: resolveUserHomeBlocks(item, roleProfiles),
+                  }
+                  const editFeatures = edit.allowedFeatures ?? []
+                  const editHomeBlocks = edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles)
                   return (
-                  <li key={item.id}>
+                  <li key={item.id} className="user-list-item">
+                    <div className="user-list-row">
                     <button type="button" className="user-card-open" onClick={() => openUserProfile(item)}>
                       <span className="user-card-head">
                         <UserAvatarPreview
@@ -6609,32 +7811,65 @@ function App() {
                         </span>
                       </span>
                     </button>
-                    <b>{item.role}</b>
-                    <span className={`online-status ${item.isOnline ? 'is-online' : 'is-offline'}`}>
-                      {item.isOnline ? 'В сети' : 'Не в сети'}
-                      {!item.isOnline && item.lastSeenAt && (
-                        <small>Был: {formatDateTime(item.lastSeenAt)}</small>
-                      )}
-                    </span>
-                    <input
-                      placeholder="Новый пароль"
-                      type="password"
-                      value={passwordEdits[item.id] ?? ''}
-                      onChange={(event) =>
-                        setPasswordEdits((current) => ({
-                          ...current,
-                          [item.id]: event.target.value,
-                        }))
-                      }
-                    />
-                    <button type="button" onClick={() => changeUserPassword(item.id)}>
-                      Сменить пароль
-                    </button>
-                    {item.id !== SYSTEM_USER_ID && (
-                      <button type="button" className="danger" onClick={() => deleteUser(item.id)}>
+                    <div className="user-list-badges">
+                      <span className="user-badge user-badge-role">{getRoleLabel(item.role)}</span>
+                      <span className={`user-badge user-badge-telegram ${item.telegramConnected ? 'is-online' : 'is-offline'}`}>
+                        Telegram: {item.telegramConnected ? 'подключён' : 'не подключён'}
+                      </span>
+                      <span className={`user-badge user-badge-online ${item.isOnline ? 'is-online' : 'is-offline'}`}>
+                        {item.isOnline ? 'В сети' : 'Не в сети'}
+                        {!item.isOnline && item.lastSeenAt && (
+                          <small>Был: {formatDateTime(item.lastSeenAt)}</small>
+                        )}
+                      </span>
+                    </div>
+                    {(() => {
+                      const showPasswordControls =
+                        canChangeOtherPasswords && item.id !== user?.id && canEditUsers()
+                      const showDelete = item.id !== SYSTEM_USER_ID && canEditUsers()
+                      return (
+                    <div className="user-list-actions">
+                      <input
+                        className={`user-password-input ${showPasswordControls ? '' : 'is-slot-hidden'}`}
+                        placeholder="Новый пароль"
+                        type="password"
+                        autoComplete="new-password"
+                        tabIndex={showPasswordControls ? 0 : -1}
+                        aria-hidden={!showPasswordControls}
+                        disabled={!showPasswordControls}
+                        value={passwordEdits[item.id] ?? ''}
+                        onChange={(event) =>
+                          setPasswordEdits((current) => ({
+                            ...current,
+                            [item.id]: event.target.value,
+                          }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className={`user-action-btn ${showPasswordControls ? '' : 'is-slot-hidden'}`}
+                        tabIndex={showPasswordControls ? 0 : -1}
+                        aria-hidden={!showPasswordControls}
+                        disabled={!showPasswordControls}
+                        onClick={() => changeUserPassword(item.id)}
+                      >
+                        Сменить пароль
+                      </button>
+                      <button
+                        type="button"
+                        className={`user-action-btn danger ${showDelete ? '' : 'is-slot-hidden'}`}
+                        tabIndex={showDelete ? 0 : -1}
+                        aria-hidden={!showDelete}
+                        disabled={!showDelete}
+                        onClick={() => deleteUser(item.id)}
+                      >
                         Удалить
                       </button>
-                    )}
+                    </div>
+                      )
+                    })()}
+                    </div>
+                    {canEditUsers() && (
                     <details className="user-settings-panel">
                       <summary>Настройки пользователя</summary>
                       <div className="user-settings-grid">
@@ -6668,26 +7903,39 @@ function App() {
                           <span>Роль</span>
                           <select
                             value={edit.role}
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              const role = event.target.value
+                              const profile = roleProfiles.find((entry) => entry.role === role)
                               setUserSettingsEdits((current) => ({
                                 ...current,
-                                [item.id]: { ...edit, role: event.target.value },
+                                [item.id]: {
+                                  ...edit,
+                                  role,
+                                  allowedFeatures:
+                                    role === 'Admin'
+                                      ? edit.allowedFeatures
+                                      : profile?.allowedFeatures ?? edit.allowedFeatures,
+                                  homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
+                                },
                               }))
-                            }
+                            }}
                           >
-                            <option value="User">User</option>
-                            <option value="Admin">Admin</option>
+                            {appRoles.map((role) => (
+                              <option key={role.value} value={role.value}>
+                                {role.label}
+                              </option>
+                            ))}
                           </select>
                         </label>
-                        <div className="feature-checks">
+                        <div className="feature-checks feature-checks-compact user-feature-checks">
                           {featureGroups.map((group) => (
-                            <fieldset key={group.title}>
+                            <fieldset key={group.title} className={'homeBlocks' in group && group.homeBlocks ? 'home-feature-fieldset' : undefined}>
                               <legend>{group.title}</legend>
                               {group.items.map((feature) => (
                                 <label key={feature.id}>
                                   <input
                                     type="checkbox"
-                                    checked={edit.role === 'Admin' || edit.allowedFeatures.includes(feature.id)}
+                                    checked={edit.role === 'Admin' || editFeatures.includes(feature.id)}
                                     disabled={edit.role === 'Admin'}
                                     onChange={(event) =>
                                       setUserSettingsEdits((current) => ({
@@ -6695,8 +7943,8 @@ function App() {
                                         [item.id]: {
                                           ...edit,
                                           allowedFeatures: event.target.checked
-                                            ? [...edit.allowedFeatures, feature.id]
-                                            : edit.allowedFeatures.filter((value) => value !== feature.id),
+                                            ? [...editFeatures, feature.id]
+                                            : editFeatures.filter((value) => value !== feature.id),
                                         },
                                       }))
                                     }
@@ -6704,14 +7952,79 @@ function App() {
                                   {feature.label}
                                 </label>
                               ))}
+                              {'homeBlocks' in group && group.homeBlocks && edit.role !== 'Admin' && (
+                                <div className="home-blocks-settings home-blocks-inline">
+                                  <p className="home-blocks-settings-hint">Какие блоки показывать на главной</p>
+                                  {homeBlockDefinitions.map((block) => {
+                                    const blockEdit =
+                                      editHomeBlocks.find((entry) => entry.id === block.id) ??
+                                      ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
+                                    return (
+                                      <fieldset key={block.id} className="home-block-settings">
+                                        <legend>
+                                          <label>
+                                            <input
+                                              type="checkbox"
+                                              checked={blockEdit.enabled}
+                                              onChange={(event) =>
+                                                setUserSettingsEdits((current) => {
+                                                  const nextBlocks = [...editHomeBlocks.filter((entry) => entry.id !== block.id)]
+                                                  nextBlocks.push({
+                                                    ...blockEdit,
+                                                    enabled: event.target.checked,
+                                                    actions: event.target.checked
+                                                      ? block.actions.map((action) => action.id)
+                                                      : [],
+                                                  })
+                                                  return {
+                                                    ...current,
+                                                    [item.id]: { ...edit, homeBlocks: nextBlocks },
+                                                  }
+                                                })
+                                              }
+                                            />
+                                            {block.label}
+                                          </label>
+                                        </legend>
+                                        {blockEdit.enabled &&
+                                          block.actions.map((action) => (
+                                            <label key={action.id}>
+                                              <input
+                                                type="checkbox"
+                                                checked={blockEdit.actions.includes(action.id)}
+                                                onChange={(event) =>
+                                                  setUserSettingsEdits((current) => {
+                                                    const nextActions = event.target.checked
+                                                      ? [...blockEdit.actions, action.id]
+                                                      : blockEdit.actions.filter((value) => value !== action.id)
+                                                    const nextBlocks = [
+                                                      ...editHomeBlocks.filter((entry) => entry.id !== block.id),
+                                                      { ...blockEdit, actions: nextActions },
+                                                    ]
+                                                    return {
+                                                      ...current,
+                                                      [item.id]: { ...edit, homeBlocks: nextBlocks },
+                                                    }
+                                                  })
+                                                }
+                                              />
+                                              {action.label}
+                                            </label>
+                                          ))}
+                                      </fieldset>
+                                    )
+                                  })}
+                                </div>
+                              )}
                             </fieldset>
                           ))}
                         </div>
-                        <button type="button" onClick={() => saveUserSettings(item.id)}>
+                        <button type="button" className="user-action-btn user-settings-save" onClick={() => saveUserSettings(item.id)}>
                           Сохранить настройки
                         </button>
                       </div>
                     </details>
+                    )}
                   </li>
                   )
                 })}
@@ -6724,13 +8037,15 @@ function App() {
               <div className="section-title">
                 <div>
                   <h2>Интеграции</h2>
-                  <p>Подключение Ozon API и персональные Telegram-оповещения</p>
+                  <p>Подключение Ozon API, Telegram и настройки оповещений</p>
                 </div>
                 <span className="section-actions">
-                  <button type="button" className="header-action" onClick={() => void loadIntegrationsTelegram()}>
-                    Обновить Telegram
-                  </button>
-                  {user?.role === 'Admin' && (
+                  {canViewIntegrationsTelegram() && (
+                    <button type="button" className="header-action" onClick={() => void loadIntegrationsTelegram()}>
+                      Обновить Telegram
+                    </button>
+                  )}
+                  {canViewIntegrationsOzon() && (
                     <button type="button" className="header-action" onClick={() => void loadIntegrationsOzon()}>
                       Обновить Ozon
                     </button>
@@ -6738,7 +8053,41 @@ function App() {
                 </span>
               </div>
 
-              {user?.role === 'Admin' && (
+              {(canViewIntegrationsOzon() || canViewIntegrationsTelegram() || canViewIntegrationsNotifications() || canViewIntegrationsReports()) && (
+                <div className="integration-subtabs">
+                  {(canViewIntegrationsOzon() || canViewIntegrationsTelegram()) && (
+                    <button
+                      type="button"
+                      className={integrationsSubTab === 'connections' ? 'active' : ''}
+                      onClick={() => setIntegrationsSubTab('connections')}
+                    >
+                      Подключения
+                    </button>
+                  )}
+                  {canViewIntegrationsNotifications() && (
+                    <button
+                      type="button"
+                      className={integrationsSubTab === 'telegram-notifications' ? 'active' : ''}
+                      onClick={() => setIntegrationsSubTab('telegram-notifications')}
+                    >
+                      Оповещения пользователям
+                    </button>
+                  )}
+                  {canViewIntegrationsReports() && (
+                    <button
+                      type="button"
+                      className={integrationsSubTab === 'telegram-reports' ? 'active' : ''}
+                      onClick={() => setIntegrationsSubTab('telegram-reports')}
+                    >
+                      Отчёты Telegram
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {integrationsSubTab === 'connections' && (canViewIntegrationsOzon() || canViewIntegrationsTelegram()) && (
+                <>
+              {canViewIntegrationsOzon() && (
                 <article className="integration-card">
                   <div className="integration-card-head">
                     <div>
@@ -6766,6 +8115,7 @@ function App() {
                       <input
                         type="text"
                         value={ozonSettingsForm.clientId}
+                        disabled={!canEditIntegrationsOzon()}
                         onChange={(event) =>
                           setOzonSettingsForm((current) => ({ ...current, clientId: event.target.value }))
                         }
@@ -6778,6 +8128,7 @@ function App() {
                       <input
                         type="password"
                         value={ozonSettingsForm.apiKey}
+                        disabled={!canEditIntegrationsOzon()}
                         onChange={(event) =>
                           setOzonSettingsForm((current) => ({ ...current, apiKey: event.target.value }))
                         }
@@ -6790,6 +8141,7 @@ function App() {
                       <input
                         type="url"
                         value={ozonSettingsForm.baseUrl}
+                        disabled={!canEditIntegrationsOzon()}
                         onChange={(event) =>
                           setOzonSettingsForm((current) => ({ ...current, baseUrl: event.target.value }))
                         }
@@ -6797,6 +8149,7 @@ function App() {
                     </label>
                   </div>
 
+                  {canEditIntegrationsOzon() && (
                   <div className="integration-actions">
                     <button
                       type="button"
@@ -6810,14 +8163,16 @@ function App() {
                       Проверить подключение
                     </button>
                   </div>
+                  )}
                 </article>
               )}
 
+              {canViewIntegrationsTelegram() && (
               <article className="integration-card">
                 <div className="integration-card-head">
                   <div>
                     <h3>Telegram-бот</h3>
-                    <p>{telegramStatus || 'Персональные оповещения для вашего аккаунта'}</p>
+                    <p>{telegramStatus || 'Подключите бота для получения оповещений, настроенных администратором'}</p>
                   </div>
                   <span
                     className={`integration-badge ${
@@ -6853,15 +8208,18 @@ function App() {
 
                 <div className="integration-actions">
                   {!telegramIntegration?.connected ? (
+                    canConnectIntegrationsTelegram() && (
                     <button
                       type="button"
                       className="header-action"
-                      disabled={!telegramIntegration?.botConfigured}
+                      disabled={!telegramIntegration?.botConfigured || !telegramIntegration?.connectAllowed}
                       onClick={() => void connectTelegramBot()}
                     >
                       Подключить Telegram
                     </button>
+                    )
                   ) : (
+                    canConnectIntegrationsTelegram() && (
                     <>
                       <button type="button" className="header-action" onClick={() => void testTelegramNotification()}>
                         Тестовое сообщение
@@ -6874,105 +8232,22 @@ function App() {
                         Отключить
                       </button>
                     </>
+                    )
                   )}
                 </div>
 
-                {telegramIntegration?.connected && telegramEventGroups.length > 0 && (
-                  <div className="telegram-preferences">
-                    <div className="telegram-preferences-head">
-                      <div>
-                        <h4>Оповещения</h4>
-                        <p>
-                          Выбрано {telegramSelectedEvents.length} из {telegramEvents.length}. Настройки сохраняются
-                          только для вашего пользователя.
-                        </p>
-                      </div>
-                      <span className="telegram-preferences-actions">
-                        <button type="button" onClick={expandAllTelegramGroups}>
-                          Развернуть все
-                        </button>
-                        <button type="button" onClick={collapseAllTelegramGroups}>
-                          Свернуть все
-                        </button>
-                        <button type="button" onClick={selectAllTelegramEvents}>
-                          Выбрать все
-                        </button>
-                        <button type="button" onClick={clearTelegramEvents}>
-                          Снять все
-                        </button>
-                        <button
-                          type="button"
-                          className="header-action"
-                          disabled={telegramSaving}
-                          onClick={() => void saveTelegramPreferences()}
-                        >
-                          {telegramSaving ? 'Сохранение...' : 'Сохранить оповещения'}
-                        </button>
-                      </span>
-                    </div>
+                {!telegramIntegration?.connectAllowed && !telegramIntegration?.connected && !canConnectIntegrationsTelegram() && (
+                  <p className="integration-hint">
+                    Администратор не разрешил вам подключение Telegram. Включите галочку «Telegram: подключение» в настройках пользователя.
+                  </p>
+                )}
 
-                    <div className="telegram-event-groups">
-                      {telegramEventColumns.map((column, columnIndex) => (
-                        <div key={columnIndex} className="telegram-event-column">
-                          {column.map(([group, events]) => {
-                            const selectedInGroup = events.filter((event) =>
-                              telegramSelectedEvents.includes(event.id),
-                            ).length
-                            const allSelected = selectedInGroup === events.length
-                            const isExpanded = Boolean(telegramExpandedGroups[group])
-
-                            return (
-                              <div
-                                key={group}
-                                className={`telegram-event-group${isExpanded ? ' is-expanded' : ''}`}
-                              >
-                                <div className="telegram-event-group-head">
-                                  <button
-                                    type="button"
-                                    className="telegram-event-group-toggle"
-                                    aria-expanded={isExpanded}
-                                    onClick={() =>
-                                      setTelegramExpandedGroups((current) => ({
-                                        ...current,
-                                        [group]: !isExpanded,
-                                      }))
-                                    }
-                                  >
-                                    <span className="telegram-event-group-title">{group}</span>
-                                    <small>
-                                      {selectedInGroup}/{events.length}
-                                    </small>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="telegram-event-group-select"
-                                    onClick={() => toggleTelegramGroup(group, !allSelected)}
-                                  >
-                                    {allSelected ? 'Снять группу' : 'Выбрать группу'}
-                                  </button>
-                                </div>
-                                {isExpanded ? (
-                                  <div className="telegram-event-list">
-                                    {events.map((event) => (
-                                      <label key={event.id} className="telegram-event-item">
-                                        <input
-                                          type="checkbox"
-                                          checked={telegramSelectedEvents.includes(event.id)}
-                                          onChange={() => toggleTelegramEvent(event.id)}
-                                        />
-                                        <span>{event.label}</span>
-                                        <small>{event.id}</small>
-                                      </label>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                {telegramIntegration?.connected && (
+                  <p className="integration-hint">
+                    {(canViewIntegrationsNotifications() || canViewIntegrationsReports())
+                      ? 'Оповещения и отчёты настраиваются во вкладках «Оповещения пользователям» и «Отчёты Telegram».'
+                      : 'Какие оповещения приходят, определяет администратор.'}
+                  </p>
                 )}
 
                 {!telegramIntegration?.botConfigured && (
@@ -6981,27 +8256,289 @@ function App() {
                   </p>
                 )}
               </article>
+              )}
+                </>
+              )}
+
+              {canViewIntegrationsNotifications() && integrationsSubTab === 'telegram-notifications' && (
+                <article className="integration-card integration-admin-card">
+                  <div className="integration-card-head">
+                    <div>
+                      <h3>Оповещения пользователям</h3>
+                      <p>Выберите пользователя и отметьте, какие события ему отправлять в Telegram</p>
+                    </div>
+                  </div>
+
+                  <div className="integration-admin-toolbar">
+                    <label className="integration-user-select">
+                      <span>Пользователь</span>
+                      <select
+                        value={integrationAdminUserId}
+                        onChange={(event) => setIntegrationAdminUserId(event.target.value)}
+                      >
+                        {users.filter((item) => item.id !== SYSTEM_USER_ID).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.displayName || item.userName} · {getRoleLabel(item.role)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {integrationAdminUserId && (
+                      <span className={`user-badge user-badge-telegram ${users.find((item) => item.id === integrationAdminUserId)?.telegramConnected ? 'is-online' : 'is-offline'}`}>
+                        Telegram:{' '}
+                        {users.find((item) => item.id === integrationAdminUserId)?.telegramConnected
+                          ? 'подключён'
+                          : 'не подключён'}
+                      </span>
+                    )}
+                  </div>
+
+                  {integrationAdminUserId && userTelegramData[integrationAdminUserId]?.connected ? (
+                    <>
+                      <div className="integration-event-grid">
+                        {groupItemsByField(telegramEvents, (eventItem) => eventItem.group).map(([group, events]) => (
+                          <fieldset key={group}>
+                            <legend>{group}</legend>
+                            <div className="integration-event-list">
+                              {events.map((eventItem) => (
+                                <label key={eventItem.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={(userTelegramEvents[integrationAdminUserId] ?? []).includes(eventItem.id)}
+                                    disabled={!canEditIntegrationsNotifications()}
+                                    onChange={(changeEvent) =>
+                                      setUserTelegramEvents((current) => {
+                                        const selected = current[integrationAdminUserId] ?? []
+                                        return {
+                                          ...current,
+                                          [integrationAdminUserId]: changeEvent.target.checked
+                                            ? [...selected, eventItem.id]
+                                            : selected.filter((value) => value !== eventItem.id),
+                                        }
+                                      })
+                                    }
+                                  />
+                                  {eventItem.label}
+                                </label>
+                              ))}
+                            </div>
+                          </fieldset>
+                        ))}
+                      </div>
+                      {canEditIntegrationsNotifications() && (
+                      <div className="integration-actions">
+                        <button type="button" className="header-action" onClick={() => void saveUserTelegramPreferences(integrationAdminUserId)}>
+                          Сохранить оповещения
+                        </button>
+                      </div>
+                      )}
+                      {userTelegramStatus[integrationAdminUserId] && (
+                        <p className="integration-hint">{userTelegramStatus[integrationAdminUserId]}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="integration-hint">
+                      Пользователь должен подключить Telegram. Разрешение включается галочкой «Telegram: подключение» в настройках пользователя.
+                    </p>
+                  )}
+                </article>
+              )}
+
+              {canViewIntegrationsReports() && integrationsSubTab === 'telegram-reports' && (
+                <article className="integration-card integration-admin-card">
+                  <div className="integration-card-head">
+                    <div>
+                      <h3>Отчёты Telegram</h3>
+                      <p>{reportsStatus || 'Ежедневные отчёты настраиваются для каждого пользователя отдельно'}</p>
+                    </div>
+                    <button type="button" className="header-action secondary" onClick={() => void loadReportSections()}>
+                      Обновить метрики
+                    </button>
+                  </div>
+
+                  <div className="integration-admin-toolbar">
+                    <label className="integration-user-select">
+                      <span>Пользователь</span>
+                      <select
+                        value={integrationAdminUserId}
+                        onChange={(event) => setIntegrationAdminUserId(event.target.value)}
+                      >
+                        {users.filter((item) => item.id !== SYSTEM_USER_ID).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.displayName || item.userName} · {getRoleLabel(item.role)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {integrationAdminUserId && (() => {
+                    const report = userReportData[integrationAdminUserId]
+                    const selectedSections = userReportSections[integrationAdminUserId] ?? report?.enabledSections ?? []
+                    const selectedUser = users.find((item) => item.id === integrationAdminUserId)
+                    return (
+                      <div className="integration-report-form">
+                        <label className="integration-toggle">
+                          <input
+                            type="checkbox"
+                            checked={report?.enabled ?? false}
+                            disabled={!canEditIntegrationsReports()}
+                            onChange={(event) =>
+                              setUserReportData((current) => ({
+                                ...current,
+                                [integrationAdminUserId]: {
+                                  ...(report ?? {
+                                    enabled: false,
+                                    reportTime: '19:00',
+                                    timezone: 'Asia/Almaty',
+                                    enabledSections: [],
+                                    availableSections: reportSections.map((section) => section.id),
+                                    lastSentOn: null,
+                                    telegramConnected: selectedUser?.telegramConnected ?? false,
+                                  }),
+                                  enabled: event.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          Отправлять ежедневный отчёт
+                        </label>
+
+                        <div className="integration-form-grid">
+                          <label>
+                            <span>Время отправки</span>
+                            <input
+                              type="time"
+                              value={report?.reportTime ?? '19:00'}
+                              disabled={!canEditIntegrationsReports()}
+                              onChange={(event) =>
+                                setUserReportData((current) => ({
+                                  ...current,
+                                  [integrationAdminUserId]: {
+                                    ...(report ?? {
+                                      enabled: false,
+                                      reportTime: '19:00',
+                                      timezone: 'Asia/Almaty',
+                                      enabledSections: [],
+                                      availableSections: reportSections.map((section) => section.id),
+                                      lastSentOn: null,
+                                      telegramConnected: selectedUser?.telegramConnected ?? false,
+                                    }),
+                                    reportTime: event.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>Часовой пояс</span>
+                            <select
+                              value={normalizeReportTimezone(report?.timezone)}
+                              disabled={!canEditIntegrationsReports()}
+                              onChange={(event) =>
+                                setUserReportData((current) => ({
+                                  ...current,
+                                  [integrationAdminUserId]: {
+                                    ...(report ?? {
+                                      enabled: false,
+                                      reportTime: '19:00',
+                                      timezone: 'Asia/Almaty',
+                                      enabledSections: [],
+                                      availableSections: reportSections.map((section) => section.id),
+                                      lastSentOn: null,
+                                      telegramConnected: selectedUser?.telegramConnected ?? false,
+                                    }),
+                                    timezone: event.target.value,
+                                  },
+                                }))
+                              }
+                            >
+                              {reportTimezoneOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        <div className="integration-event-grid">
+                          {groupItemsByField(reportSections, (section) => section.group).map(([group, sections]) => (
+                            <fieldset key={group}>
+                              <legend>{group}</legend>
+                              <div className="integration-event-list">
+                                {sections.map((section) => (
+                                  <label key={section.id}>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedSections.includes(section.id)}
+                                      disabled={!canEditIntegrationsReports()}
+                                      onChange={(changeEvent) =>
+                                        setUserReportSections((current) => {
+                                          const selected = current[integrationAdminUserId] ?? selectedSections
+                                          return {
+                                            ...current,
+                                            [integrationAdminUserId]: changeEvent.target.checked
+                                              ? [...selected, section.id]
+                                              : selected.filter((value) => value !== section.id),
+                                          }
+                                        })
+                                      }
+                                    />
+                                    {section.label}
+                                  </label>
+                                ))}
+                              </div>
+                            </fieldset>
+                          ))}
+                        </div>
+
+                        {report?.lastSentOn && <p className="integration-hint">Последний отчёт: {report.lastSentOn}</p>}
+                        {!selectedUser?.telegramConnected && !report?.telegramConnected && (
+                          <p className="integration-hint">Для отчёта пользователь должен подключить Telegram.</p>
+                        )}
+
+                        {canEditIntegrationsReports() && (
+                        <div className="integration-actions">
+                          <button type="button" className="header-action" onClick={() => void saveUserReport(integrationAdminUserId)}>
+                            Сохранить отчёт
+                          </button>
+                          <button type="button" className="header-action secondary" onClick={() => void testUserReport(integrationAdminUserId)}>
+                            Тестовый отчёт
+                          </button>
+                        </div>
+                        )}
+                        {userReportStatus[integrationAdminUserId] && (
+                          <p className="integration-hint">{userReportStatus[integrationAdminUserId]}</p>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </article>
+              )}
             </section>
           )}
 
-          {activeTab === 'settings' && user?.role === 'Admin' && (
+          {activeTab === 'settings' && canViewSettings() && (
             <section className="admin-panel">
               <div className="section-title">
                 <div>
                   <h2>Настройки</h2>
-                  <p>{auditStatus || 'Системные инструменты и журнал действий'}</p>
+                  <p>{canEditSettings() ? 'Системные инструменты, роли и журнал действий' : 'Просмотр системного состояния и журнала'}</p>
                 </div>
                 <span className="section-actions">
                   <button type="button" className="header-action" onClick={() => loadAuditLogs()}>
                     Обновить журнал
                   </button>
-                  <button type="button" className="header-action" onClick={exportAuditLogs}>
-                    Скачать CSV
-                  </button>
+                  {canViewSettings() && (
+                    <button type="button" className="header-action" onClick={exportAuditLogs}>
+                      Скачать Excel
+                    </button>
+                  )}
                 </span>
               </div>
 
-              <div className="settings-grid">
+              <div className="settings-grid settings-grid-compact">
                 <div>
                   <span>База данных</span>
                   <strong>{systemHealth?.databaseOk ? 'PostgreSQL OK' : 'Проверка...'}</strong>
@@ -7028,6 +8565,158 @@ function App() {
                   <small>{systemHealth ? 'Сервер приложения доступен.' : 'Статус загружается'}</small>
                 </div>
               </div>
+
+              <details className="role-profiles-panel">
+                <summary className="role-profiles-head">
+                  <div>
+                    <h3>Роли и главная страница</h3>
+                    <p>{roleProfilesStatus || (canEditSettings() ? 'Шаблоны доступа и блоки главной' : 'Только просмотр — изменение недоступно')}</p>
+                  </div>
+                </summary>
+                <div className="role-profiles-list">
+                  {roleProfiles.map((profile) => {
+                    const edit = roleProfileEdits[profile.role] ?? profile
+                    const editFeatures = edit.allowedFeatures ?? []
+                    return (
+                      <details className="role-profile-card" key={profile.role}>
+                        <summary className="role-profile-summary">
+                          <strong>{getRoleLabel(profile.role)}</strong>
+                          <small>{edit.displayName || profile.displayName}</small>
+                        </summary>
+                        <div className="role-profile-body">
+                        <div className="role-profile-head">
+                          <label className="role-profile-title">
+                            <span>Название</span>
+                            <input
+                              value={edit.displayName}
+                              disabled={!canEditSettings()}
+                              onChange={(event) =>
+                                setRoleProfileEdits((current) => ({
+                                  ...current,
+                                  [profile.role]: { ...edit, displayName: event.target.value },
+                                }))
+                              }
+                            />
+                          </label>
+                          <label className="role-profile-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={edit.canChangeOtherUserPasswords}
+                              disabled={!canEditSettings()}
+                              onChange={(event) =>
+                                setRoleProfileEdits((current) => ({
+                                  ...current,
+                                  [profile.role]: {
+                                    ...edit,
+                                    canChangeOtherUserPasswords: event.target.checked,
+                                  },
+                                }))
+                              }
+                            />
+                            Может менять пароли
+                          </label>
+                        </div>
+                        <div className="feature-checks feature-checks-compact">
+                          {featureGroups.map((group) => (
+                            <fieldset key={group.title}>
+                              <legend>{group.title}</legend>
+                              {group.items.map((feature) => (
+                                <label key={feature.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={editFeatures.includes(feature.id)}
+                                    disabled={!canEditSettings()}
+                                    onChange={(event) =>
+                                      setRoleProfileEdits((current) => ({
+                                        ...current,
+                                        [profile.role]: {
+                                          ...edit,
+                                          allowedFeatures: event.target.checked
+                                            ? [...editFeatures, feature.id]
+                                            : editFeatures.filter((item) => item !== feature.id),
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  {feature.label}
+                                </label>
+                              ))}
+                            </fieldset>
+                          ))}
+                        </div>
+                        <div className="home-blocks-settings home-blocks-compact">
+                          <h5>Блоки главной</h5>
+                          {homeBlockDefinitions.map((block) => {
+                            const blockEdit =
+                              edit.homeBlocks.find((item) => item.id === block.id) ??
+                              ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
+                            return (
+                              <fieldset key={block.id} className="home-block-settings">
+                                <legend>
+                                  <label>
+                                    <input
+                                      type="checkbox"
+                                      checked={blockEdit.enabled}
+                                      disabled={!canEditSettings()}
+                                      onChange={(event) =>
+                                        setRoleProfileEdits((current) => {
+                                          const nextBlocks = [...edit.homeBlocks.filter((item) => item.id !== block.id)]
+                                          nextBlocks.push({
+                                            ...blockEdit,
+                                            enabled: event.target.checked,
+                                            actions: event.target.checked ? block.actions.map((item) => item.id) : [],
+                                          })
+                                          return {
+                                            ...current,
+                                            [profile.role]: { ...edit, homeBlocks: nextBlocks },
+                                          }
+                                        })
+                                      }
+                                    />
+                                    {block.label}
+                                  </label>
+                                </legend>
+                                {blockEdit.enabled &&
+                                  block.actions.map((action) => (
+                                    <label key={action.id}>
+                                      <input
+                                        type="checkbox"
+                                        checked={blockEdit.actions.includes(action.id)}
+                                        disabled={!canEditSettings()}
+                                        onChange={(event) =>
+                                          setRoleProfileEdits((current) => {
+                                            const nextActions = event.target.checked
+                                              ? [...blockEdit.actions, action.id]
+                                              : blockEdit.actions.filter((item) => item !== action.id)
+                                            const nextBlocks = [
+                                              ...edit.homeBlocks.filter((item) => item.id !== block.id),
+                                              { ...blockEdit, actions: nextActions },
+                                            ]
+                                            return {
+                                              ...current,
+                                              [profile.role]: { ...edit, homeBlocks: nextBlocks },
+                                            }
+                                          })
+                                        }
+                                      />
+                                      {action.label}
+                                    </label>
+                                  ))}
+                              </fieldset>
+                            )
+                          })}
+                        </div>
+                        {canEditSettings() && (
+                          <button type="button" className="user-action-btn role-profile-save" onClick={() => void saveRoleProfile(profile.role)}>
+                            Сохранить роль
+                          </button>
+                        )}
+                        </div>
+                      </details>
+                    )
+                  })}
+                </div>
+              </details>
 
               <details className="backup-panel">
                 <summary className="backup-panel-head">
@@ -7106,6 +8795,11 @@ function App() {
                     </select>
                   </label>
                   <button type="submit">Найти</button>
+                  {canViewSettings() && (
+                    <button type="button" className="analytics-export-button" onClick={exportAuditLogs}>
+                      Excel
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="audit-filter-reset"
@@ -7913,13 +9607,14 @@ function ProductSearchInput({
               {filteredProducts.map((product) => (
                 <button
                   type="button"
+                  className="product-search-option"
                   key={product.productId}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => selectProduct(product)}
                 >
                   <ProductThumb imageUrl={product.imageUrl} name={product.name} />
                   <span>
-                    <strong>{product.offerId}</strong>
+                    <OfferIdCell offerId={product.offerId} />
                     <small>{product.name}</small>
                   </span>
                 </button>
@@ -7954,7 +9649,7 @@ function ProductSearchInput({
           <span>
             <strong>{selectedProduct.name}</strong>
             <small>
-              {selectedProduct.offerId}
+              <OfferIdCell offerId={selectedProduct.offerId} inline />
               {selectedProduct.sku ? ` | SKU ${selectedProduct.sku}` : ''}
             </small>
           </span>
@@ -8184,13 +9879,14 @@ function NovinkaSearchInput({
               {filteredProducts.map((item) => (
                 <button
                   type="button"
+                  className="product-search-option"
                   key={item.offerId}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => selectProduct(item)}
                 >
                   <ProductThumb name={item.productName} />
                   <span>
-                    <strong>{item.offerId}</strong>
+                    <OfferIdCell offerId={item.offerId} />
                     <small>{item.productName}</small>
                   </span>
                 </button>
@@ -8223,14 +9919,39 @@ function NovinkaSearchInput({
   )
 }
 
-function NovinkaProductPreview({ item, token }: { item: ProductionCatalogItem; token: string }) {
+function NovinkaProductPreview({
+  item,
+  token,
+  files = [],
+  paths = [],
+}: {
+  item: ProductionCatalogItem
+  token: string
+  files?: ProductionFile[]
+  paths?: ProductionFilePath[]
+}) {
+  const imageFile = files.find((file) => file.contentType.startsWith('image/'))
+
   return (
     <div className="task-form-modal-preview selected-product-card selected-product-card-large">
-      <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
+      {imageFile ? (
+        <ProductionFileThumb file={imageFile} token={token} name={item.productName} />
+      ) : (
+        <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
+      )}
       <span>
         <strong>{item.productName}</strong>
-        <small>{item.offerId}</small>
+        <OfferIdCell offerId={item.offerId} />
         {item.productLink && <NovinkaExternalLinkButton url={item.productLink} />}
+        {files.length > 0 && (
+          <small className="novinka-preview-meta">Файлы производства: {files.length}</small>
+        )}
+        {paths.length > 0 && (
+          <div className="novinka-preview-paths">
+            <small className="novinka-preview-meta">Пути к файлу</small>
+            <ProductionPathsPanel paths={paths} showCopy />
+          </div>
+        )}
       </span>
     </div>
   )
@@ -8295,9 +10016,12 @@ function UserProfileModal({
   profileAvatar,
   setProfileAvatar,
   profileStatus,
+  profilePasswordForm,
+  setProfilePasswordForm,
   onClose,
   onSaveProfile,
   onUploadAvatar,
+  onChangePassword,
 }: {
   profileUser: User
   isOwnProfile: boolean
@@ -8306,9 +10030,14 @@ function UserProfileModal({
   profileAvatar: File | null
   setProfileAvatar: Dispatch<SetStateAction<File | null>>
   profileStatus: string
+  profilePasswordForm: { currentPassword: string; newPassword: string; confirmPassword: string }
+  setProfilePasswordForm: Dispatch<
+    SetStateAction<{ currentPassword: string; newPassword: string; confirmPassword: string }>
+  >
   onClose: () => void
   onSaveProfile: (event: FormEvent<HTMLFormElement>) => void
   onUploadAvatar: () => void
+  onChangePassword: (event: FormEvent<HTMLFormElement>) => void
 }) {
   const displayName = profileUser.displayName || profileUser.userName
 
@@ -8384,10 +10113,41 @@ function UserProfileModal({
                 </button>
               </span>
             </form>
+            <form className="profile-form profile-password-form" onSubmit={onChangePassword}>
+              <h4>Смена пароля</h4>
+              <input
+                placeholder="Текущий пароль"
+                type="password"
+                value={profilePasswordForm.currentPassword}
+                onChange={(event) =>
+                  setProfilePasswordForm({ ...profilePasswordForm, currentPassword: event.target.value })
+                }
+                required
+              />
+              <input
+                placeholder="Новый пароль"
+                type="password"
+                value={profilePasswordForm.newPassword}
+                onChange={(event) =>
+                  setProfilePasswordForm({ ...profilePasswordForm, newPassword: event.target.value })
+                }
+                required
+              />
+              <input
+                placeholder="Подтверждение пароля"
+                type="password"
+                value={profilePasswordForm.confirmPassword}
+                onChange={(event) =>
+                  setProfilePasswordForm({ ...profilePasswordForm, confirmPassword: event.target.value })
+                }
+                required
+              />
+              <button type="submit">Сменить пароль</button>
+            </form>
             {profileStatus && <p className="modal-status">{profileStatus}</p>}
           </>
         ) : (
-          <p className="profile-readonly-note">Редактировать может только сам пользователь или администратор.</p>
+          <p className="profile-readonly-note">Редактировать профиль может только сам пользователь.</p>
         )}
       </div>
     </div>
@@ -8627,7 +10387,7 @@ function TaskProductPreview({ product }: { product: OzonProduct }) {
       <span>
         <strong>{product.name}</strong>
         <small>
-          {product.offerId}
+          <OfferIdCell offerId={product.offerId} inline />
           {product.sku ? ` | SKU ${product.sku}` : ''}
         </small>
         {product.productUrl && (
@@ -8636,40 +10396,6 @@ function TaskProductPreview({ product }: { product: OzonProduct }) {
           </a>
         )}
       </span>
-    </div>
-  )
-}
-
-function ProductionTaskTypeFilterTabs({
-  value,
-  onChange,
-  counts,
-}: {
-  value: 'all' | 'ozon' | 'novinka'
-  onChange: (value: 'all' | 'ozon' | 'novinka') => void
-  counts: {
-    all: number
-    allUnseen?: number
-    ozon: number
-    ozonUnseen?: number
-    novinka: number
-    novinkaUnseen?: number
-  }
-}) {
-  return (
-    <div className="inner-tabs production-task-source-tabs">
-      <button type="button" className={value === 'all' ? 'active' : ''} onClick={() => onChange('all')}>
-        Все
-        {renderTabBadge(counts.allUnseen || counts.all)}
-      </button>
-      <button type="button" className={value === 'ozon' ? 'active' : ''} onClick={() => onChange('ozon')}>
-        Ozon
-        {renderTabBadge(counts.ozonUnseen || counts.ozon)}
-      </button>
-      <button type="button" className={value === 'novinka' ? 'active' : ''} onClick={() => onChange('novinka')}>
-        Новинки
-        {renderTabBadge(counts.novinkaUnseen || counts.novinka)}
-      </button>
     </div>
   )
 }
@@ -8704,16 +10430,6 @@ function getProductionTaskTableLabels(tableMode: ReturnType<typeof getProduction
       tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул',
     neededHeaderLabel: tableMode === 'mixed' ? 'План' : 'Нужно',
   }
-}
-
-function resolveProductionTaskTableContext(
-  filter: 'all' | 'ozon' | 'novinka',
-): 'ozon' | 'novinka' | 'mixed' {
-  if (filter === 'all') {
-    return 'mixed'
-  }
-
-  return filter
 }
 
 function renderNovinkaItemLink(item: ProductionTaskItem) {
@@ -8979,11 +10695,13 @@ function ProductionTaskTable({
   tableContext = 'ozon',
   products,
   productionFiles,
+  productionFilePaths = [],
   token,
   actualQuantities,
   setActualQuantities,
   currentUserId,
   isAdmin,
+  canCancelTasks = false,
   onStart,
   onCancelRequest,
   onComplete,
@@ -9000,11 +10718,13 @@ function ProductionTaskTable({
   tasks: ProductionTask[]
   products: OzonProduct[]
   productionFiles: ProductionFile[]
+  productionFilePaths?: ProductionFilePath[]
   token: string
   actualQuantities: Record<string, string>
   setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
   currentUserId?: string
   isAdmin?: boolean
+  canCancelTasks?: boolean
   onStart: (id: string) => void
   onCancelRequest: (id: string) => void
   onComplete: (id: string) => void
@@ -9066,6 +10786,13 @@ function ProductionTaskTable({
           !completed &&
           !cancelled &&
           taskItems.some((item) => getProductionFilesForTaskItem(item, productionFiles).length === 0)
+        const hasMissingNovinkaPaths =
+          novinka &&
+          task.status === 'InProgress' &&
+          !completed &&
+          !cancelled &&
+          taskItems.some((item) => getProductionPathsForTaskItem(item, productionFilePaths).length === 0)
+        const hasMissingNovinkaRequirements = hasMissingNovinkaFiles || hasMissingNovinkaPaths
 
         return (
         <details
@@ -9079,18 +10806,27 @@ function ProductionTaskTable({
               {task.isUrgent ? 'Срочно · ' : ''}
               {novinka ? 'Новинка · ' : ''}
               {task.status === 'Cancelled' && task.cancelledAt
-                ? `Отменена: ${new Date(task.cancelledAt).toLocaleDateString('ru-RU')}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
-                : new Date(task.createdAt).toLocaleDateString('ru-RU')}
+                ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
+                : `Создана: ${formatDateTime(task.createdAt)}`}
             </small>
           </span>
-          <span className="task-col-sku">
+          <span
+            className="task-col-sku offer-id-cell"
+            title={
+              novinka
+                ? undefined
+                : taskItems.map((item) => item.offerId || '-').join(', ')
+            }
+          >
             {novinka
               ? taskItems.length === 1
                 ? renderNovinkaItemLink(taskItems[0])
                 : taskItems.map((item) => (
                     <span key={item.id}>{renderNovinkaItemLink(item)}</span>
                   ))
-              : taskItems.map((item) => item.offerId || '-').join(', ')}
+              : taskItems.length === 1
+                ? taskItems[0].offerId || '-'
+                : taskItems.map((item) => item.offerId || '-').join(', ')}
           </span>
           {showTypeColumn && (
             <span className="task-col-type">
@@ -9135,9 +10871,10 @@ function ProductionTaskTable({
                 В работу
               </button>
             )}
-            {!completed && !cancelled && isAdmin && task.status === 'New' && (
+            {!completed && !cancelled && canCancelTasks && (task.status === 'New' || task.status === 'InProgress') && (
               <button type="button" className="danger" onClick={(event) => {
                 event.preventDefault()
+                event.stopPropagation()
                 onCancelRequest(task.id)
               }}>
                 Отменить
@@ -9146,10 +10883,12 @@ function ProductionTaskTable({
             {!completed && !cancelled && task.status === 'InProgress' && (
               <button
                 type="button"
-                className={hasMinimumViolations || hasMissingNovinkaFiles ? 'task-complete-blocked' : ''}
+                className={hasMinimumViolations || hasMissingNovinkaRequirements ? 'task-complete-blocked' : ''}
                 title={
                   hasMissingNovinkaFiles
                     ? 'Добавьте файлы производства по каждому товару'
+                    : hasMissingNovinkaPaths
+                      ? 'Укажите путь к файлу по каждому товару'
                     : hasMinimumViolations
                       ? 'Исправьте количество: факт не может быть меньше плана'
                       : undefined
@@ -9169,9 +10908,10 @@ function ProductionTaskTable({
                 В новые
               </button>
             )}
-            {cancelled && isAdmin && onArchive && (
+            {cancelled && onArchive && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
+                event.stopPropagation()
                 onArchive(task.id)
               }}>
                 В архив
@@ -9210,6 +10950,7 @@ function ProductionTaskTable({
                 <>
                   <span>Ссылка</span>
                   <span>Файлы</span>
+                  <span>Путь к файлу</span>
                 </>
               ) : (
                 <>
@@ -9223,6 +10964,7 @@ function ProductionTaskTable({
               const actualValue = actualQuantities[item.id] ?? ''
               const actualNumber = Number(actualValue)
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+              const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
               const isBelowMinimum =
                 !novinka &&
                 !completed &&
@@ -9236,7 +10978,12 @@ function ProductionTaskTable({
               return (
               <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <TaskItemThumb item={item} products={products} token={token} />
+                  <TaskItemThumb
+                    item={item}
+                    products={products}
+                    productionFiles={productionFiles}
+                    token={token}
+                  />
                   <span>
                     <strong>{item.productName}</strong>
                     {item.enforceMinimumQuantity && !novinka && !completed && !cancelled && (
@@ -9244,7 +10991,7 @@ function ProductionTaskTable({
                     )}
                   </span>
                 </span>
-                {!novinka && <span>{item.offerId || '-'}</span>}
+                {!novinka && <OfferIdCell offerId={item.offerId} />}
                 {novinka ? (
                   <>
                     <span>{renderNovinkaItemLink(item)}</span>
@@ -9257,6 +11004,7 @@ function ProductionTaskTable({
                       onUploadTaskItemFile={onUploadTaskItemFile}
                       canUpload={!completed && !cancelled && task.status === 'InProgress'}
                     />
+                    <TaskItemPathCell paths={itemPaths} />
                   </>
                 ) : (
                   <>
@@ -9292,19 +11040,12 @@ function ProductionTaskTable({
                         '—'
                       )}
                     </span>
-                    <span className="task-item-files">
-                      {itemFiles.length > 0 ? (
-                        <button
-                          type="button"
-                          className="production-files-trigger"
-                          onClick={() => onOpenFiles(item.productName, itemFiles)}
-                        >
-                          Файлы ({itemFiles.length})
-                        </button>
-                      ) : (
-                        '—'
-                      )}
-                    </span>
+                    <TaskItemFilesAndPathsCell
+                      item={item}
+                      itemFiles={itemFiles}
+                      itemPaths={itemPaths}
+                      onOpenFiles={onOpenFiles}
+                    />
                   </>
                 )}
               </div>
@@ -9339,30 +11080,479 @@ function isNovinkaTask(task: ProductionTask) {
     return true
   }
 
-  if (task.offerId?.startsWith('NV-')) {
-    return true
+  if (task.taskType === 'Ozon') {
+    return false
   }
 
-  return getProductionTaskItems(task).some((item) => item.offerId.startsWith('NV-'))
+  return getProductionTaskItems(task).some(
+    (item) =>
+      item.ozonProductId <= 0 &&
+      (item.offerId.startsWith('NV-') || Boolean(item.productLink?.trim())),
+  )
 }
 
 function getProductionTaskTypeLabel(task: ProductionTask) {
   return isNovinkaTask(task) ? 'Новинка' : 'Ozon'
 }
 
+function toDatetimeLocalValue(value?: string) {
+  if (!value) {
+    return ''
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  const offset = date.getTimezoneOffset()
+  const local = new Date(date.getTime() - offset * 60000)
+  return local.toISOString().slice(0, 16)
+}
+
+function fromDatetimeLocalValue(value: string) {
+  if (!value.trim()) {
+    return undefined
+  }
+
+  return new Date(value).toISOString()
+}
+
+function ProductionAnalyticsRecordEditModal({
+  task,
+  assignees,
+  onClose,
+  onSave,
+}: {
+  task: ProductionTask
+  assignees: ProductionAnalyticsAssignee[]
+  onClose: () => void
+  onSave: (task: ProductionTask) => Promise<boolean>
+}) {
+  const [draft, setDraft] = useState<ProductionTask>(() => ({
+    ...task,
+    items: getProductionTaskItems(task).map((item) => ({ ...item })),
+  }))
+  const [saving, setSaving] = useState(false)
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await onSave(draft)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function updateItem(index: number, patch: Partial<ProductionTaskItem>) {
+    setDraft((current) => ({
+      ...current,
+      items: getProductionTaskItems(current).map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    }))
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal-card production-analytics-edit-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-title-row">
+          <h3>Редактирование записи аналитики</h3>
+          <button type="button" className="text-action-button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+        <div className="production-analytics-edit-form">
+          <label>
+            Завершена
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(draft.completedAt)}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  completedAt: fromDatetimeLocalValue(event.target.value),
+                }))
+              }
+            />
+          </label>
+          <label>
+            Исполнитель
+            <input
+              list="production-analytics-assignee-options"
+              value={draft.assignedUserName ?? ''}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  assignedUserName: event.target.value,
+                }))
+              }
+            />
+            <datalist id="production-analytics-assignee-options">
+              {assignees.map((assignee) => (
+                <option key={assignee.id} value={assignee.displayName} />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            Тип
+            <select
+              value={draft.taskType ?? 'Ozon'}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  taskType: event.target.value as ProductionTask['taskType'],
+                }))
+              }
+            >
+              <option value="Ozon">Ozon</option>
+              <option value="Novinka">Новинка</option>
+            </select>
+          </label>
+          <label className="production-analytics-edit-checkbox">
+            <input
+              type="checkbox"
+              checked={draft.isUrgent}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  isUrgent: event.target.checked,
+                }))
+              }
+            />
+            Срочная задача
+          </label>
+          <label>
+            Ozon Product ID
+            <input
+              type="number"
+              value={draft.ozonProductId}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  ozonProductId: Number(event.target.value) || 0,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Артикул
+            <input
+              value={draft.offerId}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  offerId: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Название товара
+            <input
+              value={draft.productName}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  productName: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            План (общий)
+            <input
+              type="number"
+              min={0}
+              value={draft.requiredQuantity}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  requiredQuantity: Number(event.target.value) || 0,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Факт (общий)
+            <input
+              type="number"
+              min={0}
+              value={draft.actualQuantity ?? 0}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  actualQuantity: Number(event.target.value) || 0,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Создал
+            <input
+              value={draft.createdByDisplayName ?? ''}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  createdByDisplayName: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Создана
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(draft.createdAt)}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  createdAt: fromDatetimeLocalValue(event.target.value) ?? current.createdAt,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Начата
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(draft.startedAt)}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  startedAt: fromDatetimeLocalValue(event.target.value),
+                }))
+              }
+            />
+          </label>
+        </div>
+        <section className="production-analytics-edit-items">
+          <h4>Позиции</h4>
+          {getProductionTaskItems(draft).map((item, index) => (
+            <div className="production-analytics-edit-item" key={item.id ?? `${item.offerId}-${index}`}>
+              <label>
+                Товар
+                <input
+                  value={item.productName}
+                  onChange={(event) => updateItem(index, { productName: event.target.value })}
+                />
+              </label>
+              <label>
+                Артикул
+                <input
+                  value={item.offerId}
+                  onChange={(event) => updateItem(index, { offerId: event.target.value })}
+                />
+              </label>
+              <label>
+                Ссылка
+                <input
+                  value={item.productLink ?? ''}
+                  onChange={(event) => updateItem(index, { productLink: event.target.value })}
+                />
+              </label>
+              <label>
+                План
+                <input
+                  type="number"
+                  min={0}
+                  value={item.requiredQuantity}
+                  onChange={(event) =>
+                    updateItem(index, { requiredQuantity: Number(event.target.value) || 0 })
+                  }
+                />
+              </label>
+              <label>
+                Факт
+                <input
+                  type="number"
+                  min={0}
+                  value={item.actualQuantity ?? 0}
+                  onChange={(event) =>
+                    updateItem(index, { actualQuantity: Number(event.target.value) || 0 })
+                  }
+                />
+              </label>
+              <label>
+                Путь к файлу
+                <input
+                  value={item.filePath ?? ''}
+                  onChange={(event) => updateItem(index, { filePath: event.target.value })}
+                />
+              </label>
+            </div>
+          ))}
+        </section>
+        <div className="production-analytics-edit-actions">
+          <button type="button" className="primary-button" disabled={saving} onClick={() => void handleSave()}>
+            {saving ? 'Сохранение...' : 'Сохранить'}
+          </button>
+          <button type="button" className="text-action-button" onClick={onClose}>
+            Отмена
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProductionAnalyticsUserDetailModal({
+  userName,
+  summaryRow,
+  tasks,
+  isAdmin,
+  onClose,
+  onExportExcel,
+  onEditTask,
+}: {
+  userName: string
+  summaryRow: ProductionAnalyticsSummaryRow | null
+  tasks: ProductionTask[]
+  isAdmin?: boolean
+  onClose: () => void
+  onExportExcel: (userId: string) => void
+  onEditTask?: (task: ProductionTask) => void
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal-card production-analytics-detail-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-title-row production-analytics-detail-title">
+          <div className="production-analytics-detail-head">
+            <UserAvatarPreview
+              avatarUrl={summaryRow?.avatarUrl}
+              displayName={userName}
+              className="production-analytics-avatar production-analytics-avatar-large"
+            />
+            <div>
+              <h3>{userName}</h3>
+              <p>
+                {summaryRow?.role ? getRoleLabel(summaryRow.role) : 'Исполнитель'} · {tasks.length}{' '}
+                {tasks.length === 1 ? 'задача' : tasks.length < 5 ? 'задачи' : 'задач'}
+              </p>
+            </div>
+          </div>
+          <div className="production-analytics-detail-actions">
+            {summaryRow?.userId && (
+              <button type="button" className="text-action-button" onClick={() => onExportExcel(summaryRow.userId!)}>
+                Excel
+              </button>
+            )}
+            <button type="button" className="text-action-button" onClick={onClose}>
+              Закрыть
+            </button>
+          </div>
+        </div>
+        <div className="production-analytics-detail-body">
+          {tasks.length === 0 && (
+            <div className="empty-state">
+              <strong>За выбранный период задач не найдено.</strong>
+            </div>
+          )}
+          {tasks.map((task) => (
+            <article className="production-analytics-detail-task" key={task.id}>
+              <header className="production-analytics-detail-task-head">
+                <div>
+                  <strong>{task.productName}</strong>
+                  <p>
+                    {getProductionTaskTypeLabel(task)}
+                    {task.isUrgent ? ' · срочно' : ''}
+                    {task.createdByDisplayName ? ` · создал ${task.createdByDisplayName}` : ''}
+                  </p>
+                </div>
+                <div className="production-analytics-detail-task-meta">
+                  <div className="production-analytics-detail-task-dates">
+                    <span>Создана: {formatDateTime(task.createdAt)}</span>
+                    {task.startedAt && <span>Начата: {formatDateTime(task.startedAt)}</span>}
+                    {task.completedAt && <span>Завершена: {formatDateTime(task.completedAt)}</span>}
+                  </div>
+                  {isAdmin && onEditTask && (
+                    <button type="button" className="text-action-button" onClick={() => onEditTask(task)}>
+                      Изменить
+                    </button>
+                  )}
+                </div>
+              </header>
+              <div className="data-table production-analytics-detail-items">
+                <div className="table-row production-analytics-detail-item-row table-head">
+                  <span>Товар</span>
+                  <span>Артикул</span>
+                  <span>Ссылка</span>
+                  <span>План</span>
+                  <span>Факт</span>
+                </div>
+                {getProductionTaskItems(task).map((item) => (
+                  <div className="table-row production-analytics-detail-item-row" key={item.id ?? item.offerId}>
+                    <span>{item.productName}</span>
+                    <OfferIdCell offerId={item.offerId} />
+                    <span>
+                      {item.productLink?.trim() ? (
+                        <a href={item.productLink} target="_blank" rel="noreferrer">
+                          {item.productLink}
+                        </a>
+                      ) : (
+                        '—'
+                      )}
+                    </span>
+                    <span>{item.requiredQuantity}</span>
+                    <span>{item.actualQuantity ?? 0}</span>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) {
   return products.find((product) => product.productId === item.ozonProductId)?.imageUrl
+}
+
+function ProductionFileThumb({
+  file,
+  token,
+  name,
+}: {
+  file: ProductionFile
+  token?: string
+  name: string
+}) {
+  const previewUrl = useProductionFilePreviewUrl(file.id, token ?? '', Boolean(token && file.contentType.startsWith('image/')))
+
+  return (
+    <ProductImageHoverPreview imageUrl={previewUrl} name={name}>
+      <ProductThumb imageUrl={previewUrl} name={name} />
+    </ProductImageHoverPreview>
+  )
 }
 
 function TaskItemThumb({
   item,
   products,
+  productionFiles,
   token,
 }: {
   item: ProductionTaskItem
   products: OzonProduct[]
+  productionFiles: ProductionFile[]
   token?: string
 }) {
+  const imageFile = getProductionFilesForTaskItem(item, productionFiles).find((file) =>
+    file.contentType.startsWith('image/'),
+  )
+
+  if (imageFile) {
+    return <ProductionFileThumb file={imageFile} token={token} name={item.productName} />
+  }
+
   if (item.productLink?.trim() && token && (item.offerId?.startsWith('NV-') || !item.ozonProductId)) {
     return <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
   }
@@ -9465,6 +11655,44 @@ function getProductionFilesForCatalogItem(
   )
 }
 
+function toProductionCatalogItem(item: ProductionTaskItem): ProductionCatalogItem {
+  return {
+    offerId: item.offerId,
+    ozonProductId: item.ozonProductId > 0 ? item.ozonProductId : undefined,
+    productName: item.productName,
+    productLink: item.productLink ?? '',
+    fileCount: 0,
+  }
+}
+
+function getProductionPathsForTaskItem(
+  item: ProductionTaskItem,
+  paths: ProductionFilePath[],
+): ProductionFilePath[] {
+  const catalogPaths = getProductionPathsForCatalogItem(toProductionCatalogItem(item), paths)
+  const itemPath = item.filePath?.trim()
+  if (!itemPath) {
+    return catalogPaths
+  }
+
+  if (catalogPaths.some((entry) => entry.path === itemPath)) {
+    return catalogPaths
+  }
+
+  return [
+    {
+      id: `item-${item.id}`,
+      offerId: item.offerId,
+      ozonProductId: item.ozonProductId > 0 ? item.ozonProductId : undefined,
+      productName: item.productName,
+      productLink: item.productLink ?? '',
+      path: itemPath,
+      createdAt: '',
+    },
+    ...catalogPaths,
+  ]
+}
+
 function getProductionFilesForTaskItem(
   item: { offerId: string; ozonProductId: number; productLink?: string; productName?: string },
   files: ProductionFile[],
@@ -9475,6 +11703,156 @@ function getProductionFilesForTaskItem(
       (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId) ||
       (item.productLink && file.productLink === item.productLink) ||
       (item.productName && file.productName === item.productName && item.offerId?.startsWith('NV-')),
+  )
+}
+
+function getProductionPathsForCatalogItem(
+  item: ProductionCatalogItem,
+  paths: ProductionFilePath[],
+) {
+  return paths.filter((path) => pathsMatchProductionItem(path, item))
+}
+
+function pathsMatchProductionItem(
+  path: ProductionFilePath,
+  item: {
+    offerId?: string
+    ozonProductId?: number
+    productLink?: string
+    productName?: string
+  },
+) {
+  if (
+    item.offerId &&
+    path.offerId &&
+    path.offerId.localeCompare(item.offerId, undefined, { sensitivity: 'accent' }) === 0
+  ) {
+    return true
+  }
+
+  if (item.ozonProductId && path.ozonProductId && path.ozonProductId === item.ozonProductId) {
+    return true
+  }
+
+  if (
+    item.productLink &&
+    path.productLink &&
+    path.productLink.trim().toLowerCase() === item.productLink.trim().toLowerCase()
+  ) {
+    return true
+  }
+
+  if (
+    item.productName &&
+    path.productName &&
+    path.productName.trim().toLowerCase() === item.productName.trim().toLowerCase()
+  ) {
+    return true
+  }
+
+  return false
+}
+
+function TaskItemPathsButtons({ paths }: { paths: ProductionFilePath[] }) {
+  if (paths.length === 0) {
+    return (
+      <button type="button" className="production-files-trigger path-missing-button" disabled>
+        нет пути
+      </button>
+    )
+  }
+
+  return (
+    <div className="task-item-paths-buttons">
+      {paths.map((entry) => (
+        <PathCopyBlock key={entry.id} path={entry.path} />
+      ))}
+    </div>
+  )
+}
+
+function TaskItemFilesAndPathsCell({
+  item,
+  itemFiles,
+  itemPaths,
+  onOpenFiles,
+}: {
+  item: ProductionTaskItem
+  itemFiles: ProductionFile[]
+  itemPaths: ProductionFilePath[]
+  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
+}) {
+  return (
+    <span className="task-item-files-paths">
+      {itemFiles.length > 0 && onOpenFiles ? (
+        <button
+          type="button"
+          className="production-files-trigger"
+          onClick={() => onOpenFiles(item.productName, itemFiles)}
+        >
+          Файлы ({itemFiles.length})
+        </button>
+      ) : null}
+      <TaskItemPathsButtons paths={itemPaths} />
+    </span>
+  )
+}
+
+function PathCopyBlock({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="path-copy-block">
+      <button
+        type="button"
+        className="copy-path-button"
+        onClick={() => {
+          void navigator.clipboard.writeText(path).then(() => {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1500)
+          })
+        }}
+      >
+        {copied ? 'Скопировано' : 'Копировать путь'}
+      </button>
+      <span className="path-copy-block-text" title={path}>
+        {path}
+      </span>
+    </div>
+  )
+}
+
+function TaskItemPathCell({ paths }: { paths: ProductionFilePath[] }) {
+  return (
+    <span className="task-item-path-cell">
+      <TaskItemPathsButtons paths={paths} />
+    </span>
+  )
+}
+
+function ProductionPathsPanel({
+  paths,
+  showCopy = true,
+}: {
+  paths: ProductionFilePath[]
+  showCopy?: boolean
+}) {
+  if (paths.length === 0) {
+    return <small className="task-path-empty">Путь не указан</small>
+  }
+
+  return (
+    <div className="production-paths-panel">
+      {paths.map((entry) =>
+        showCopy ? (
+          <PathCopyBlock key={entry.id} path={entry.path} />
+        ) : (
+          <span className="production-path-text" key={entry.id} title={entry.path}>
+            {entry.path}
+          </span>
+        ),
+      )}
+    </div>
   )
 }
 
@@ -9548,6 +11926,7 @@ function ProductionTaskArchiveTable({
   tableContext = 'mixed',
   products,
   productionFiles = [],
+  productionFilePaths = [],
   token = '',
   onOpenFiles,
   onDeleteFile,
@@ -9559,6 +11938,7 @@ function ProductionTaskArchiveTable({
   tasks: ProductionTask[]
   products: OzonProduct[]
   productionFiles?: ProductionFile[]
+  productionFilePaths?: ProductionFilePath[]
   token?: string
   onOpenFiles?: (productName: string, files: ProductionFile[]) => void
   onDeleteFile?: (id: string) => void
@@ -9604,14 +11984,23 @@ function ProductionTaskArchiveTable({
               {task.isUrgent ? ' · Срочно' : ''}
             </small>
           </span>
-          <span className="task-col-sku">
+          <span
+            className="task-col-sku offer-id-cell"
+            title={
+              novinka
+                ? undefined
+                : taskItems.map((item) => item.offerId || '-').join(', ')
+            }
+          >
             {novinka
               ? taskItems.length === 1
                 ? renderNovinkaItemLink(taskItems[0])
                 : taskItems.map((item) => (
                     <span key={item.id}>{renderNovinkaItemLink(item)}</span>
                   ))
-              : taskItems.map((item) => item.offerId || '-').join(', ')}
+              : taskItems.length === 1
+                ? taskItems[0].offerId || '-'
+                : taskItems.map((item) => item.offerId || '-').join(', ')}
           </span>
           {showTypeColumn && (
             <span className="task-col-type">
@@ -9646,6 +12035,7 @@ function ProductionTaskArchiveTable({
             {onArchive && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
+                event.stopPropagation()
                 onArchive(task.id)
               }}>
                 Архивировать
@@ -9675,6 +12065,7 @@ function ProductionTaskArchiveTable({
                 <>
                   <span>Ссылка</span>
                   <span>Файлы</span>
+                  <span>Путь к файлу</span>
                 </>
               ) : (
                 <>
@@ -9685,16 +12076,22 @@ function ProductionTaskArchiveTable({
             </div>
             {taskItems.map((item) => {
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+              const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
 
               return (
               <div className="table-row task-item-table-row" key={item.id}>
                 <span className="product-mini task-product-mini">
-                  <TaskItemThumb item={item} products={products} token={token} />
+                  <TaskItemThumb
+                    item={item}
+                    products={products}
+                    productionFiles={productionFiles}
+                    token={token}
+                  />
                   <span>
                     <strong>{item.productName}</strong>
                   </span>
                 </span>
-                {!novinka && <span>{item.offerId || '-'}</span>}
+                {!novinka && <OfferIdCell offerId={item.offerId} />}
                 {novinka ? (
                   <>
                     <span>{renderNovinkaItemLink(item)}</span>
@@ -9706,6 +12103,7 @@ function ProductionTaskArchiveTable({
                       onOpenFiles={onOpenFiles}
                       canUpload={false}
                     />
+                    <TaskItemPathCell paths={itemPaths} />
                   </>
                 ) : (
                   <>
@@ -9896,7 +12294,7 @@ function SupplyItemsModal({
                     <strong>{item.productName}</strong>
                   )}
                 </span>
-                <span>{item.offerId || '-'}</span>
+                <OfferIdCell offerId={item.offerId} />
                 <span>
                   <input
                     className="supply-item-quantity-input"
@@ -10086,7 +12484,7 @@ function SupplyTable({
                         )}
                         <strong>{item.productName}</strong>
                       </span>
-                      <span>{item.offerId || '-'}</span>
+                      <OfferIdCell offerId={item.offerId} />
                       <span>{item.quantity}</span>
                       <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
                       <span className="reserve-replace">
@@ -10152,7 +12550,7 @@ function SupplyAnalyticsTable({ rows }: { rows: SupplyAnalyticsItem[] }) {
             <strong>{row.productName}</strong>
             <small>{row.isReserve ? 'Новый товар' : 'Постоянный товар'}</small>
           </span>
-          <span>{row.offerId || '-'}</span>
+          <OfferIdCell offerId={row.offerId} />
           <span>{row.quantity}</span>
           <span>{formatSupplyDisplayStatus(row)}</span>
           <span>{formatDateTime(row.createdAt)}</span>
@@ -10202,7 +12600,7 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
               {supply.items.map((item) => (
                 <div className="table-row all-supply-item-row" key={item.id}>
                   <span>{item.productName}</span>
-                  <span>{item.offerId || '-'}</span>
+                  <OfferIdCell offerId={item.offerId} />
                   <span>{item.quantity}</span>
                   <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
                 </div>
@@ -10234,7 +12632,7 @@ function StockRow({
   canEditPrice: boolean
 }) {
   return (
-    <div className="table-row stock-row">
+    <div className={`table-row stock-row ${canEditPrice ? '' : 'stock-row-readonly'}`}>
       <span data-label="Товар" className="stock-product-cell">
         {item.imageUrl && (
           <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
@@ -10250,22 +12648,31 @@ function StockRow({
           )}
         </span>
       </span>
-      <span data-label="Артикул">{item.offerId}</span>
+      <span data-label="Артикул">
+        <OfferIdCell offerId={item.offerId} />
+      </span>
       <span data-label="FBO">{item.fboPresent}</span>
       <span data-label="FBS">{item.fbsPresent}</span>
       <span className="stock-price-cell" data-label="Цена">
-        <input
-          value={priceValue}
-          onChange={(event) => onPriceChange(event.target.value)}
-          disabled={!canEditPrice}
-        />
-        <small>{item.currencyCode}</small>
+        {canEditPrice ? (
+          <>
+            <input
+              value={priceValue}
+              onChange={(event) => onPriceChange(event.target.value)}
+            />
+            <small>{item.currencyCode}</small>
+          </>
+        ) : (
+          <strong>{formatMoney(item.price, item.currencyCode || 'KZT')}</strong>
+        )}
       </span>
-      <span className="stock-save-cell" data-label="Действие">
-        <button type="button" onClick={onSave} disabled={!canEditPrice}>
-          Сохранить
-        </button>
-      </span>
+      {canEditPrice && (
+        <span className="stock-save-cell" data-label="Действие">
+          <button type="button" className="stock-save-button" onClick={onSave}>
+            Сохранить
+          </button>
+        </span>
+      )}
     </div>
   )
 }
@@ -10578,6 +12985,18 @@ function formatDaysWithoutSales(value?: number | null) {
   return `${value} дн.`
 }
 
+function OfferIdCell({ offerId, inline = false }: { offerId?: string | null; inline?: boolean }) {
+  const value = offerId?.trim() || '-'
+  return (
+    <span
+      className={`offer-id-cell${inline ? ' offer-id-cell-inline' : ''}`}
+      title={value === '-' ? undefined : value}
+    >
+      {value}
+    </span>
+  )
+}
+
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('ru-RU', {
     day: '2-digit',
@@ -10586,6 +13005,209 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function HomeSalesChartBlock({
+  preset,
+  token,
+  enabled,
+  loadDelayMs,
+}: {
+  preset: 'year' | 'month'
+  token: string
+  enabled: boolean
+  loadDelayMs: number
+}) {
+  const [config, setConfig] = useState<HomeSalesChartConfig>(() =>
+    preset === 'year' ? createDefaultYearChartConfig() : createDefaultMonthChartConfig(),
+  )
+  const [data, setData] = useState<HomeSalesChartData | null>(null)
+  const [status, setStatus] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  const title = preset === 'year' ? 'Продажи за год' : 'Продажи за месяц'
+
+  async function loadChart(nextConfig: HomeSalesChartConfig) {
+    if (!token) {
+      return
+    }
+
+    setLoading(true)
+    setStatus('Загружаем данные графика...')
+
+    try {
+      const params = new URLSearchParams({
+        dateFrom: nextConfig.dateFrom,
+        dateTo: nextConfig.dateTo,
+        groupBy: nextConfig.groupBy,
+      })
+
+      const response = await fetch(`/api/ozon/sales-chart?${params.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        setData(null)
+        setStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить график'))
+        return
+      }
+
+      const chartData: HomeSalesChartData = await response.json()
+      setData(chartData)
+      setStatus('')
+    } catch {
+      setData(null)
+      setStatus('Не удалось загрузить график')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!enabled || !token) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadChart(config)
+    }, loadDelayMs)
+
+    return () => window.clearTimeout(timer)
+  }, [enabled, token, config.dateFrom, config.dateTo, config.groupBy, loadDelayMs])
+
+  function applyPreset(nextPreset: 'year' | 'month') {
+    setConfig(nextPreset === 'year' ? createDefaultYearChartConfig() : createDefaultMonthChartConfig())
+  }
+
+  const points = data?.points ?? []
+  const metricValue = (point: HomeSalesChartPoint) =>
+    config.metric === 'orders' ? point.orders : point.revenue
+  const maxValue = Math.max(...points.map(metricValue), config.metric === 'orders' ? 1 : 0)
+  const showBarValues = config.metric === 'orders' || points.length <= 12
+  const totalLabel =
+    config.metric === 'orders'
+      ? `${data?.totalOrders ?? 0} заказов`
+      : formatMoney(data?.totalRevenue ?? 0, data?.currencyCode ?? 'KZT')
+
+  return (
+    <article className="home-block home-sales-chart-block">
+      <div className="home-block-head">
+        <div>
+          <h3>{title}</h3>
+          <p>
+            {config.dateFrom} — {config.dateTo}
+            {data ? ` · ${totalLabel}` : ''}
+          </p>
+          {status && <small className="home-block-status">{status}</small>}
+        </div>
+        <button type="button" className="home-block-refresh" disabled={loading} onClick={() => void loadChart(config)}>
+          {loading ? 'Загрузка...' : 'Обновить'}
+        </button>
+      </div>
+
+      <div className="home-sales-chart-filters">
+        <label>
+          Показатель
+          <select
+            value={config.metric}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                metric: event.target.value as HomeSalesChartMetric,
+              }))
+            }
+          >
+            <option value="orders">Количество заказов</option>
+            <option value="revenue">Выручка</option>
+          </select>
+        </label>
+        <label>
+          Группировка
+          <select
+            value={config.groupBy}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                groupBy: event.target.value as HomeSalesChartGroupBy,
+              }))
+            }
+          >
+            <option value="month">По месяцам</option>
+            <option value="day">По дням</option>
+          </select>
+        </label>
+        <label>
+          С
+          <input
+            type="date"
+            value={config.dateFrom}
+            onChange={(event) => setConfig((current) => ({ ...current, dateFrom: event.target.value }))}
+          />
+        </label>
+        <label>
+          По
+          <input
+            type="date"
+            value={config.dateTo}
+            onChange={(event) => setConfig((current) => ({ ...current, dateTo: event.target.value }))}
+          />
+        </label>
+        <div className="home-sales-chart-presets">
+          <button type="button" onClick={() => applyPreset('year')}>
+            Год
+          </button>
+          <button type="button" onClick={() => applyPreset('month')}>
+            Месяц
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="home-sales-chart-empty">Загружаем график...</div>
+      ) : status ? (
+        <div className="home-sales-chart-empty">{status}</div>
+      ) : points.length === 0 ? (
+        <div className="home-sales-chart-empty">Нет данных за выбранный период.</div>
+      ) : (
+        <div className="home-sales-chart">
+          <div className="home-sales-chart-bars">
+            {points.map((point) => {
+              const value = metricValue(point)
+              const height = maxValue > 0 ? `${Math.max((value / maxValue) * 100, value > 0 ? 4 : 0)}%` : '0%'
+              const tooltip =
+                config.metric === 'orders'
+                  ? `${point.label}: ${point.orders} заказов`
+                  : `${point.label}: ${formatMoney(point.revenue, data?.currencyCode ?? 'KZT')}`
+
+              const displayValue =
+                config.metric === 'orders'
+                  ? point.orders > 0
+                    ? String(point.orders)
+                    : ''
+                  : point.revenue > 0
+                    ? formatMoney(point.revenue, data?.currencyCode ?? 'KZT')
+                    : ''
+
+              return (
+                <div className="home-sales-chart-bar-wrap" key={point.periodKey} title={tooltip}>
+                  <div className="home-sales-chart-bar-track">
+                    <div className="home-sales-chart-bar" style={{ height }}>
+                      {showBarValues && displayValue && (
+                        <span className="home-sales-chart-bar-value">{displayValue}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="home-sales-chart-label">{point.label}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </article>
+  )
 }
 
 export default App

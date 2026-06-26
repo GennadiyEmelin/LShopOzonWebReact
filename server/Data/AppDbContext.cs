@@ -7,6 +7,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<ProductionFile> ProductionFiles => Set<ProductionFile>();
+    public DbSet<ProductionFilePath> ProductionFilePaths => Set<ProductionFilePath>();
+    public DbSet<ProductionAnalyticsTaskRecord> ProductionAnalyticsTaskRecords => Set<ProductionAnalyticsTaskRecord>();
     public DbSet<ProductionTask> ProductionTasks => Set<ProductionTask>();
     public DbSet<ProductionTaskItem> ProductionTaskItems => Set<ProductionTaskItem>();
     public DbSet<Supply> Supplies => Set<Supply>();
@@ -16,6 +18,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatGroupMember> ChatGroupMembers => Set<ChatGroupMember>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<AppIntegrationSettings> AppIntegrationSettings => Set<AppIntegrationSettings>();
+    public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -27,10 +30,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(user => user.Position).HasMaxLength(160);
             entity.Property(user => user.AvatarFileName).HasMaxLength(260);
             entity.Property(user => user.AllowedFeatures).HasMaxLength(2000);
+            entity.Property(user => user.HomeBlocksJson).HasMaxLength(4000);
             entity.Property(user => user.Role).HasMaxLength(32);
             entity.Property(user => user.TelegramChatId).HasMaxLength(32);
             entity.Property(user => user.TelegramConnectToken).HasMaxLength(64);
             entity.Property(user => user.TelegramNotifyEvents).HasMaxLength(4000);
+            entity.Property(user => user.TelegramDailyReportTime).HasMaxLength(8);
+            entity.Property(user => user.TelegramDailyReportTimezone).HasMaxLength(64);
+            entity.Property(user => user.TelegramDailyReportSections).HasMaxLength(2000);
         });
 
         modelBuilder.Entity<AppIntegrationSettings>(entity =>
@@ -50,6 +57,28 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(file => file.ProductLink).HasMaxLength(500);
             entity.Property(file => file.FileName).HasMaxLength(260);
             entity.Property(file => file.ContentType).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<ProductionFilePath>(entity =>
+        {
+            entity.HasIndex(path => path.OfferId);
+            entity.Property(path => path.OfferId).HasMaxLength(120);
+            entity.Property(path => path.ProductName).HasMaxLength(240);
+            entity.Property(path => path.ProductLink).HasMaxLength(500);
+            entity.Property(path => path.Path).HasMaxLength(2000);
+        });
+
+        modelBuilder.Entity<ProductionAnalyticsTaskRecord>(entity =>
+        {
+            entity.HasIndex(record => record.SourceTaskId).IsUnique();
+            entity.HasIndex(record => record.CompletedAt);
+            entity.HasIndex(record => record.AssignedUserId);
+            entity.Property(record => record.OfferId).HasMaxLength(120);
+            entity.Property(record => record.ProductName).HasMaxLength(240);
+            entity.Property(record => record.TaskType).HasMaxLength(32);
+            entity.Property(record => record.AssignedUserName).HasMaxLength(80);
+            entity.Property(record => record.CreatedByDisplayName).HasMaxLength(160);
+            entity.Property(record => record.ItemsJson).HasMaxLength(8000);
         });
 
         modelBuilder.Entity<ProductionTask>(entity =>
@@ -76,6 +105,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(item => item.OfferId).HasMaxLength(120);
             entity.Property(item => item.ProductName).HasMaxLength(240);
             entity.Property(item => item.ProductLink).HasMaxLength(500);
+            entity.Property(item => item.FilePath).HasMaxLength(2000);
         });
 
         modelBuilder.Entity<Supply>(entity =>
@@ -142,6 +172,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(message => message.ReceiverId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .IsRequired(false);
+        });
+
+        modelBuilder.Entity<RoleProfile>(entity =>
+        {
+            entity.HasKey(profile => profile.Role);
+            entity.Property(profile => profile.Role).HasMaxLength(32);
+            entity.Property(profile => profile.DisplayName).HasMaxLength(80);
+            entity.Property(profile => profile.AllowedFeatures).HasMaxLength(2000);
+            entity.Property(profile => profile.HomeBlocksJson).HasMaxLength(4000);
         });
 
         modelBuilder.Entity<AuditLog>(entity =>

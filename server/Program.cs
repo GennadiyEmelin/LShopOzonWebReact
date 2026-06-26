@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,6 +11,7 @@ using LShopOzonWebReact.Api.Hubs;
 using LShopOzonWebReact.Api.Integrations;
 using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
+using LShopOzonWebReact.Api.Production;
 using LShopOzonWebReact.Api.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -30,13 +32,16 @@ builder.Services.AddSingleton<OzonRuntimeCredentials>();
 builder.Services.AddHttpClient(nameof(TelegramNotificationService));
 builder.Services.AddHttpClient(nameof(TelegramBotHostedService));
 builder.Services.AddSingleton<TelegramNotificationService>();
+builder.Services.AddScoped<DailyReportService>();
 builder.Services.AddHostedService<TelegramBotHostedService>();
+builder.Services.AddHostedService<DailyReportHostedService>();
 builder.Services.AddHttpClient<OzonApiClient>((serviceProvider, client) =>
 {
     var credentials = serviceProvider.GetRequiredService<OzonRuntimeCredentials>();
     client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(credentials.BaseUrl)
         ? "https://api-seller.ozon.ru"
         : credentials.BaseUrl);
+    client.Timeout = TimeSpan.FromMinutes(3);
 });
 builder.Services.AddScoped<JwtTokenService>();
 builder.Services
@@ -54,8 +59,11 @@ builder.Services
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
+            RoleClaimType = "role",
+            NameClaimType = ClaimTypes.NameIdentifier
         };
+        options.MapInboundClaims = true;
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
@@ -65,6 +73,40 @@ builder.Services
                 if (!string.IsNullOrWhiteSpace(accessToken) && path.StartsWithSegments("/hubs/live"))
                 {
                     context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            },
+            OnTokenValidated = context =>
+            {
+                if (context.Principal?.Identity is not ClaimsIdentity identity)
+                {
+                    return Task.CompletedTask;
+                }
+
+                static string? GetClaimValue(ClaimsIdentity claimsIdentity, string claimType) =>
+                    claimsIdentity.FindFirst(claimType)?.Value;
+
+                var userId = GetClaimValue(identity, JwtRegisteredClaimNames.Sub)
+                    ?? GetClaimValue(identity, ClaimTypes.NameIdentifier);
+                if (!string.IsNullOrWhiteSpace(userId) &&
+                    string.IsNullOrWhiteSpace(GetClaimValue(identity, ClaimTypes.NameIdentifier)))
+                {
+                    identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, userId));
+                }
+
+                var role = GetClaimValue(identity, "role") ?? GetClaimValue(identity, ClaimTypes.Role);
+                if (!string.IsNullOrWhiteSpace(role))
+                {
+                    if (string.IsNullOrWhiteSpace(GetClaimValue(identity, "role")))
+                    {
+                        identity.AddClaim(new Claim("role", role));
+                    }
+
+                    if (string.IsNullOrWhiteSpace(GetClaimValue(identity, ClaimTypes.Role)))
+                    {
+                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                    }
                 }
 
                 return Task.CompletedTask;
@@ -99,6 +141,8 @@ if (app.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
     await SystemUserBootstrap.EnsureExistsAsync(db);
+    await RoleProfilesBootstrap.EnsureDefaultsAsync(db);
+    await ProductionAnalyticsStore.BackfillMissingRecordsAsync(db);
     var credentials = scope.ServiceProvider.GetRequiredService<OzonRuntimeCredentials>();
     await credentials.LoadFromDatabaseAsync(db);
 }
@@ -158,7 +202,7 @@ app.MapPost("/api/setup/admin", async (CreateInitialAdminRequest request, AppDbC
     db.Users.Add(admin);
     await db.SaveChangesAsync();
 
-    return Results.Created("/api/admin/users", UserResponses.Current(admin));
+    return Results.Created("/api/admin/users", await UserResponses.BuildCurrentUserAsync(db, admin));
 });
 
 var products = new[]
@@ -208,7 +252,11 @@ app.MapPost("/api/auth/login", async (
 
     if (user.Role != UserRoles.Admin && string.IsNullOrWhiteSpace(user.AllowedFeatures))
     {
-        user.AllowedFeatures = FeatureAccess.NormalizeForRole(user.Role, FeatureAccess.UserDefaults);
+        var profile = await db.RoleProfiles.AsNoTracking().FirstOrDefaultAsync(item => item.Role == user.Role);
+        user.AllowedFeatures = FeatureAccess.NormalizeForRole(
+            user.Role,
+            null,
+            profile?.AllowedFeatures);
     }
 
     user.LastSeenAt = DateTimeOffset.UtcNow;
@@ -216,7 +264,7 @@ app.MapPost("/api/auth/login", async (
 
     return Results.Ok(new AuthResponse(
         tokenService.CreateToken(user),
-        UserResponses.Current(user)));
+        await UserResponses.BuildCurrentUserAsync(db, user)));
 });
 
 app.MapPost("/api/auth/heartbeat", async (AppDbContext db, ClaimsPrincipal principal) =>
@@ -264,7 +312,43 @@ app.MapGet("/api/auth/me", async (AppDbContext db, ClaimsPrincipal principal) =>
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == userId && item.IsActive);
-    return user is null ? Results.Unauthorized() : Results.Ok(UserResponses.Current(user));
+    return user is null
+        ? Results.Unauthorized()
+        : Results.Ok(await UserResponses.BuildCurrentUserAsync(db, user));
+}).RequireAuthorization();
+
+app.MapPut("/api/profile/password", async (
+    ChangeOwnPasswordRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (string.IsNullOrWhiteSpace(request.CurrentPassword) || string.IsNullOrWhiteSpace(request.NewPassword))
+    {
+        return Results.BadRequest("Укажите текущий и новый пароль.");
+    }
+
+    var user = await db.Users.FindAsync(userId);
+    if (user is null || !user.IsActive)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!PasswordHasher.Verify(request.CurrentPassword, user.PasswordHash))
+    {
+        return Results.BadRequest("Текущий пароль указан неверно.");
+    }
+
+    user.PasswordHash = PasswordHasher.Hash(request.NewPassword);
+    AuditLogWriter.Add(db, principal, "Смена своего пароля", "User", user.Id.ToString(), user.UserName);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
 }).RequireAuthorization();
 
 app.MapPut("/api/profile", async (
@@ -287,7 +371,7 @@ app.MapPut("/api/profile", async (
     user.DisplayName = request.DisplayName.Trim();
     await db.SaveChangesAsync();
 
-    return Results.Ok(UserResponses.Current(user));
+    return Results.Ok(await UserResponses.BuildCurrentUserAsync(db, user));
 }).RequireAuthorization();
 
 app.MapPost("/api/profile/avatar", async (
@@ -354,35 +438,91 @@ app.MapPost("/api/profile/avatar", async (
     user.AvatarFileName = fileName;
     await db.SaveChangesAsync(cancellationToken);
 
-    return Results.Ok(UserResponses.Current(user));
+    return Results.Ok(await UserResponses.BuildCurrentUserAsync(db, user));
 }).DisableAntiforgery().RequireAuthorization();
 
-app.MapGet("/api/admin/users", async (AppDbContext db) =>
+app.MapGet("/api/admin/users", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Users, FeatureAccess.UsersCreate, FeatureAccess.UsersEdit))
+    {
+        return Results.Forbid();
+    }
+
     var onlineAfter = DateTimeOffset.UtcNow.AddMinutes(-2);
-    return await db.Users
-        .OrderBy(user => user.UserName)
-        .Select(user => new UserListItem(
-            user.Id,
-            user.UserName,
-            user.DisplayName,
-            user.Position,
-            user.Role,
-            UserResponses.AvatarUrl(user),
-            UserResponses.Features(user),
-            user.IsActive,
-            user.CreatedAt,
-            user.LastSeenAt,
-            user.LastSeenAt >= onlineAfter))
-        .ToListAsync();
-})
-    .RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    var users = await db.Users.OrderBy(user => user.UserName).ToListAsync();
+    var profiles = await db.RoleProfiles.AsNoTracking().ToDictionaryAsync(profile => profile.Role);
+    return Results.Ok(users.Select(user =>
+        UserResponses.ToListItem(
+            user,
+            user.LastSeenAt >= onlineAfter,
+            user.Role == UserRoles.Admin ? null : profiles.GetValueOrDefault(user.Role))).ToList());
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/role-profiles", async (AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Settings))
+    {
+        return Results.Forbid();
+    }
+
+    var profiles = await db.RoleProfiles.AsNoTracking().OrderBy(profile => profile.DisplayName).ToListAsync();
+    return Results.Ok(profiles.Select(UserResponses.ToRoleProfileResponse).ToList());
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/role-profiles/{role}", async (
+    string role,
+    UpdateRoleProfileRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.SettingsEdit))
+    {
+        return Results.Forbid();
+    }
+
+    var normalizedRole = UserRoles.Normalize(role);
+    if (!UserRoles.IsConfigurable(normalizedRole))
+    {
+        return Results.BadRequest("Роль недоступна для настройки.");
+    }
+
+    var profile = await db.RoleProfiles.FirstOrDefaultAsync(item => item.Role == normalizedRole);
+    if (profile is null)
+    {
+        profile = new RoleProfile { Role = normalizedRole };
+        db.RoleProfiles.Add(profile);
+    }
+
+    profile.DisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
+        ? normalizedRole
+        : request.DisplayName.Trim();
+    profile.AllowedFeatures = FeatureAccess.NormalizeForRole(normalizedRole, request.AllowedFeatures);
+    profile.HomeBlocksJson = HomeBlocksCatalog.Serialize(request.HomeBlocks ?? []);
+    profile.CanChangeOtherUserPasswords = request.CanChangeOtherUserPasswords;
+
+    AuditLogWriter.Add(db, principal, "Настройка роли", "RoleProfile", profile.Role, profile.DisplayName);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(UserResponses.ToRoleProfileResponse(profile));
+}).RequireAuthorization();
 
 app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.UsersCreate, FeatureAccess.UsersEdit))
+    {
+        return Results.Forbid();
+    }
+
     if (string.IsNullOrWhiteSpace(request.UserName) || string.IsNullOrWhiteSpace(request.Password))
     {
         return Results.BadRequest("Логин и пароль обязательны.");
+    }
+
+    var canManageUsers = await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.UsersEdit);
+    var role = request.Role == UserRoles.Admin ? UserRoles.Admin : UserRoles.Normalize(request.Role);
+    if (role == UserRoles.Admin && !canManageUsers)
+    {
+        return Results.Forbid();
     }
 
     var exists = await db.Users.AnyAsync(user => user.UserName == request.UserName);
@@ -391,34 +531,26 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
         return Results.Conflict("Пользователь с таким логином уже есть.");
     }
 
-    var role = request.Role == UserRoles.Admin ? UserRoles.Admin : UserRoles.User;
+    var profile = role == UserRoles.Admin
+        ? null
+        : await db.RoleProfiles.AsNoTracking().FirstOrDefaultAsync(item => item.Role == role);
     var user = new AppUser
     {
         UserName = request.UserName.Trim(),
         DisplayName = request.DisplayName.Trim(),
         Position = request.Position.Trim(),
-        AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures),
+        AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures, profile?.AllowedFeatures),
         PasswordHash = PasswordHasher.Hash(request.Password),
         Role = role
     };
+    FeatureAccess.SyncTelegramConnectAllowed(user);
 
     db.Users.Add(user);
     AuditLogWriter.Add(db, principal, "Создание пользователя", "User", user.Id.ToString(), $"{user.UserName} ({user.Role})");
     await db.SaveChangesAsync();
 
-    return Results.Created($"/api/admin/users/{user.Id}", new UserListItem(
-        user.Id,
-        user.UserName,
-        user.DisplayName,
-        user.Position,
-        user.Role,
-        UserResponses.AvatarUrl(user),
-        UserResponses.Features(user),
-        user.IsActive,
-        user.CreatedAt,
-        user.LastSeenAt,
-        false));
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    return Results.Created($"/api/admin/users/{user.Id}", UserResponses.ToListItem(user, false));
+}).RequireAuthorization();
 
 app.MapPut("/api/admin/users/{id:guid}/settings", async (
     Guid id,
@@ -426,34 +558,35 @@ app.MapPut("/api/admin/users/{id:guid}/settings", async (
     AppDbContext db,
     ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.UsersEdit))
+    {
+        return Results.Forbid();
+    }
+
     var user = await db.Users.FindAsync(id);
     if (user is null)
     {
         return Results.NotFound();
     }
 
-    var role = request.Role == UserRoles.Admin ? UserRoles.Admin : UserRoles.User;
+    var role = request.Role == UserRoles.Admin ? UserRoles.Admin : UserRoles.Normalize(request.Role);
+    var profile = role == UserRoles.Admin
+        ? null
+        : await db.RoleProfiles.AsNoTracking().FirstOrDefaultAsync(item => item.Role == role);
     user.DisplayName = request.DisplayName.Trim();
     user.Position = request.Position.Trim();
     user.Role = role;
-    user.AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures);
+    user.AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures, profile?.AllowedFeatures);
+    user.HomeBlocksJson = user.Role == UserRoles.Admin
+        ? string.Empty
+        : HomeBlocksCatalog.Serialize(request.HomeBlocks ?? []);
+    FeatureAccess.SyncTelegramConnectAllowed(user);
 
     AuditLogWriter.Add(db, principal, "Настройки пользователя", "User", user.Id.ToString(), $"{user.UserName} ({user.Role})");
     await db.SaveChangesAsync();
 
-    return Results.Ok(new UserListItem(
-        user.Id,
-        user.UserName,
-        user.DisplayName,
-        user.Position,
-        user.Role,
-        UserResponses.AvatarUrl(user),
-        UserResponses.Features(user),
-        user.IsActive,
-        user.CreatedAt,
-        user.LastSeenAt,
-        false));
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    return Results.Ok(UserResponses.ToListItem(user, false, profile));
+}).RequireAuthorization();
 
 app.MapPut("/api/admin/users/{id:guid}/password", async (
     Guid id,
@@ -464,6 +597,32 @@ app.MapPut("/api/admin/users/{id:guid}/password", async (
     if (string.IsNullOrWhiteSpace(request.Password))
     {
         return Results.BadRequest("Пароль обязателен.");
+    }
+
+    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(currentUserId, out var actorId))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (actorId == id)
+    {
+        return Results.BadRequest("Для смены своего пароля используйте профиль.");
+    }
+
+    var actor = await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == actorId && user.IsActive);
+    if (actor is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
+    {
+        var actorProfile = await db.RoleProfiles.AsNoTracking().FirstOrDefaultAsync(item => item.Role == actor.Role);
+        if (actorProfile is null || !actorProfile.CanChangeOtherUserPasswords)
+        {
+            return Results.Forbid();
+        }
     }
 
     var user = await db.Users.FindAsync(id);
@@ -477,10 +636,175 @@ app.MapPut("/api/admin/users/{id:guid}/password", async (
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/users/{id:guid}/telegram", async (
+    Guid id,
+    AppDbContext db,
+    TelegramNotificationService telegram,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramNotifications))
+    {
+        return Results.Forbid();
+    }
+
+    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.Ok(new AdminUserTelegramResponse(
+        !string.IsNullOrWhiteSpace(user.TelegramChatId),
+        AppPublicText.MaskSecret(user.TelegramChatId),
+        user.TelegramConnectedAt,
+        TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
+        TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+        FeatureAccess.AllowsTelegramConnect(user)));
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/users/{id:guid}/telegram/preferences", async (
+    Guid id,
+    UpdateTelegramPreferencesRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramNotificationsEdit))
+    {
+        return Results.Forbid();
+    }
+
+    var user = await db.Users.FirstOrDefaultAsync(item => item.Id == id);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (string.IsNullOrWhiteSpace(user.TelegramChatId))
+    {
+        return Results.BadRequest("Telegram у пользователя не подключён.");
+    }
+
+    user.TelegramNotifyEvents = TelegramNotificationEvents.Serialize(request.Events ?? []);
+    AuditLogWriter.Add(db, principal, "Telegram-оповещения", "User", user.Id.ToString(), user.UserName);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new AdminUserTelegramResponse(
+        true,
+        AppPublicText.MaskSecret(user.TelegramChatId),
+        user.TelegramConnectedAt,
+        TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
+        TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+        FeatureAccess.AllowsTelegramConnect(user)));
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/users/{id:guid}/telegram/report", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramReports))
+    {
+        return Results.Forbid();
+    }
+
+    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.Ok(new AdminUserReportResponse(
+        user.TelegramDailyReportEnabled,
+        user.TelegramDailyReportTime,
+        user.TelegramDailyReportTimezone,
+        TelegramReportSections.Parse(user.TelegramDailyReportSections).ToList(),
+        TelegramReportSections.All.Select(section => section.Id).ToList(),
+        user.TelegramDailyReportLastSentOn,
+        !string.IsNullOrWhiteSpace(user.TelegramChatId)));
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/users/{id:guid}/telegram/report", async (
+    Guid id,
+    UpdateAdminUserReportRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramReportsEdit))
+    {
+        return Results.Forbid();
+    }
+
+    var user = await db.Users.FirstOrDefaultAsync(item => item.Id == id);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    user.TelegramDailyReportEnabled = request.Enabled;
+    user.TelegramDailyReportTime = DailyReportService.TryParseReportTime(request.ReportTime, out var parsedTime)
+        ? parsedTime.ToString("HH:mm")
+        : user.TelegramDailyReportTime;
+    user.TelegramDailyReportTimezone = string.IsNullOrWhiteSpace(request.Timezone)
+        ? user.TelegramDailyReportTimezone
+        : request.Timezone.Trim();
+    user.TelegramDailyReportSections = TelegramReportSections.Serialize(request.Sections ?? []);
+
+    AuditLogWriter.Add(db, principal, "Настройка Telegram-отчёта", "User", user.Id.ToString(), user.UserName);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new AdminUserReportResponse(
+        user.TelegramDailyReportEnabled,
+        user.TelegramDailyReportTime,
+        user.TelegramDailyReportTimezone,
+        TelegramReportSections.Parse(user.TelegramDailyReportSections).ToList(),
+        TelegramReportSections.All.Select(section => section.Id).ToList(),
+        user.TelegramDailyReportLastSentOn,
+        !string.IsNullOrWhiteSpace(user.TelegramChatId)));
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/users/{id:guid}/telegram/report/test", async (
+    Guid id,
+    AppDbContext db,
+    DailyReportService reportService,
+    TelegramNotificationService telegram,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramReportsEdit))
+    {
+        return Results.Forbid();
+    }
+
+    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+    if (user is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (string.IsNullOrWhiteSpace(user.TelegramChatId))
+    {
+        return Results.BadRequest("Telegram у пользователя не подключён.");
+    }
+
+    var timezone = DailyReportService.ResolveTimeZone(user.TelegramDailyReportTimezone);
+    var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, timezone).DateTime);
+    var message = await reportService.BuildReportAsync(user, localDate, cancellationToken);
+    var sent = await telegram.SendMessageAsync(user.TelegramChatId, message, cancellationToken);
+
+    return sent
+        ? Results.Ok(new { message = "Тестовый отчёт отправлен." })
+        : Results.BadRequest("Не удалось отправить отчёт.");
+}).RequireAuthorization();
 
 app.MapDelete("/api/admin/users/{id:guid}", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.UsersEdit))
+    {
+        return Results.Forbid();
+    }
+
     var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
     if (currentUserId == id.ToString())
     {
@@ -503,59 +827,32 @@ app.MapDelete("/api/admin/users/{id:guid}", async (Guid id, AppDbContext db, Cla
     await db.SaveChangesAsync();
 
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
-app.MapGet("/api/admin/audit-logs", async (
-    string? search,
-    string? action,
-    string? entityType,
-    string? dateFrom,
-    string? dateTo,
-    string? userId,
-    AppDbContext db) =>
+app.MapGet("/api/admin/audit-logs", async (HttpRequest request, AppDbContext db) =>
 {
-    var query = db.AuditLogs.AsNoTracking();
-
-    if (!string.IsNullOrWhiteSpace(search))
+    if (!await FeatureAccess.HasAnyAsync(db, request.HttpContext.User, FeatureAccess.Settings))
     {
-        var value = search.Trim().ToLower();
-        query = query.Where(log =>
-            log.UserName.ToLower().Contains(value)
-            || log.DisplayName.ToLower().Contains(value)
-            || log.Action.ToLower().Contains(value)
-            || log.EntityType.ToLower().Contains(value)
-            || log.EntityId.ToLower().Contains(value)
-            || log.Details.ToLower().Contains(value));
+        return Results.Forbid();
     }
 
-    if (!string.IsNullOrWhiteSpace(action))
-    {
-        query = query.Where(log => log.Action == action);
-    }
+    var search = request.Query["search"].ToString();
+    var action = request.Query["action"].ToString();
+    var entityType = request.Query["entityType"].ToString();
+    var dateFrom = request.Query["dateFrom"].ToString();
+    var dateTo = request.Query["dateTo"].ToString();
+    var userId = request.Query["userId"].ToString();
 
-    if (!string.IsNullOrWhiteSpace(entityType))
-    {
-        query = query.Where(log => log.EntityType == entityType);
-    }
+    var auditQuery = AuditLogQueries.ApplyFilters(
+        db.AuditLogs.AsNoTracking(),
+        string.IsNullOrWhiteSpace(search) ? null : search,
+        string.IsNullOrWhiteSpace(action) ? null : action,
+        string.IsNullOrWhiteSpace(entityType) ? null : entityType,
+        string.IsNullOrWhiteSpace(dateFrom) ? null : dateFrom,
+        string.IsNullOrWhiteSpace(dateTo) ? null : dateTo,
+        string.IsNullOrWhiteSpace(userId) ? null : userId);
 
-    if (!string.IsNullOrWhiteSpace(dateFrom) && DateOnly.TryParse(dateFrom, out var parsedDateFrom))
-    {
-        var from = new DateTimeOffset(parsedDateFrom.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        query = query.Where(log => log.CreatedAt >= from);
-    }
-
-    if (!string.IsNullOrWhiteSpace(dateTo) && DateOnly.TryParse(dateTo, out var parsedDateTo))
-    {
-        var toExclusive = new DateTimeOffset(parsedDateTo.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        query = query.Where(log => log.CreatedAt < toExclusive);
-    }
-
-    if (Guid.TryParse(userId, out var parsedUserId))
-    {
-        query = query.Where(log => log.UserId == parsedUserId);
-    }
-
-    return await query
+    return Results.Ok(await auditQuery
         .OrderByDescending(log => log.CreatedAt)
         .Take(300)
         .Select(log => new AuditLogListItem(
@@ -567,40 +864,73 @@ app.MapGet("/api/admin/audit-logs", async (
             log.EntityId,
             log.Details,
             log.CreatedAt))
-        .ToListAsync();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+        .ToListAsync());
+}).RequireAuthorization();
 
-app.MapGet("/api/admin/audit-logs/export", async (AppDbContext db) =>
+app.MapGet("/api/admin/audit-logs/export", async (HttpRequest request, AppDbContext db) =>
 {
-    var logs = await db.AuditLogs
-        .AsNoTracking()
-        .OrderByDescending(log => log.CreatedAt)
-        .Take(5000)
-        .ToListAsync();
-
-    var builder = new StringBuilder();
-    builder.AppendLine("Дата;Пользователь;Имя;Действие;Объект;ID;Детали");
-    foreach (var log in logs)
+    if (!await FeatureAccess.HasAnyAsync(db, request.HttpContext.User, FeatureAccess.Settings))
     {
-        builder.AppendLine(string.Join(';', [
-            CsvExport.Cell(log.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
-            CsvExport.Cell(log.UserName),
-            CsvExport.Cell(log.DisplayName),
-            CsvExport.Cell(log.Action),
-            CsvExport.Cell(log.EntityType),
-            CsvExport.Cell(log.EntityId),
-            CsvExport.Cell(log.Details)
-        ]));
+        return Results.Forbid();
     }
 
-    return Results.File(
-        Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
-        "text/csv; charset=utf-8",
-        $"audit-log-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    var search = request.Query["search"].ToString();
+    var action = request.Query["action"].ToString();
+    var entityType = request.Query["entityType"].ToString();
+    var dateFrom = request.Query["dateFrom"].ToString();
+    var dateTo = request.Query["dateTo"].ToString();
+    var userId = request.Query["userId"].ToString();
 
-app.MapGet("/api/admin/system-health", async (AppDbContext db) =>
+    var logs = await AuditLogQueries.ApplyFilters(
+            db.AuditLogs.AsNoTracking(),
+            string.IsNullOrWhiteSpace(search) ? null : search,
+            string.IsNullOrWhiteSpace(action) ? null : action,
+            string.IsNullOrWhiteSpace(entityType) ? null : entityType,
+            string.IsNullOrWhiteSpace(dateFrom) ? null : dateFrom,
+            string.IsNullOrWhiteSpace(dateTo) ? null : dateTo,
+            string.IsNullOrWhiteSpace(userId) ? null : userId)
+        .OrderByDescending(log => log.CreatedAt)
+        .Take(10000)
+        .ToListAsync();
+
+    var rows = new List<string[]>
+    {
+        new[] { "Дата", "Пользователь", "Имя", "Действие", "Объект", "ID", "Детали" }
+    };
+    rows.AddRange(logs.Select(log => new[]
+    {
+        log.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+        log.UserName,
+        log.DisplayName,
+        log.Action,
+        log.EntityType,
+        log.EntityId,
+        log.Details
+    }));
+
+    var bytes = ExcelExport.CreateWorkbook("Журнал действий", rows);
+    return Results.File(
+        bytes,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        $"audit-log-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx");
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/report-sections", () =>
+    Results.Ok(TelegramReportSections.All.Select(section => new
+    {
+        section.Id,
+        section.Group,
+        section.Label
+    })))
+    .RequireAuthorization();
+
+app.MapGet("/api/admin/system-health", async (AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Settings))
+    {
+        return Results.Forbid();
+    }
+
     var process = Process.GetCurrentProcess();
     var dbOk = await db.Database.CanConnectAsync();
 
@@ -610,10 +940,15 @@ app.MapGet("/api/admin/system-health", async (AppDbContext db) =>
         (DateTimeOffset.UtcNow - process.StartTime.ToUniversalTime()).ToString(),
         Environment.MachineName,
         Environment.Version.ToString()));
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
-app.MapGet("/api/admin/backups", (IWebHostEnvironment environment) =>
+app.MapGet("/api/admin/backups", async (IWebHostEnvironment environment, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Settings))
+    {
+        return Results.Forbid();
+    }
+
     var backupDirectory = AppPaths.GetBackupDirectory(environment);
     if (!Directory.Exists(backupDirectory))
     {
@@ -635,10 +970,15 @@ app.MapGet("/api/admin/backups", (IWebHostEnvironment environment) =>
         .ToList();
 
     return Results.Ok(files);
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
-app.MapGet("/api/admin/backups/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+app.MapGet("/api/admin/backups/{fileName}", async (string fileName, IWebHostEnvironment environment, AppDbContext db, ClaimsPrincipal principal) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Settings))
+    {
+        return Results.Forbid();
+    }
+
     if (fileName != Path.GetFileName(fileName)
         || !fileName.EndsWith(".sql.gz", StringComparison.OrdinalIgnoreCase))
     {
@@ -654,7 +994,7 @@ app.MapGet("/api/admin/backups/{fileName}", (string fileName, IWebHostEnvironmen
     }
 
     return Results.File(fullPath, "application/gzip", fileName);
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapGet("/api/admin/ozon-status", async (
     OzonApiClient ozonApi,
@@ -866,9 +1206,15 @@ app.MapPost("/api/chat/groups", async (
     CreateChatGroupRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
+    {
+        return Results.Forbid();
+    }
+
+    if (!UserRoleResolver.IsInRole(principal, UserRoles.Admin) && !await FeatureAccess.HasAnyAsync(db, principal, "chats.groups"))
     {
         return Results.Forbid();
     }
@@ -961,6 +1307,14 @@ app.MapPost("/api/chat/groups", async (
             responseMembers);
 
         _ = ChatHub.NotifyThreadsChangedAsync(hub);
+
+        await IntegrationNotificationPublisher.PublishAsync(
+            telegram,
+            db,
+            "chat.group.created",
+            $"Создана группа «{name}»",
+            validMembers.Select(member => member.UserId),
+            userId);
 
         return Results.Ok(detail);
     }
@@ -1293,6 +1647,7 @@ app.MapPost("/api/chat/groups/{id:guid}/messages", async (
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub,
+    TelegramNotificationService telegram,
     CancellationToken cancellationToken) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
@@ -1379,6 +1734,22 @@ app.MapPost("/api/chat/groups/{id:guid}/messages", async (
 
     await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, null, id);
 
+    var groupMemberIds = await db.ChatGroupMembers
+        .AsNoTracking()
+        .Where(member => member.GroupId == id && member.UserId != parsedCurrentUserId)
+        .Select(member => member.UserId)
+        .ToListAsync(cancellationToken);
+    var hasAttachment = message.AttachmentContent is not null;
+    var chatEventId = hasAttachment ? "chat.attachment.received" : "chat.group.received";
+    var preview = ChatNotificationText.BuildPreview(sender.DisplayName, text, hasAttachment);
+    await telegram.SendToUsersAsync(
+        db,
+        chatEventId,
+        preview,
+        groupMemberIds,
+        parsedCurrentUserId,
+        cancellationToken);
+
     return Results.Created($"/api/chat/groups/{id}/messages/{message.Id}", result);
 }).DisableAntiforgery().RequireAuthorization();
 
@@ -1388,6 +1759,7 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub,
+    TelegramNotificationService telegram,
     CancellationToken cancellationToken) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Chats))
@@ -1480,6 +1852,11 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
 
     await hub.Clients.All.SendAsync("ChatMessagesChanged", message.SenderId, message.ReceiverId, null);
 
+    var hasAttachment = message.AttachmentContent is not null;
+    var chatEventId = hasAttachment ? "chat.attachment.received" : "chat.direct.received";
+    var preview = ChatNotificationText.BuildPreview(sender.DisplayName, text, hasAttachment);
+    await telegram.SendToUserAsync(db, userId, chatEventId, preview, cancellationToken);
+
     return Results.Created($"/api/chat/{userId}/messages/{message.Id}", result);
 }).DisableAntiforgery().RequireAuthorization();
 
@@ -1505,7 +1882,7 @@ app.MapGet("/api/chat/messages/{id:guid}/attachment", async (
         return Results.NotFound();
     }
 
-    var isAdmin = principal.IsInRole(UserRoles.Admin);
+    var isAdmin = await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin);
     if (!isAdmin && message.SenderId != parsedCurrentUserId && message.ReceiverId != parsedCurrentUserId)
     {
         if (message.GroupId is Guid groupId && !await ChatAccess.IsGroupMemberAsync(db, groupId, parsedCurrentUserId))
@@ -1680,7 +2057,52 @@ app.MapPut("/api/ozon/prices", async (
     {
         return Results.Problem(exception.Message);
     }
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
+
+app.MapGet("/api/ozon/sales-chart", async (
+    string? dateFrom,
+    string? dateTo,
+    string? groupBy,
+    OzonApiClient ozonApi,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    try
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var from = new DateOnly(today.Year, today.Month, 1);
+        var to = today;
+
+        if (!string.IsNullOrWhiteSpace(dateFrom) && !DateOnly.TryParse(dateFrom, out from))
+        {
+            return Results.BadRequest("Некорректная дата начала периода.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(dateTo) && !DateOnly.TryParse(dateTo, out to))
+        {
+            return Results.BadRequest("Некорректная дата окончания периода.");
+        }
+
+        if (from > to)
+        {
+            return Results.BadRequest("Дата начала не может быть позже даты окончания.");
+        }
+
+        var normalizedGroupBy = string.Equals(groupBy, "day", StringComparison.OrdinalIgnoreCase) ? "day" : "month";
+        var result = await ozonApi.GetSalesChartAsync(from, to, normalizedGroupBy, null, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+    {
+        return Results.Problem(exception.Message);
+    }
+}).RequireAuthorization();
 
 app.MapGet("/api/ozon/analytics", async (
     string? dateFrom,
@@ -1717,7 +2139,7 @@ app.MapGet("/api/ozon/analytics", async (
         }
 
         var supplyArrivalDates = await SupplyAnalyticsHelper.BuildAcceptedSupplyArrivalDatesAsync(db);
-        var result = await ozonApi.GetAnalyticsAsync(from, to, supplyArrivalDates, cancellationToken);
+        var result = await ozonApi.GetAnalyticsAsync(from, to, supplyArrivalDates, null, cancellationToken);
         return Results.Ok(result);
     }
     catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
@@ -1783,6 +2205,39 @@ app.MapGet("/api/production/files", async (string? search, AppDbContext db, Clai
     return Results.Ok(files);
 }).RequireAuthorization();
 
+app.MapGet("/api/production/file-paths", async (string? search, AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
+    var query = db.ProductionFilePaths.AsNoTracking();
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var value = search.Trim().ToLower();
+        query = query.Where(path =>
+            path.OfferId.ToLower().Contains(value) ||
+            path.ProductName.ToLower().Contains(value) ||
+            path.Path.ToLower().Contains(value));
+    }
+
+    var paths = await query
+        .OrderByDescending(path => path.CreatedAt)
+        .Select(path => new ProductionFilePathListItem(
+            path.Id,
+            path.OzonProductId,
+            path.OfferId,
+            path.ProductName,
+            path.ProductLink,
+            path.Path,
+            path.CreatedAt))
+        .ToListAsync();
+
+    return Results.Ok(paths);
+}).RequireAuthorization();
+
 app.MapGet("/api/production/catalog", async (string? type, AppDbContext db, ClaimsPrincipal principal) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
@@ -1801,7 +2256,7 @@ app.MapPut("/api/production/catalog/convert-to-ozon", async (
     ClaimsPrincipal principal,
     CancellationToken cancellationToken) =>
 {
-    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
     {
         return Results.Forbid();
     }
@@ -1965,6 +2420,7 @@ app.MapGet("/api/link-preview/image", async (string? url, IHttpClientFactory htt
 app.MapPost("/api/production/files", async (
     HttpRequest request,
     AppDbContext db,
+    TelegramNotificationService telegram,
     CancellationToken cancellationToken) =>
 {
     if (!request.HasFormContentType)
@@ -2001,6 +2457,12 @@ app.MapPost("/api/production/files", async (
     db.ProductionFiles.Add(productionFile);
     await db.SaveChangesAsync(cancellationToken);
 
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.file.added",
+        $"Добавлен файл производства: {productionFile.ProductName.Trim()} · {productionFile.FileName}");
+
     return Results.Created($"/api/production/files/{productionFile.Id}", new ProductionFileListItem(
         productionFile.Id,
         productionFile.OzonProductId,
@@ -2024,13 +2486,167 @@ app.MapGet("/api/production/files/{id:guid}/download", async (Guid id, AppDbCont
     return Results.File(file.Content, file.ContentType, file.FileName);
 }).RequireAuthorization();
 
-app.MapDelete("/api/production/files/{id:guid}", async (
-    Guid id,
+app.MapPut("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/file-path", async (
+    Guid taskId,
+    Guid itemId,
+    UpdateProductionTaskItemFilePathRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+    {
+        return Results.Forbid();
+    }
+
+    var path = request.Path?.Trim() ?? string.Empty;
+    if (path.Length < 3)
+    {
+        return Results.BadRequest("Укажите путь к файлу (минимум 3 символа).");
+    }
+
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == taskId);
+    if (task is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (task.Status != ProductionTaskStatuses.InProgress)
+    {
+        return Results.BadRequest("Путь к файлу можно указать только для задачи в работе.");
+    }
+
+    if (ProductionTaskResponses.NormalizeTaskType(task.TaskType) != ProductionTaskTypes.Novinka)
+    {
+        return Results.BadRequest("Путь к файлу доступен только для задач новинок.");
+    }
+
+    var taskItem = task.Items.FirstOrDefault(item => item.Id == itemId);
+    if (taskItem is null)
+    {
+        return Results.NotFound();
+    }
+
+    taskItem.FilePath = path;
+
+    var existingPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+        entry.Path == path &&
+        ((!string.IsNullOrWhiteSpace(taskItem.OfferId) && entry.OfferId == taskItem.OfferId) ||
+         (taskItem.OzonProductId > 0 && entry.OzonProductId == taskItem.OzonProductId)));
+
+    if (existingPath is null)
+    {
+        db.ProductionFilePaths.Add(new ProductionFilePath
+        {
+            OzonProductId = taskItem.OzonProductId > 0 ? taskItem.OzonProductId : null,
+            OfferId = taskItem.OfferId.Trim(),
+            ProductName = taskItem.ProductName.Trim(),
+            ProductLink = taskItem.ProductLink.Trim(),
+            Path = path
+        });
+    }
+
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Путь к файлу в задаче",
+        "ProductionTaskItem",
+        taskItem.Id.ToString(),
+        $"{taskItem.ProductName}: {path}");
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    return Results.Ok(new ProductionTaskItemListItem(
+        taskItem.Id,
+        taskItem.OzonProductId,
+        taskItem.OfferId,
+        taskItem.ProductName,
+        taskItem.ProductLink,
+        taskItem.RequiredQuantity,
+        taskItem.ActualQuantity,
+        taskItem.EnforceMinimumQuantity,
+        taskItem.FilePath));
+}).RequireAuthorization();
+
+app.MapDelete("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/file-path", async (
+    Guid taskId,
+    Guid itemId,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.deleteFilePaths"))
+    {
+        return Results.Forbid();
+    }
+
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == taskId);
+    if (task is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (ProductionTaskResponses.NormalizeTaskType(task.TaskType) != ProductionTaskTypes.Novinka)
+    {
+        return Results.BadRequest("Путь к файлу доступен только для задач новинок.");
+    }
+
+    var taskItem = task.Items.FirstOrDefault(item => item.Id == itemId);
+    if (taskItem is null)
+    {
+        return Results.NotFound();
+    }
+
+    var removedPath = taskItem.FilePath.Trim();
+    taskItem.FilePath = string.Empty;
+
+    if (!string.IsNullOrWhiteSpace(removedPath))
+    {
+        var catalogPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+            entry.Path == removedPath &&
+            ((!string.IsNullOrWhiteSpace(taskItem.OfferId) && entry.OfferId == taskItem.OfferId) ||
+             (taskItem.OzonProductId > 0 && entry.OzonProductId == taskItem.OzonProductId)));
+
+        if (catalogPath is not null)
+        {
+            db.ProductionFilePaths.Remove(catalogPath);
+        }
+    }
+
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Удаление пути к файлу",
+        "ProductionTaskItem",
+        taskItem.Id.ToString(),
+        taskItem.ProductName);
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    return Results.Ok(new ProductionTaskItemListItem(
+        taskItem.Id,
+        taskItem.OzonProductId,
+        taskItem.OfferId,
+        taskItem.ProductName,
+        taskItem.ProductLink,
+        taskItem.RequiredQuantity,
+        taskItem.ActualQuantity,
+        taskItem.EnforceMinimumQuantity,
+        taskItem.FilePath));
+}).RequireAuthorization();
+
+app.MapDelete("/api/production/files/{id:guid}", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.deleteFiles"))
     {
         return Results.Forbid();
     }
@@ -2048,6 +2664,12 @@ app.MapDelete("/api/production/files/{id:guid}", async (
 
     db.ProductionFiles.Remove(file);
     await db.SaveChangesAsync();
+
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.file.deleted",
+        $"Удалён файл производства: {productName.Trim()}");
 
     ProductionTaskListItem? reworkTask = null;
     if (isNovinkaFile)
@@ -2079,6 +2701,19 @@ app.MapDelete("/api/production/files/{id:guid}", async (
     if (reworkTask is not null)
     {
         await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+        var reworkEntity = await db.ProductionTasks
+            .AsNoTracking()
+            .Include(task => task.Items)
+            .FirstOrDefaultAsync(task => task.Id == reworkTask.Id);
+        if (reworkEntity is not null)
+        {
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.rework.created",
+                ProductionTaskResponses.BuildReworkTaskTelegramMessage(reworkEntity));
+        }
     }
 
     return Results.Ok(new DeleteProductionFileResponse(reworkTask is not null, reworkTask?.Id));
@@ -2100,11 +2735,210 @@ app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, Clai
         query = query.Where(task => task.Status == status);
     }
 
+    query = await ProductionTaskRoleFilter.ApplyAsync(query, db, principal);
+
     var tasks = await query
         .OrderByDescending(task => task.CreatedAt)
         .ToListAsync();
 
     return Results.Ok(tasks.Select(ProductionTaskResponses.ToListItem));
+}).RequireAuthorization();
+
+app.MapGet("/api/production/analytics/assignees", async (AppDbContext db, ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+    {
+        return Results.Forbid();
+    }
+
+    var allowedRoles = new[] { UserRoles.Production, UserRoles.Designer, UserRoles.Leadership };
+    var assignees = await db.Users.AsNoTracking()
+        .Where(user => user.IsActive && user.Id != SystemUser.Id && allowedRoles.Contains(user.Role))
+        .OrderBy(user => user.DisplayName)
+        .ThenBy(user => user.UserName)
+        .Select(user => new ProductionAnalyticsAssigneeItem(
+            user.Id,
+            user.DisplayName,
+            user.UserName,
+            user.Role,
+            UserResponses.AvatarUrl(user.AvatarFileName)))
+        .ToListAsync();
+
+    return Results.Ok(assignees);
+}).RequireAuthorization();
+
+app.MapGet("/api/production/analytics/report", async (
+    string? dateFrom,
+    string? dateTo,
+    Guid? userId,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+    {
+        return Results.Forbid();
+    }
+
+    var (from, to) = ProductionAnalyticsQueries.ResolveDateRange(dateFrom, dateTo);
+    var query = ProductionAnalyticsStore.BuildRecordsQuery(db, from, to);
+
+    if (userId.HasValue)
+    {
+        var assignee = await db.Users.AsNoTracking()
+            .Where(user => user.Id == userId.Value && user.IsActive)
+            .Select(user => new { user.Id, user.DisplayName })
+            .FirstOrDefaultAsync();
+
+        if (assignee is not null)
+        {
+            query = query.Where(record =>
+                record.AssignedUserId == assignee.Id ||
+                record.AssignedUserName == assignee.DisplayName);
+        }
+    }
+
+    var records = await query
+        .OrderByDescending(record => record.CompletedAt)
+        .ToListAsync();
+
+    var summary = await ProductionAnalyticsStore.BuildSummaryAsync(db, records);
+
+    return Results.Ok(new ProductionAnalyticsReportResponse(
+        summary,
+        records.Select(ProductionAnalyticsStore.ToListItem).ToList()));
+}).RequireAuthorization();
+
+app.MapPut("/api/production/analytics/records/{id:guid}", async (
+    Guid id,
+    UpdateProductionAnalyticsRecordRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+    {
+        return Results.Forbid();
+    }
+
+    var record = await db.ProductionAnalyticsTaskRecords.FirstOrDefaultAsync(entry => entry.Id == id);
+    if (record is null)
+    {
+        return Results.NotFound();
+    }
+
+    Guid? updatedByUserId = UserRoleResolver.GetUserId(principal);
+    ProductionAnalyticsStore.ApplyUpdate(record, request, updatedByUserId);
+
+    if (request.AssignedUserName is not null && !request.AssignedUserId.HasValue)
+    {
+        var normalized = request.AssignedUserName.Trim();
+        record.AssignedUserId = await db.Users.AsNoTracking()
+            .Where(user => user.IsActive && (user.DisplayName == normalized || user.UserName == normalized))
+            .Select(user => (Guid?)user.Id)
+            .FirstOrDefaultAsync();
+    }
+
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Изменение аналитики производства",
+        "ProductionAnalyticsTaskRecord",
+        record.Id.ToString(),
+        record.ProductName);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(ProductionAnalyticsStore.ToListItem(record));
+}).RequireAuthorization();
+
+app.MapGet("/api/production/analytics/export", async (
+    HttpRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+    {
+        return Results.Forbid();
+    }
+
+    var dateFrom = request.Query["dateFrom"].ToString();
+    var dateTo = request.Query["dateTo"].ToString();
+    var userIdRaw = request.Query["userId"].ToString();
+    Guid? userId = Guid.TryParse(userIdRaw, out var parsedUserId) ? parsedUserId : null;
+
+    var (from, to) = ProductionAnalyticsQueries.ResolveDateRange(dateFrom, dateTo);
+    var query = ProductionAnalyticsStore.BuildRecordsQuery(db, from, to);
+
+    if (userId.HasValue)
+    {
+        var assignee = await db.Users.AsNoTracking()
+            .Where(user => user.Id == userId.Value && user.IsActive)
+            .Select(user => new { user.Id, user.DisplayName })
+            .FirstOrDefaultAsync();
+
+        if (assignee is not null)
+        {
+            query = query.Where(record =>
+                record.AssignedUserId == assignee.Id ||
+                record.AssignedUserName == assignee.DisplayName);
+        }
+    }
+
+    var records = await query
+        .OrderByDescending(record => record.CompletedAt)
+        .ToListAsync();
+
+    var rows = new List<string[]>
+    {
+        new[]
+        {
+            "Завершена",
+            "Исполнитель",
+            "Тип",
+            "Статус",
+            "Срочно",
+            "Товар",
+            "Артикул",
+            "План",
+            "Факт",
+            "Создана",
+            "Создатель"
+        }
+    };
+
+    foreach (var record in records)
+    {
+        var task = ProductionAnalyticsStore.ToListItem(record);
+        var items = task.Items.Count == 0
+            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false, string.Empty)]
+            : task.Items;
+
+        foreach (var item in items)
+        {
+            rows.Add([
+                task.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty,
+                task.AssignedUserName ?? string.Empty,
+                task.TaskType,
+                task.Status,
+                task.IsUrgent ? "Да" : "Нет",
+                item.ProductName,
+                item.OfferId,
+                item.RequiredQuantity.ToString(),
+                (item.ActualQuantity ?? 0).ToString(),
+                task.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                task.CreatedByDisplayName ?? string.Empty
+            ]);
+        }
+    }
+
+    var bytes = ExcelExport.CreateWorkbook("Производство", rows);
+    return Results.File(
+        bytes,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        $"production-analytics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx");
 }).RequireAuthorization();
 
 app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
@@ -2163,8 +2997,13 @@ app.MapPost("/api/production/tasks", async (
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub,
-    TelegramNotificationService telegram) =>
+    IServiceScopeFactory scopeFactory) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.createTask"))
+    {
+        return Results.Forbid();
+    }
+
     var taskType = ProductionTaskResponses.NormalizeTaskType(request.TaskType);
     var requestItems = request.Items is { Count: > 0 }
         ? request.Items
@@ -2228,22 +3067,28 @@ app.MapPost("/api/production/tasks", async (
         : taskType == ProductionTaskTypes.Novinka
             ? "production.task.new.novinka"
             : "production.task.new.ozon";
-    await IntegrationNotificationPublisher.PublishAsync(
-        telegram,
-        db,
+    NotificationBackgroundPublisher.Publish(
+        scopeFactory,
         createdEventId,
-        ProductionTaskResponses.BuildNewTaskTelegramMessage(task));
+        ProductionTaskResponses.BuildNewTaskTelegramMessage(task),
+        excludeUserId: task.CreatedByUserId);
 
     return Results.Created($"/api/production/tasks/{task.Id}", result);
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapPut("/api/production/tasks/{id:guid}", async (
     Guid id,
     UpdateProductionTaskRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editTasks"))
+    {
+        return Results.Forbid();
+    }
+
     var requestItems = request.Items is { Count: > 0 }
         ? request.Items
         : [];
@@ -2299,16 +3144,25 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.task.updated",
+        ProductionTaskResponses.BuildUpdatedTaskTelegramMessage(task));
+
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapPut("/api/production/tasks/{id:guid}/start", async (
     Guid id,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
-    var task = await db.ProductionTasks.FindAsync(id);
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == id);
     if (task is null)
     {
         return Results.NotFound();
@@ -2337,6 +3191,13 @@ app.MapPut("/api/production/tasks/{id:guid}/start", async (
     AuditLogWriter.Add(db, principal, "Задача взята в работу", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    var startedByName = task.AssignedUserName ?? "—";
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.task.started",
+        ProductionTaskResponses.BuildStartedTaskTelegramMessage(task, startedByName));
 
     return Results.NoContent();
 }).RequireAuthorization();
@@ -2420,23 +3281,24 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
         return Results.BadRequest("Задача уже отменена.");
     }
 
-    if (task.Status != ProductionTaskStatuses.New)
+    if (task.Status is not (ProductionTaskStatuses.New or ProductionTaskStatuses.InProgress))
     {
-        return Results.BadRequest("Отменить можно только новую задачу.");
+        return Results.BadRequest("Отменить можно только новую задачу или задачу в работе.");
     }
 
-    if (!principal.IsInRole(UserRoles.Admin))
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin)
+        && !await FeatureAccess.HasAnyAsync(db, principal, "production.cancelTasks"))
     {
         return Results.Forbid();
     }
 
-    var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
-    if (!Guid.TryParse(currentUserId, out var userId))
+    var userId = UserRoleResolver.GetUserId(principal);
+    if (userId is null)
     {
         return Results.Unauthorized();
     }
 
-    var currentUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == userId);
+    var currentUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == userId.Value);
     var cancelledByName = currentUser?.DisplayName
         ?? principal.FindFirstValue("display_name")
         ?? principal.FindFirstValue(ClaimTypes.Name)
@@ -2444,12 +3306,12 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
 
     task.Status = ProductionTaskStatuses.Cancelled;
     task.CancelledAt = DateTimeOffset.UtcNow;
-    task.CancelledByUserId = userId;
+    task.CancelledByUserId = userId.Value;
     task.CancelledByDisplayName = cancelledByName;
     task.CancellationComment = comment;
     AuditLogWriter.Add(db, principal, "Задача отменена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Причина: {comment}");
 
-    if (task.CreatedByUserId is Guid creatorId)
+    if (task.CreatedByUserId is Guid creatorId && creatorId != userId.Value)
     {
         var notificationText = $"Задача «{task.ProductName}» отменена пользователем {cancelledByName}.\n\nПричина: {comment}";
         var message = new ChatMessage
@@ -2463,9 +3325,14 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
 
     await db.SaveChangesAsync();
 
-    if (task.CreatedByUserId is Guid notifiedUserId)
+    if (task.CreatedByUserId is Guid notifiedUserId && notifiedUserId != userId.Value)
     {
         await hub.Clients.All.SendAsync("ChatMessagesChanged", SystemUser.Id, notifiedUserId, null);
+        await telegram.SendToUserAsync(
+            db,
+            notifiedUserId,
+            "chat.system.notification",
+            $"Задача «{task.ProductName}» отменена пользователем {cancelledByName}.\n\nПричина: {comment}");
     }
 
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
@@ -2477,14 +3344,15 @@ app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
         ProductionTaskResponses.BuildCancelledTaskTelegramMessage(task, cancelledByName, comment));
 
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapPut("/api/production/tasks/{id:guid}/complete", async (
     Guid id,
     CompleteProductionTaskRequest request,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var task = await db.ProductionTasks
         .Include(task => task.Items)
@@ -2509,12 +3377,16 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
                      : task.Items)
         {
             var hasFiles = files.Any(file =>
-                (!string.IsNullOrWhiteSpace(taskItem.OfferId) && file.OfferId == taskItem.OfferId) ||
-                (taskItem.OzonProductId > 0 && file.OzonProductId == taskItem.OzonProductId));
+                ProductionTaskResponses.MatchesProductionFile(file, taskItem));
 
             if (!hasFiles)
             {
                 return Results.BadRequest($"Добавьте файлы для «{taskItem.ProductName}» перед завершением задачи.");
+            }
+
+            if (string.IsNullOrWhiteSpace(taskItem.FilePath))
+            {
+                return Results.BadRequest($"Укажите путь к файлу для «{taskItem.ProductName}» перед завершением задачи.");
             }
         }
 
@@ -2577,7 +3449,17 @@ app.MapPut("/api/production/tasks/{id:guid}/complete", async (
     task.CompletedAt = DateTimeOffset.UtcNow;
     AuditLogWriter.Add(db, principal, "Задача завершена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Факт: {task.ActualQuantity}");
     await db.SaveChangesAsync();
+    await ProductionAnalyticsStore.UpsertFromTaskAsync(db, task);
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+    var completedEventId = isNovinkaTask
+        ? "production.task.completed.novinka"
+        : "production.task.completed.ozon";
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        completedEventId,
+        ProductionTaskResponses.BuildCompletedTaskTelegramMessage(task));
 
     return Results.NoContent();
 }).RequireAuthorization();
@@ -2586,9 +3468,12 @@ app.MapPut("/api/production/tasks/{id:guid}/archive", async (
     Guid id,
     AppDbContext db,
     ClaimsPrincipal principal,
-    IHubContext<AppHub> hub) =>
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
-    var task = await db.ProductionTasks.FindAsync(id);
+    var task = await db.ProductionTasks
+        .Include(entry => entry.Items)
+        .FirstOrDefaultAsync(entry => entry.Id == id);
     if (task is null)
     {
         return Results.NotFound();
@@ -2599,14 +3484,26 @@ app.MapPut("/api/production/tasks/{id:guid}/archive", async (
         return Results.BadRequest("В архив можно отправить только выполненную или отменённую задачу.");
     }
 
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin)
+        && !await FeatureAccess.HasAnyAsync(db, principal, "production.archive"))
+    {
+        return Results.Forbid();
+    }
+
     task.IsArchived = true;
     task.ArchivedAt = DateTimeOffset.UtcNow;
     AuditLogWriter.Add(db, principal, "Задача архивирована", "ProductionTask", task.Id.ToString(), task.ProductName);
     await db.SaveChangesAsync();
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "production.task.archived",
+        ProductionTaskResponses.BuildArchivedTaskTelegramMessage(task));
+
     return Results.NoContent();
-}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+}).RequireAuthorization();
 
 app.MapPut("/api/production/tasks/{id:guid}/restore", async (
     Guid id,
@@ -2812,6 +3709,7 @@ app.MapPost("/api/supplies/import", async (
     AppDbContext db,
     ClaimsPrincipal principal,
     IHubContext<AppHub> hub,
+    TelegramNotificationService telegram,
     CancellationToken cancellationToken) =>
 {
     if (!request.HasFormContentType)
@@ -2865,6 +3763,12 @@ app.MapPost("/api/supplies/import", async (
     await db.SaveChangesAsync(cancellationToken);
     await hub.Clients.All.SendAsync("SuppliesChanged");
 
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "supply.imported",
+        $"Импортирована поставка из Excel: {supply.Items.Count} поз.");
+
     return Results.Ok(new { supply.Id, Items = supply.Items.Count });
 }).DisableAntiforgery().RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
 
@@ -2872,7 +3776,9 @@ app.MapPut("/api/supplies/{id:guid}/status", async (
     Guid id,
     ChangeSupplyStatusRequest request,
     AppDbContext db,
-    ClaimsPrincipal principal) =>
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var supply = await db.Supplies.FindAsync(id);
     if (supply is null)
@@ -2898,7 +3804,7 @@ app.MapPut("/api/supplies/{id:guid}/status", async (
     }
     else if (request.Status == SupplyStatuses.Accepted)
     {
-        if (!principal.IsInRole(UserRoles.Admin))
+        if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
         {
             return Results.Forbid();
         }
@@ -2913,6 +3819,18 @@ app.MapPut("/api/supplies/{id:guid}/status", async (
 
     AuditLogWriter.Add(db, principal, $"Статус поставки: {request.Status}", "Supply", supply.Id.ToString(), supply.Status);
     await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("SuppliesChanged");
+
+    var statusEventId = request.Status == SupplyStatuses.Sent
+        ? "supply.sent"
+        : "supply.accepted";
+    var statusLabel = request.Status == SupplyStatuses.Sent ? "отправлена" : "принята";
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        statusEventId,
+        $"Поставка {statusLabel}: {supply.Id.ToString()[..8]}…");
+
     return Results.NoContent();
 }).RequireAuthorization();
 
@@ -2920,7 +3838,9 @@ app.MapPut("/api/supplies/{id:guid}", async (
     Guid id,
     UpdateSupplyRequest request,
     AppDbContext db,
-    ClaimsPrincipal principal) =>
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var supply = await db.Supplies
         .Include(item => item.Items)
@@ -2935,7 +3855,7 @@ app.MapPut("/api/supplies/{id:guid}", async (
         return Results.BadRequest("Архивную поставку нельзя редактировать.");
     }
 
-    var isAdmin = principal.IsInRole(UserRoles.Admin);
+    var isAdmin = await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin);
     if (!isAdmin && supply.Status != SupplyStatuses.Created)
     {
         return Results.Forbid();
@@ -2965,11 +3885,23 @@ app.MapPut("/api/supplies/{id:guid}", async (
     db.SupplyItems.AddRange(updatedItems);
     AuditLogWriter.Add(db, principal, "Редактирование поставки", "Supply", supply.Id.ToString(), $"Товаров: {updatedItems.Count}");
     await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("SuppliesChanged");
+
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "supply.updated",
+        $"Поставка изменена: {updatedItems.Count} поз.");
 
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPut("/api/supplies/{id:guid}/archive", async (Guid id, AppDbContext db, ClaimsPrincipal principal) =>
+app.MapPut("/api/supplies/{id:guid}/archive", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub,
+    TelegramNotificationService telegram) =>
 {
     var supply = await db.Supplies.FindAsync(id);
     if (supply is null)
@@ -2981,6 +3913,13 @@ app.MapPut("/api/supplies/{id:guid}/archive", async (Guid id, AppDbContext db, C
     supply.ArchivedAt = DateTimeOffset.UtcNow;
     AuditLogWriter.Add(db, principal, "Поставка архивирована", "Supply", supply.Id.ToString(), supply.Status);
     await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("SuppliesChanged");
+
+    await IntegrationNotificationPublisher.PublishAsync(
+        telegram,
+        db,
+        "supply.archived",
+        $"Поставка отправлена в архив: {supply.Status}");
 
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
@@ -3148,23 +4087,16 @@ record Product(int Id, string Name, string Status, decimal Price);
 record CreateInitialAdminRequest(string UserName, string DisplayName, string Password);
 record LoginRequest(string UserName, string Password);
 record AuthResponse(string Token, CurrentUserResponse User);
-record CurrentUserResponse(Guid Id, string UserName, string DisplayName, string Position, string Role, string AvatarUrl, List<string> AllowedFeatures);
 record CreateUserRequest(string UserName, string DisplayName, string Position, string Password, string Role, List<string>? AllowedFeatures);
-record UpdateUserSettingsRequest(string DisplayName, string Position, string Role, List<string>? AllowedFeatures);
-record UpdateProfileRequest(string DisplayName);
-record ChangeUserPasswordRequest(string Password);
-record UserListItem(
-    Guid Id,
-    string UserName,
+record UpdateUserSettingsRequest(
     string DisplayName,
     string Position,
     string Role,
-    string AvatarUrl,
-    List<string> AllowedFeatures,
-    bool IsActive,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset? LastSeenAt,
-    bool IsOnline);
+    List<string>? AllowedFeatures,
+    List<HomeBlockConfig>? HomeBlocks,
+    bool? TelegramConnectAllowed);
+record UpdateProfileRequest(string DisplayName);
+record ChangeUserPasswordRequest(string Password);
 record ChatUserListItem(
     Guid Id,
     string UserName,
@@ -3227,12 +4159,52 @@ record ProductionFileListItem(
     string FileName,
     string ContentType,
     DateTimeOffset CreatedAt);
+record ProductionFilePathListItem(
+    Guid Id,
+    long? OzonProductId,
+    string OfferId,
+    string ProductName,
+    string ProductLink,
+    string Path,
+    DateTimeOffset CreatedAt);
+record UpdateProductionTaskItemFilePathRequest(string Path);
 record DeleteProductionFileResponse(bool ReworkTaskCreated, Guid? TaskId);
 record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
 record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink);
 record UpdateProductionTaskRequest(bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
 record UpdateProductionTaskItemRequest(int RequiredQuantity);
 record CancelProductionTaskRequest(string Comment);
+public record ProductionAnalyticsSummaryRow(
+    Guid? UserId,
+    string UserName,
+    string Role,
+    string AvatarUrl,
+    int TaskCount,
+    int ItemCount);
+record ProductionAnalyticsAssigneeItem(
+    Guid Id,
+    string DisplayName,
+    string UserName,
+    string Role,
+    string AvatarUrl);
+record ProductionAnalyticsReportResponse(
+    List<ProductionAnalyticsSummaryRow> Summary,
+    List<ProductionTaskListItem> Tasks);
+public record UpdateProductionAnalyticsRecordRequest(
+    DateTimeOffset? CompletedAt,
+    string? AssignedUserName,
+    Guid? AssignedUserId,
+    long? OzonProductId,
+    string? OfferId,
+    string? ProductName,
+    int? RequiredQuantity,
+    int? ActualQuantity,
+    string? TaskType,
+    bool? IsUrgent,
+    string? CreatedByDisplayName,
+    DateTimeOffset? CreatedAt,
+    DateTimeOffset? StartedAt,
+    List<ProductionTaskItemListItem>? Items);
 record CompleteProductionTaskRequest(int ActualQuantity, List<CompleteProductionTaskItemRequest>? Items);
 record CompleteProductionTaskItemRequest(Guid Id, int ActualQuantity);
 record ProductionCatalogItem(
@@ -3253,7 +4225,7 @@ record ConvertNovinkaToOzonResponse(
     string OfferId,
     string ProductName,
     string ProductUrl);
-record ProductionTaskListItem(
+public record ProductionTaskListItem(
     Guid Id,
     long OzonProductId,
     string OfferId,
@@ -3276,7 +4248,7 @@ record ProductionTaskListItem(
     bool IsArchived,
     DateTimeOffset? ArchivedAt,
     List<ProductionTaskItemListItem> Items);
-record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, string ProductLink, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity);
+public record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, string ProductLink, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity, string FilePath);
 record CreateSupplyRequest(List<CreateSupplyItemRequest> Items);
 record CreateSupplyItemRequest(long? OzonProductId, string OfferId, string ProductName, int Quantity, bool IsReserve);
 record UpdateSupplyRequest(List<CreateSupplyItemRequest> Items);
@@ -3418,6 +4390,55 @@ static class AuditLogWriter
     }
 }
 
+static class ProductionTaskRoleFilter
+{
+    public static async Task<IQueryable<ProductionTask>> ApplyAsync(
+        IQueryable<ProductionTask> query,
+        AppDbContext db,
+        ClaimsPrincipal principal)
+    {
+        var role = await UserRoleResolver.GetRoleAsync(db, principal);
+
+        if (role == UserRoles.Admin)
+        {
+            return query;
+        }
+
+        if (role == UserRoles.Designer)
+        {
+            return query.Where(task => task.TaskType == ProductionTaskTypes.Novinka);
+        }
+
+        if (role == UserRoles.Production)
+        {
+            return query.Where(task => task.TaskType != ProductionTaskTypes.Novinka);
+        }
+
+        return query.Where(_ => false);
+    }
+}
+
+static class ProductionAnalyticsQueries
+{
+    public static (DateTimeOffset From, DateTimeOffset To) ResolveDateRange(string? dateFrom, string? dateTo)
+    {
+        var utcToday = DateOnly.FromDateTime(DateTime.UtcNow);
+        var fromDate = DateOnly.TryParse(dateFrom, out var parsedFrom)
+            ? parsedFrom
+            : new DateOnly(utcToday.Year, utcToday.Month, 1);
+        var toDate = DateOnly.TryParse(dateTo, out var parsedTo) ? parsedTo : utcToday;
+
+        if (toDate < fromDate)
+        {
+            (fromDate, toDate) = (toDate, fromDate);
+        }
+
+        var from = new DateTimeOffset(fromDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
+        var to = new DateTimeOffset(toDate.ToDateTime(new TimeOnly(23, 59, 59), DateTimeKind.Utc));
+        return (from, to);
+    }
+}
+
 static class ProductionTaskResponses
 {
     public static string NormalizeTaskType(string? value) =>
@@ -3426,6 +4447,33 @@ static class ProductionTaskResponses
             : ProductionTaskTypes.Ozon;
 
     public static string BuildNovinkaOfferId(Guid itemId) => $"NV-{itemId:N}";
+
+    public static bool MatchesProductionFile(ProductionFile file, ProductionTaskItem taskItem) =>
+        (!string.IsNullOrWhiteSpace(taskItem.OfferId) && file.OfferId == taskItem.OfferId) ||
+        (taskItem.OzonProductId > 0 && file.OzonProductId == taskItem.OzonProductId) ||
+        MatchesNovinkaProductionFile(file, taskItem.OfferId, taskItem.ProductName, taskItem.ProductLink);
+
+    public static bool MatchesProductionFilePath(ProductionFilePath path, ProductionTaskItem taskItem) =>
+        (!string.IsNullOrWhiteSpace(taskItem.OfferId) && path.OfferId == taskItem.OfferId) ||
+        (taskItem.OzonProductId > 0 && path.OzonProductId == taskItem.OzonProductId) ||
+        MatchesNovinkaProductionFilePath(path, taskItem.OfferId, taskItem.ProductName, taskItem.ProductLink);
+
+    public static bool MatchesNovinkaProductionFilePath(
+        ProductionFilePath path,
+        string offerId,
+        string productName,
+        string productLink) =>
+        MatchesNovinkaProductionFile(
+            new ProductionFile
+            {
+                OfferId = path.OfferId,
+                ProductName = path.ProductName,
+                ProductLink = path.ProductLink,
+                OzonProductId = path.OzonProductId
+            },
+            offerId,
+            productName,
+            productLink);
 
     public static bool IsNovinkaProductionFile(ProductionFile file) =>
         file.OfferId.StartsWith("NV-", StringComparison.OrdinalIgnoreCase) ||
@@ -3741,6 +4789,105 @@ static class ProductionTaskResponses
         return builder.ToString().TrimEnd();
     }
 
+    public static string BuildStartedTaskTelegramMessage(ProductionTask task, string startedByName)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("Задача взята в работу");
+        AppendTaskProductLines(builder, task);
+        builder.AppendLine($"Исполнитель: {startedByName.Trim()}");
+        return builder.ToString().TrimEnd();
+    }
+
+    public static string BuildCompletedTaskTelegramMessage(ProductionTask task)
+    {
+        var isNovinka = NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka;
+        var builder = new StringBuilder();
+        builder.AppendLine(isNovinka ? "Задача «Новинка» выполнена" : "Задача Ozon выполнена");
+        AppendTaskProductLines(builder, task);
+
+        var executor = string.IsNullOrWhiteSpace(task.AssignedUserName) ? "—" : task.AssignedUserName.Trim();
+        builder.AppendLine($"Исполнитель: {executor}");
+
+        if (!isNovinka && task.ActualQuantity is int actualQuantity)
+        {
+            builder.AppendLine($"Факт: {actualQuantity} шт.");
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    public static string BuildUpdatedTaskTelegramMessage(ProductionTask task) =>
+        $"Задача изменена\n{BuildTaskHeadline(task)}";
+
+    public static string BuildArchivedTaskTelegramMessage(ProductionTask task) =>
+        $"Задача отправлена в архив\n{BuildTaskHeadline(task)}";
+
+    public static string BuildReworkTaskTelegramMessage(ProductionTask task) =>
+        $"Создана задача на доработку новинки\n{BuildTaskHeadline(task)}";
+
+    private static string BuildTaskHeadline(ProductionTask task)
+    {
+        var items = GetTaskItemsForMessage(task);
+        if (items.Count == 1)
+        {
+            var item = items[0];
+            return string.IsNullOrWhiteSpace(item.OfferId)
+                ? ShortenText(item.ProductName)
+                : $"{ShortenText(item.ProductName)} · {item.OfferId.Trim()}";
+        }
+
+        return $"{ShortenText(task.ProductName)} · {items.Count} поз.";
+    }
+
+    private static void AppendTaskProductLines(StringBuilder builder, ProductionTask task)
+    {
+        var isNovinka = NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka;
+        var items = GetTaskItemsForMessage(task);
+
+        builder.AppendLine($"Тип: {(isNovinka ? "Новинка" : "Ozon")}");
+
+        if (items.Count == 1)
+        {
+            var item = items[0];
+            builder.AppendLine($"Товар: {ShortenText(item.ProductName)}");
+            if (!string.IsNullOrWhiteSpace(item.OfferId))
+            {
+                builder.AppendLine($"Артикул: {item.OfferId.Trim()}");
+            }
+
+            if (!isNovinka && item.RequiredQuantity > 0)
+            {
+                builder.AppendLine($"Количество: {item.RequiredQuantity} шт.");
+            }
+        }
+        else
+        {
+            builder.AppendLine($"Позиций: {items.Count}");
+            foreach (var item in items.Take(3))
+            {
+                builder.AppendLine($"• {ShortenText(item.ProductName, 52)}");
+            }
+
+            if (items.Count > 3)
+            {
+                builder.AppendLine($"• … ещё {items.Count - 3}");
+            }
+        }
+    }
+
+    private static List<ProductionTaskItem> GetTaskItemsForMessage(ProductionTask task) =>
+        task.Items.Count > 0
+            ? task.Items.OrderBy(item => item.ProductName).ToList()
+            :
+            [
+                new ProductionTaskItem
+                {
+                    OfferId = task.OfferId,
+                    ProductName = task.ProductName,
+                    RequiredQuantity = task.RequiredQuantity
+                }
+            ];
+
     private static string ShortenText(string? value, int maxLength = 72)
     {
         var trimmed = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
@@ -3757,9 +4904,9 @@ static class ProductionTaskResponses
         return trimmed[..(maxLength - 1)].TrimEnd() + "…";
     }
 
-    private static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
+    public static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
         task.Items.Count == 0
-            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false)]
+            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false, string.Empty)]
             : task.Items
                 .OrderBy(item => item.ProductName)
                 .Select(item => new ProductionTaskItemListItem(
@@ -3770,7 +4917,8 @@ static class ProductionTaskResponses
                     item.ProductLink,
                     item.RequiredQuantity,
                     item.ActualQuantity,
-                    item.EnforceMinimumQuantity))
+                    item.EnforceMinimumQuantity,
+                    item.FilePath))
                 .ToList();
 
     public static List<ProductionTaskItem> BuildTaskItems(
@@ -3998,7 +5146,7 @@ static class SystemUserBootstrap
             UserName = SystemUser.UserName,
             DisplayName = SystemUser.DisplayName,
             PasswordHash = PasswordHasher.Hash(Guid.NewGuid().ToString("N")),
-            Role = UserRoles.User,
+            Role = UserRoles.Production,
             IsActive = true,
             AllowedFeatures = string.Empty
         });
@@ -4033,131 +5181,6 @@ static class AppPublicText
 
         return $"Ozon API не отвечает: {message}";
     }
-}
-
-static class FeatureAccess
-{
-    public const string Production = "production";
-    public const string Products = "products";
-    public const string Analytics = "analytics";
-    public const string Pooling = "pooling";
-    public const string Supplies = "supplies";
-    public const string Chats = "chats";
-    public const string Home = "home";
-
-    public static readonly string[] UserDefaults =
-    [
-        Home,
-        Production,
-        "production.products",
-        "production.tasks",
-        "production.inProgress",
-        "production.cancelled",
-        "production.completed",
-        Products,
-        Supplies,
-        "supplies.create",
-        "supplies.all",
-        Chats,
-        "integrations"
-    ];
-
-    public static readonly string[] All =
-    [
-        Home,
-        Production,
-        "production.products",
-        "production.tasks",
-        "production.inProgress",
-        "production.cancelled",
-        "production.completed",
-        "production.archive",
-        "production.createTask",
-        Products,
-        Analytics,
-        "analytics.summary",
-        "analytics.topProducts",
-        "analytics.noSales",
-        Pooling,
-        "pooling.editPrices",
-        Supplies,
-        "supplies.create",
-        "supplies.editor",
-        "supplies.all",
-        "supplies.archive",
-        "supplies.analytics",
-        Chats,
-        "integrations"
-    ];
-
-    public static List<string> Parse(string value) =>
-        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(feature => All.Contains(feature))
-            .Distinct()
-            .ToList();
-
-    public static string NormalizeForRole(string role, IReadOnlyCollection<string>? features)
-    {
-        if (role == UserRoles.Admin)
-        {
-            return string.Join(',', All);
-        }
-
-        var selected = features is { Count: > 0 }
-            ? features.Where(feature => All.Contains(feature)).Distinct().ToList()
-            : UserDefaults.ToList();
-
-        return string.Join(',', selected);
-    }
-
-    public static async Task<bool> HasAnyAsync(AppDbContext db, ClaimsPrincipal principal, params string[] features)
-    {
-        if (principal.IsInRole(UserRoles.Admin))
-        {
-            return true;
-        }
-
-        var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (!Guid.TryParse(currentUserId, out var userId))
-        {
-            return false;
-        }
-
-        var allowedFeatures = await db.Users
-            .AsNoTracking()
-            .Where(user => user.Id == userId && user.IsActive)
-            .Select(user => user.AllowedFeatures)
-            .FirstOrDefaultAsync();
-
-        if (allowedFeatures is null)
-        {
-            return false;
-        }
-
-        var allowed = Parse(allowedFeatures);
-        return features.Any(feature => allowed.Contains(feature));
-    }
-}
-
-static class UserResponses
-{
-    public static CurrentUserResponse Current(AppUser user) =>
-        new(
-            user.Id,
-            user.UserName,
-            user.DisplayName,
-            user.Position,
-            user.Role,
-            AvatarUrl(user),
-            Features(user));
-
-    public static List<string> Features(AppUser user) =>
-        user.Role == UserRoles.Admin ? FeatureAccess.All.ToList() : FeatureAccess.Parse(user.AllowedFeatures);
-
-    public static string AvatarUrl(AppUser user) => AvatarUrl(user.AvatarFileName);
-
-    public static string AvatarUrl(string avatarFileName) =>
-        string.IsNullOrWhiteSpace(avatarFileName) ? string.Empty : $"/api/avatars/{Uri.EscapeDataString(avatarFileName)}";
 }
 
 static class AppPaths

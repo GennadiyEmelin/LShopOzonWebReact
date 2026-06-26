@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -164,22 +165,19 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         DateOnly dateFrom,
         DateOnly dateTo,
         IReadOnlyDictionary<string, string>? supplementalArrivalDates = null,
+        TimeZoneInfo? analyticsTimeZone = null,
         CancellationToken cancellationToken = default)
     {
+        var timeZone = analyticsTimeZone ?? ResolveDefaultAnalyticsTimeZone();
         var financeOperations = new List<OzonFinanceOperation>();
         var postings = new List<OzonPosting>();
 
         foreach (var (from, to) in SplitDateRange(dateFrom, dateTo))
         {
-            financeOperations.AddRange(await GetAllFinanceTransactionsAsync(from, to, cancellationToken));
-
-            postings.AddRange(await GetFboPostingsAsync(from, to, string.Empty, cancellationToken));
-            postings.AddRange(await GetFbsPostingsAsync(from, to, string.Empty, cancellationToken));
-            postings.AddRange(await GetFboPostingsAsync(from, to, "cancelled", cancellationToken));
-            postings.AddRange(await GetFbsPostingsAsync(from, to, "cancelled", cancellationToken));
+            financeOperations.AddRange(await GetAllFinanceTransactionsAsync(from, to, timeZone, cancellationToken));
         }
 
-        postings = DeduplicatePostings(postings);
+        postings = await GetAllPostingsForRangeAsync(dateFrom, dateTo, timeZone, includeCancelled: true, cancellationToken);
 
         var cancelledPostingNumbers = postings
             .Where(posting => posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
@@ -191,6 +189,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             cancelledPostingNumbers,
             dateFrom,
             dateTo,
+            timeZone,
             cancellationToken);
 
         var financeOperationsForOrders = financeOperations
@@ -202,7 +201,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
         var productRows = BuildFinanceRows(financeOperations);
         var financeRowsForOrders = BuildFinanceRows(financeOperationsForOrders.Values);
-        var orderRows = BuildOrderRows(postings, financeRowsForOrders);
+        var orderRows = BuildOrderRows(postings, financeRowsForOrders, timeZone);
         var cancelledLogisticsTotal = SumCancelledOrderExpenses(orderRows);
         var cancelledMissedProfitTotal = SumCancelledMissedProfit(orderRows);
 
@@ -233,29 +232,38 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var nonCancelledPostings = postings
             .Where(posting => !posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var salesTotalCount = nonCancelledPostings
-            .SelectMany(posting => posting.Products)
-            .Sum(product => product.Quantity);
-        var salesAmountTotal = nonCancelledPostings
+        var rangePostings = nonCancelledPostings
+            .Where(posting => IsPostingInLocalDateRange(posting, dateFrom, dateTo, timeZone))
+            .ToList();
+        var salesTotalCount = rangePostings
+            .Select(posting => posting.PostingNumber)
+            .Where(number => !string.IsNullOrWhiteSpace(number))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var salesAmountTotal = rangePostings
             .SelectMany(posting => posting.Products)
             .Sum(product => product.Price * product.Quantity);
-        var inTransitAmount = nonCancelledPostings
+        var inTransitAmount = rangePostings
             .Where(posting => posting.Status.Equals("delivering", StringComparison.OrdinalIgnoreCase))
             .SelectMany(posting => posting.Products)
             .Sum(product => product.Price * product.Quantity);
-        var deliveredAmount = nonCancelledPostings
+        var deliveredAmount = rangePostings
             .Where(posting => posting.Status.Equals("delivered", StringComparison.OrdinalIgnoreCase))
             .SelectMany(posting => posting.Products)
             .Sum(product => product.Price * product.Quantity);
-        var inTransitCount = nonCancelledPostings
+        var inTransitCount = rangePostings
             .Where(posting => posting.Status.Equals("delivering", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(posting => posting.Products)
-            .Sum(product => product.Quantity);
-        var deliveredProductCount = nonCancelledPostings
+            .Select(posting => posting.PostingNumber)
+            .Where(number => !string.IsNullOrWhiteSpace(number))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var deliveredProductCount = rangePostings
             .Where(posting => posting.Status.Equals("delivered", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(posting => posting.Products)
-            .Sum(product => product.Quantity);
-        var awaitingDeliverPostings = nonCancelledPostings
+            .Select(posting => posting.PostingNumber)
+            .Where(number => !string.IsNullOrWhiteSpace(number))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var awaitingDeliverPostings = rangePostings
             .Where(posting => IsCollectingStatus(posting.Status))
             .ToList();
         var awaitingDeliverCount = awaitingDeliverPostings
@@ -315,7 +323,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .ThenByDescending(row => row.Revenue)
             .ToList();
 
-        var allTimeSoldProductKeys = await GetSoldProductKeysAsync(dateFrom, dateTo, cancellationToken);
+        var allTimeSoldProductKeys = await GetSoldProductKeysAsync(dateFrom, dateTo, timeZone, cancellationToken);
         foreach (var posting in postings.Where(posting => !posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)))
         {
             foreach (var product in posting.Products)
@@ -434,6 +442,96 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
+    public async Task<OzonSalesChartResult> GetSalesChartAsync(
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        string groupBy,
+        TimeZoneInfo? analyticsTimeZone = null,
+        CancellationToken cancellationToken = default)
+    {
+        var timeZone = analyticsTimeZone ?? ResolveDefaultAnalyticsTimeZone();
+        var postings = await GetAllPostingsForRangeAsync(dateFrom, dateTo, timeZone, includeCancelled: false, cancellationToken);
+        var normalizedGroupBy = groupBy.Equals("day", StringComparison.OrdinalIgnoreCase) ? "day" : "month";
+        var buckets = new Dictionary<string, (HashSet<string> Postings, decimal Revenue)>(StringComparer.Ordinal);
+        var currencyCode = "KZT";
+
+        foreach (var posting in postings)
+        {
+            if (posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!TryResolvePostingOrderDateOnly(posting, timeZone, out var date))
+            {
+                continue;
+            }
+
+            if (date < dateFrom || date > dateTo)
+            {
+                continue;
+            }
+
+            var key = normalizedGroupBy == "day"
+                ? date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : date.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+
+            if (!buckets.TryGetValue(key, out var bucket))
+            {
+                bucket = (new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0m);
+            }
+
+            if (!string.IsNullOrWhiteSpace(posting.PostingNumber))
+            {
+                bucket.Postings.Add(posting.PostingNumber);
+            }
+
+            foreach (var product in posting.Products)
+            {
+                bucket.Revenue += product.Price * product.Quantity;
+                if (!string.IsNullOrWhiteSpace(product.CurrencyCode))
+                {
+                    currencyCode = product.CurrencyCode;
+                }
+            }
+
+            buckets[key] = bucket;
+        }
+
+        var points = BuildSalesChartPoints(dateFrom, dateTo, normalizedGroupBy, buckets);
+
+        return new OzonSalesChartResult(
+            points,
+            currencyCode,
+            points.Sum(point => point.Orders),
+            points.Sum(point => point.Revenue));
+    }
+
+    private async Task<List<OzonPosting>> GetAllPostingsForRangeAsync(
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        TimeZoneInfo timeZone,
+        bool includeCancelled,
+        CancellationToken cancellationToken)
+    {
+        var fetchFrom = dateFrom.AddDays(-1);
+        var fetchTo = dateTo.AddDays(1);
+        var postings = new List<OzonPosting>();
+
+        foreach (var (from, to) in SplitDateRange(fetchFrom, fetchTo))
+        {
+            postings.AddRange(await GetFboPostingsAsync(from, to, string.Empty, timeZone, cancellationToken));
+            postings.AddRange(await GetFbsPostingsAsync(from, to, string.Empty, timeZone, cancellationToken));
+            if (includeCancelled)
+            {
+                postings.AddRange(await GetFboPostingsAsync(from, to, "cancelled", timeZone, cancellationToken));
+                postings.AddRange(await GetFbsPostingsAsync(from, to, "cancelled", timeZone, cancellationToken));
+            }
+        }
+
+        return DeduplicatePostings(postings);
+    }
+
     private static OzonProductStatusSummary GetProductStatusSummary(IReadOnlyList<OzonProductSummary> products)
     {
         var selling = 0;
@@ -469,13 +567,14 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     private async Task<HashSet<string>> GetSoldProductKeysAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
         var soldKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (from, to) in SplitDateRange(dateFrom, dateTo))
         {
-            var operations = await GetAllFinanceTransactionsAsync(from, to, string.Empty, cancellationToken);
+            var operations = await GetAllFinanceTransactionsAsync(from, to, string.Empty, timeZone, cancellationToken);
             foreach (var operation in operations)
             {
                 if (operation.AccrualsForSale <= 0 && !operation.Type.Equals("orders", StringComparison.OrdinalIgnoreCase))
@@ -563,6 +662,12 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         {
             var sellingSince = periodEnd.AddDays(-ozonDays).ToString("yyyy-MM-dd");
             return (sellingSince, Math.Max(0, ozonDays));
+        }
+
+        if (TryParseOzonDate(product.CreatedAt, out var createdDate))
+        {
+            var sellingSince = createdDate.ToString("yyyy-MM-dd");
+            return (sellingSince, CalculateDaysWithoutSales(sellingSince, periodEnd));
         }
 
         return (null, null);
@@ -818,28 +923,23 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                     cancellationToken);
 
                 using var document = JsonDocument.Parse(content);
-                if (!document.RootElement.TryGetProperty("items", out var items) ||
-                    items.ValueKind != JsonValueKind.Array)
+                if (!TryGetAnalyticsStocksItems(document.RootElement, out var items))
                 {
                     continue;
                 }
 
                 foreach (var item in items.EnumerateArray())
                 {
-                    if (!item.TryGetProperty("sku", out var skuProperty) ||
-                        !skuProperty.TryGetInt64(out var sku) ||
-                        sku <= 0)
+                    if (!TryReadAnalyticsStockSku(item, out var sku))
                     {
                         continue;
                     }
 
-                    if (!item.TryGetProperty("days_without_sales", out var daysProperty) ||
-                        daysProperty.ValueKind != JsonValueKind.Number)
+                    if (!TryReadDaysWithoutSales(item, out var days))
                     {
                         continue;
                     }
 
-                    var days = daysProperty.GetInt32();
                     if (result.TryGetValue(sku, out var existing))
                     {
                         if (days > existing)
@@ -860,6 +960,103 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
 
         return result;
+    }
+
+    private static bool TryGetAnalyticsStocksItems(JsonElement root, out JsonElement items)
+    {
+        if (root.TryGetProperty("items", out items) && items.ValueKind == JsonValueKind.Array)
+        {
+            return true;
+        }
+
+        if (root.TryGetProperty("result", out var result) &&
+            result.TryGetProperty("items", out items) &&
+            items.ValueKind == JsonValueKind.Array)
+        {
+            return true;
+        }
+
+        items = default;
+        return false;
+    }
+
+    private static bool TryReadAnalyticsStockSku(JsonElement item, out long sku)
+    {
+        sku = 0;
+        if (!item.TryGetProperty("sku", out var skuProperty))
+        {
+            return false;
+        }
+
+        if (skuProperty.ValueKind == JsonValueKind.Number && skuProperty.TryGetInt64(out sku))
+        {
+            return sku > 0;
+        }
+
+        if (skuProperty.ValueKind == JsonValueKind.String &&
+            long.TryParse(skuProperty.GetString(), out sku))
+        {
+            return sku > 0;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadDaysWithoutSales(JsonElement item, out int days)
+    {
+        days = 0;
+        if (item.TryGetProperty("days_without_sales", out var daysProperty))
+        {
+            if (daysProperty.ValueKind == JsonValueKind.Number && daysProperty.TryGetInt32(out days))
+            {
+                return true;
+            }
+
+            if (daysProperty.ValueKind == JsonValueKind.String &&
+                int.TryParse(daysProperty.GetString(), out days))
+            {
+                return true;
+            }
+        }
+
+        if (!item.TryGetProperty("days_without_sales_cluster", out var clusterProperty) ||
+            clusterProperty.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var maxDays = 0;
+        var found = false;
+        foreach (var cluster in clusterProperty.EnumerateArray())
+        {
+            if (cluster.ValueKind == JsonValueKind.Number && cluster.TryGetInt32(out var clusterDays))
+            {
+                maxDays = Math.Max(maxDays, clusterDays);
+                found = true;
+                continue;
+            }
+
+            if (cluster.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (cluster.TryGetProperty("days_without_sales", out var clusterDaysProperty) &&
+                clusterDaysProperty.ValueKind == JsonValueKind.Number &&
+                clusterDaysProperty.TryGetInt32(out clusterDays))
+            {
+                maxDays = Math.Max(maxDays, clusterDays);
+                found = true;
+            }
+        }
+
+        if (found)
+        {
+            days = maxDays;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryParseOzonSupplyCompletionDate(string? value, out DateOnly date)
@@ -1047,7 +1244,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
     private static List<OzonAnalyticsRow> BuildOrderRows(
         IReadOnlyList<OzonPosting> postings,
-        IReadOnlyList<OzonAnalyticsRow> financeRows)
+        IReadOnlyList<OzonAnalyticsRow> financeRows,
+        TimeZoneInfo timeZone)
     {
         var financeByKey = financeRows
             .Where(row => !string.IsNullOrWhiteSpace(row.PostingNumber) && row.Sku > 0)
@@ -1117,7 +1315,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                         payout,
                         string.IsNullOrWhiteSpace(product.CurrencyCode) ? "KZT" : product.CurrencyCode,
                         logisticsAmount,
-                        ResolvePostingOperationDate(posting, financeRow?.OperationDate));
+                        ResolvePostingOperationDate(posting, financeRow?.OperationDate, timeZone));
                 });
             })
             .OrderByDescending(row => row.Revenue)
@@ -1175,11 +1373,31 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             operationDate);
     }
 
-    private static string ResolvePostingOperationDate(OzonPosting posting, string? financeOperationDate)
+    private static string ResolvePostingOperationDate(
+        OzonPosting posting,
+        string? financeOperationDate,
+        TimeZoneInfo? timeZone = null)
+    {
+        var raw = ResolvePostingOperationDateRaw(posting, financeOperationDate);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        var zone = timeZone ?? ResolveDefaultAnalyticsTimeZone();
+        if (TryParseOperationDate(raw, zone, out var date))
+        {
+            return date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+
+        return NormalizeOperationDate(raw);
+    }
+
+    private static string? ResolvePostingOperationDateRaw(OzonPosting posting, string? financeOperationDate)
     {
         if (!string.IsNullOrWhiteSpace(financeOperationDate))
         {
-            return NormalizeOperationDate(financeOperationDate);
+            return financeOperationDate.Trim();
         }
 
         var status = posting.Status.Trim().ToLowerInvariant();
@@ -1187,25 +1405,90 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
         return status switch
         {
-            "cancelled" => FirstDate(cancellationDate, posting.InProcessAt, posting.CreatedAt),
-            "delivered" => FirstDate(posting.DeliveringDate, posting.InProcessAt, posting.CreatedAt),
-            "delivering" => FirstDate(posting.InProcessAt, posting.CreatedAt, posting.ShipmentDate),
-            "awaiting_deliver" => FirstDate(posting.InProcessAt, posting.CreatedAt, posting.ShipmentDate),
-            _ => FirstDate(posting.InProcessAt, posting.DeliveringDate, posting.CreatedAt, posting.ShipmentDate)
+            "cancelled" => FirstDateRaw(cancellationDate, posting.InProcessAt, posting.CreatedAt),
+            "delivered" => FirstDateRaw(posting.DeliveringDate, posting.InProcessAt, posting.CreatedAt),
+            "delivering" => FirstDateRaw(posting.InProcessAt, posting.CreatedAt, posting.ShipmentDate),
+            "awaiting_deliver" => FirstDateRaw(posting.InProcessAt, posting.CreatedAt, posting.ShipmentDate),
+            _ => FirstDateRaw(posting.InProcessAt, posting.DeliveringDate, posting.CreatedAt, posting.ShipmentDate)
         };
     }
 
-    private static string FirstDate(params string?[] values)
+    private static bool IsPostingInLocalDateRange(
+        OzonPosting posting,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        TimeZoneInfo timeZone) =>
+        TryResolvePostingOrderDateOnly(posting, timeZone, out var date) &&
+        date >= dateFrom &&
+        date <= dateTo;
+
+    private static bool TryResolvePostingOrderDateOnly(
+        OzonPosting posting,
+        TimeZoneInfo timeZone,
+        out DateOnly date)
+    {
+        date = default;
+        var orderDate = ResolvePostingOrderDate(posting, timeZone);
+        return !string.IsNullOrWhiteSpace(orderDate) &&
+               DateOnly.TryParse(orderDate, CultureInfo.InvariantCulture, out date);
+    }
+
+    private static string ResolvePostingOrderDate(OzonPosting posting, TimeZoneInfo timeZone)
+    {
+        var raw = ResolvePostingOrderDateRaw(posting);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        if (TryParseOperationDate(raw, timeZone, out var date))
+        {
+            return date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+
+        return NormalizeOperationDate(raw);
+    }
+
+    private static string? ResolvePostingOrderDateRaw(OzonPosting posting)
+    {
+        if (posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+        {
+            var cancellationDate = posting.Cancellation?.CancelledAt ?? posting.Cancellation?.CancelDate;
+            return FirstDateRaw(cancellationDate, posting.InProcessAt, posting.CreatedAt);
+        }
+
+        return FirstDateRaw(posting.InProcessAt, posting.CreatedAt, posting.ShipmentDate);
+    }
+
+    private static bool TryResolvePostingOperationDateOnly(
+        OzonPosting posting,
+        string? financeOperationDate,
+        TimeZoneInfo timeZone,
+        out DateOnly date)
+    {
+        date = default;
+        var operationDate = ResolvePostingOperationDate(posting, financeOperationDate, timeZone);
+        return !string.IsNullOrWhiteSpace(operationDate) &&
+               DateOnly.TryParse(operationDate, CultureInfo.InvariantCulture, out date);
+    }
+
+    private static string? FirstDateRaw(params string?[] values)
     {
         foreach (var value in values)
         {
             if (!string.IsNullOrWhiteSpace(value))
             {
-                return NormalizeOperationDate(value);
+                return value.Trim();
             }
         }
 
-        return string.Empty;
+        return null;
+    }
+
+    private static string FirstDate(params string?[] values)
+    {
+        var raw = FirstDateRaw(values);
+        return string.IsNullOrWhiteSpace(raw) ? string.Empty : NormalizeOperationDate(raw);
     }
 
     private static string NormalizeOperationDate(string value)
@@ -1230,18 +1513,112 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
     }
 
+    private static TimeZoneInfo ResolveDefaultAnalyticsTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Europe/Moscow");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+        }
+        catch (InvalidTimeZoneException)
+        {
+        }
+
+        return TimeZoneInfo.Utc;
+    }
+
+    private static (string Since, string To) FormatAnalyticsDateRange(
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        TimeZoneInfo timeZone)
+    {
+        var startLocal = dateFrom.ToDateTime(TimeOnly.MinValue);
+        var endLocal = dateTo.ToDateTime(new TimeOnly(23, 59, 59));
+        var start = new DateTimeOffset(startLocal, timeZone.GetUtcOffset(startLocal));
+        var end = new DateTimeOffset(endLocal, timeZone.GetUtcOffset(endLocal));
+        return (
+            start.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
+            end.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+    }
+
+    private static bool TryParseOperationDate(string? value, TimeZoneInfo timeZone, out DateOnly date)
+    {
+        date = default;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+        {
+            var local = TimeZoneInfo.ConvertTime(parsed, timeZone);
+            date = DateOnly.FromDateTime(local.DateTime);
+            return true;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 10 && DateOnly.TryParse(trimmed.AsSpan(0, 10), CultureInfo.InvariantCulture, out date))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static List<OzonSalesChartPoint> BuildSalesChartPoints(
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        string groupBy,
+        IReadOnlyDictionary<string, (HashSet<string> Postings, decimal Revenue)> buckets)
+    {
+        var culture = CultureInfo.GetCultureInfo("ru-RU");
+        var points = new List<OzonSalesChartPoint>();
+
+        if (groupBy == "day")
+        {
+            for (var cursor = dateFrom; cursor <= dateTo; cursor = cursor.AddDays(1))
+            {
+                var key = cursor.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var label = cursor.ToString("dd.MM", CultureInfo.InvariantCulture);
+                var orders = buckets.TryGetValue(key, out var bucket) ? bucket.Postings.Count : 0;
+                var revenue = buckets.TryGetValue(key, out bucket) ? bucket.Revenue : 0m;
+                points.Add(new OzonSalesChartPoint(label, key, orders, revenue));
+            }
+
+            return points;
+        }
+
+        var monthCursor = new DateOnly(dateFrom.Year, dateFrom.Month, 1);
+        var monthEnd = new DateOnly(dateTo.Year, dateTo.Month, 1);
+        while (monthCursor <= monthEnd)
+        {
+            var key = monthCursor.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+            var label = monthCursor.ToString("MMM yy", culture);
+            var orders = buckets.TryGetValue(key, out var bucket) ? bucket.Postings.Count : 0;
+            var revenue = buckets.TryGetValue(key, out bucket) ? bucket.Revenue : 0m;
+            points.Add(new OzonSalesChartPoint(label, key, orders, revenue));
+            monthCursor = monthCursor.AddMonths(1);
+        }
+
+        return points;
+    }
+
     private async Task<List<OzonFinanceOperation>> GetAllFinanceTransactionsAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
-        return await GetAllFinanceTransactionsAsync(dateFrom, dateTo, string.Empty, cancellationToken);
+        return await GetAllFinanceTransactionsAsync(dateFrom, dateTo, string.Empty, timeZone, cancellationToken);
     }
 
     private async Task<List<OzonFinanceOperation>> GetAllFinanceTransactionsAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
         string postingNumber,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
         var operations = new List<OzonFinanceOperation>();
@@ -1254,6 +1631,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 dateFrom,
                 dateTo,
                 postingNumber,
+                timeZone,
                 page,
                 cancellationToken);
             operations.AddRange(result.Operations);
@@ -1268,10 +1646,13 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         DateOnly dateFrom,
         DateOnly dateTo,
         string postingNumber,
+        TimeZoneInfo timeZone,
         int page,
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
+
+        var (since, to) = FormatAnalyticsDateRange(dateFrom, dateTo, timeZone);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v3/finance/transaction/list");
         request.Headers.Add("Client-Id", _credentials.ClientId);
@@ -1279,8 +1660,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         request.Content = JsonContent.Create(new OzonFinanceTransactionRequest(
             new OzonFinanceFilter(
                 new OzonFinanceDateRange(
-                    $"{dateFrom:yyyy-MM-dd}T00:00:00.000Z",
-                    $"{dateTo:yyyy-MM-dd}T23:59:59.000Z"),
+                    since,
+                    to),
                 [],
                 postingNumber,
                 "all"),
@@ -1309,6 +1690,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         HashSet<string> cancelledPostingNumbers,
         DateOnly dateFrom,
         DateOnly dateTo,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
         var cancelledFinanceOperations = new Dictionary<long, OzonFinanceOperation>();
@@ -1336,6 +1718,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                     from,
                     to,
                     postingNumber,
+                    timeZone,
                     cancellationToken);
 
                 foreach (var operation in postingOperations)
@@ -1353,8 +1736,39 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         return postings
             .Where(posting => !string.IsNullOrWhiteSpace(posting.PostingNumber))
             .GroupBy(posting => posting.PostingNumber, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
+            .Select(group => group.OrderByDescending(ScorePostingCompleteness).First())
             .ToList();
+    }
+
+    private static int ScorePostingCompleteness(OzonPosting posting)
+    {
+        var score = 0;
+        if (!string.IsNullOrWhiteSpace(posting.InProcessAt))
+        {
+            score += 20;
+        }
+
+        if (!string.IsNullOrWhiteSpace(posting.DeliveringDate))
+        {
+            score += 10;
+        }
+
+        if (!string.IsNullOrWhiteSpace(posting.ShipmentDate))
+        {
+            score += 5;
+        }
+
+        if (!string.IsNullOrWhiteSpace(posting.CreatedAt))
+        {
+            score += 2;
+        }
+
+        if (posting.Products.Count > 0)
+        {
+            score += 1;
+        }
+
+        return score;
     }
 
     private static HashSet<string> BuildCancelledPostingMatchKeys(IEnumerable<string> postingNumbers)
@@ -1438,15 +1852,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     private async Task<List<OzonPosting>> GetFboPostingsAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
-        CancellationToken cancellationToken)
-    {
-        return await GetFboPostingsAsync(dateFrom, dateTo, string.Empty, cancellationToken);
-    }
-
-    private async Task<List<OzonPosting>> GetFboPostingsAsync(
-        DateOnly dateFrom,
-        DateOnly dateTo,
         string status,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
         var response = await SendPostingRequestAsync(
@@ -1454,6 +1861,9 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             dateFrom,
             dateTo,
             status,
+            timeZone,
+            1000,
+            0,
             cancellationToken);
 
         var data = JsonSerializer.Deserialize<OzonFboPostingListResponse>(response, JsonOptions)
@@ -1465,47 +1875,54 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     private async Task<List<OzonPosting>> GetFbsPostingsAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
-        CancellationToken cancellationToken)
-    {
-        return await GetFbsPostingsAsync(dateFrom, dateTo, string.Empty, cancellationToken);
-    }
-
-    private async Task<List<OzonPosting>> GetFbsPostingsAsync(
-        DateOnly dateFrom,
-        DateOnly dateTo,
         string status,
+        TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
-        var response = await SendPostingRequestAsync(
-            "/v3/posting/fbs/list",
-            dateFrom,
-            dateTo,
-            status,
-            cancellationToken);
+        var postings = new List<OzonPosting>();
+        var offset = 0;
+        const int limit = 1000;
 
-        var data = JsonSerializer.Deserialize<OzonPostingListResponse>(response, JsonOptions)
-            ?? throw new InvalidOperationException("Ozon API returned an empty response.");
+        while (true)
+        {
+            var response = await SendPostingRequestAsync(
+                "/v3/posting/fbs/list",
+                dateFrom,
+                dateTo,
+                status,
+                timeZone,
+                limit,
+                offset,
+                cancellationToken);
 
-        return data.Result.Postings.ToList();
+            var data = JsonSerializer.Deserialize<OzonPostingListResponse>(response, JsonOptions)
+                ?? throw new InvalidOperationException("Ozon API returned an empty response.");
+
+            postings.AddRange(data.Result.Postings);
+            if (!data.Result.HasNext)
+            {
+                break;
+            }
+
+            offset += limit;
+        }
+
+        return postings;
     }
 
     private async Task<string> SendPostingRequestAsync(
         string path,
         DateOnly dateFrom,
         DateOnly dateTo,
-        CancellationToken cancellationToken)
-    {
-        return await SendPostingRequestAsync(path, dateFrom, dateTo, string.Empty, cancellationToken);
-    }
-
-    private async Task<string> SendPostingRequestAsync(
-        string path,
-        DateOnly dateFrom,
-        DateOnly dateTo,
         string status,
+        TimeZoneInfo timeZone,
+        int limit,
+        int offset,
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
+
+        var (since, to) = FormatAnalyticsDateRange(dateFrom, dateTo, timeZone);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, path);
         request.Headers.Add("Client-Id", _credentials.ClientId);
@@ -1513,11 +1930,11 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         request.Content = JsonContent.Create(new OzonPostingListRequest(
             "ASC",
             new OzonPostingFilter(
-                $"{dateFrom:yyyy-MM-dd}T00:00:00Z",
-                $"{dateTo:yyyy-MM-dd}T23:59:59Z",
+                since,
+                to,
                 status),
-            1000,
-            0,
+            limit,
+            offset,
             new OzonPostingWith(true, true)));
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -1930,6 +2347,14 @@ public record OzonAnalyticsSnapshot(
     decimal? AccountBalance,
     string AccountBalanceCurrency,
     string Timestamp);
+
+public record OzonSalesChartPoint(string Label, string PeriodKey, int Orders, decimal Revenue);
+
+public record OzonSalesChartResult(
+    IReadOnlyList<OzonSalesChartPoint> Points,
+    string CurrencyCode,
+    int TotalOrders,
+    decimal TotalRevenue);
 
 public record OzonAnalyticsResult(
     IReadOnlyList<OzonAnalyticsRow> Rows,

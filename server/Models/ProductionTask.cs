@@ -38,6 +38,7 @@ public class ProductionTaskItem
     public int? ActualQuantity { get; set; }
     public bool EnforceMinimumQuantity { get; set; }
     public string ProductLink { get; set; } = string.Empty;
+    public string FilePath { get; set; } = string.Empty;
 }
 
 public static class ProductionTaskTypes
