@@ -144,6 +144,53 @@ public static class KzMarketplaceRoutes
             }
         }).RequireAuthorization();
 
+        app.MapGet("/api/kz/{marketplace}/analytics", async (
+            string marketplace,
+            string? dateFrom,
+            string? dateTo,
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var from = new DateOnly(today.Year, today.Month, 1);
+            var to = today;
+
+            if (!string.IsNullOrWhiteSpace(dateFrom) && !DateOnly.TryParse(dateFrom, out from))
+            {
+                return Results.BadRequest("Некорректная дата начала периода.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(dateTo) && !DateOnly.TryParse(dateTo, out to))
+            {
+                return Results.BadRequest("Некорректная дата окончания периода.");
+            }
+
+            if (from > to)
+            {
+                return Results.BadRequest("Дата начала не может быть позже даты окончания.");
+            }
+
+            try
+            {
+                var result = await marketplaceApi.GetAnalyticsAsync(marketplace, from, to, cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
         app.MapGet("/api/kz/{marketplace}/stocks", async (
             string marketplace,
             AppDbContext db,

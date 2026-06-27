@@ -3134,14 +3134,23 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
         return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
     }
 
-    var builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
+    List<ProductionTaskItem> builtItems;
+    if (ProductionTaskResponses.NormalizeTaskType(taskType) == ProductionTaskTypes.Novinka)
+    {
+        db.ProductionTaskItems.RemoveRange(task.Items);
+        builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
+        task.Items = builtItems;
+    }
+    else
+    {
+        builtItems = ProductionTaskResponses.ReconcileTaskItems(task, requestItems);
+    }
+
     var firstItem = builtItems[0];
-    db.ProductionTaskItems.RemoveRange(task.Items);
-    task.Items = builtItems;
     task.OzonProductId = firstItem.OzonProductId;
-    task.OfferId = firstItem.OfferId.Trim();
+    task.OfferId = (firstItem.OfferId ?? string.Empty).Trim();
     task.ProductName = builtItems.Count == 1
-        ? firstItem.ProductName.Trim()
+        ? (firstItem.ProductName ?? string.Empty).Trim()
         : taskType == ProductionTaskTypes.Novinka
             ? $"Новинки · {builtItems.Count} товаров"
             : $"Задача на {builtItems.Count} товаров";
@@ -4974,30 +4983,105 @@ static class ProductionTaskResponses
         {
             return requestItems.Select(itemRequest =>
             {
+                var normalized = NormalizeTaskItemRequest(itemRequest);
                 var itemId = Guid.NewGuid();
                 return new ProductionTaskItem
                 {
                     Id = itemId,
                     OzonProductId = 0,
                     OfferId = BuildNovinkaOfferId(itemId),
-                    ProductName = itemRequest.ProductName.Trim(),
-                    ProductLink = itemRequest.ProductLink?.Trim() ?? string.Empty,
+                    ProductName = normalized.ProductName,
+                    ProductLink = normalized.ProductLink,
                     RequiredQuantity = 0,
                     EnforceMinimumQuantity = false
                 };
             }).ToList();
         }
 
-        return requestItems.Select(itemRequest => new ProductionTaskItem
+        return requestItems.Select(itemRequest =>
         {
-            OzonProductId = itemRequest.OzonProductId,
-            OfferId = itemRequest.OfferId.Trim(),
-            ProductName = itemRequest.ProductName.Trim(),
-            ProductLink = itemRequest.ProductLink?.Trim() ?? string.Empty,
-            RequiredQuantity = itemRequest.RequiredQuantity,
-            EnforceMinimumQuantity = itemRequest.EnforceMinimumQuantity
+            var normalized = NormalizeTaskItemRequest(itemRequest);
+            return new ProductionTaskItem
+            {
+                OzonProductId = normalized.OzonProductId,
+                OfferId = normalized.OfferId,
+                ProductName = normalized.ProductName,
+                ProductLink = normalized.ProductLink,
+                RequiredQuantity = normalized.RequiredQuantity,
+                EnforceMinimumQuantity = normalized.EnforceMinimumQuantity
+            };
         }).ToList();
     }
+
+    public static List<ProductionTaskItem> ReconcileTaskItems(
+        ProductionTask task,
+        IReadOnlyCollection<CreateProductionTaskItemRequest> requestItems)
+    {
+        var matchedExisting = new HashSet<Guid>();
+        var result = new List<ProductionTaskItem>();
+
+        foreach (var requestItem in requestItems)
+        {
+            var normalized = NormalizeTaskItemRequest(requestItem);
+            var existing = task.Items.FirstOrDefault(item =>
+                !matchedExisting.Contains(item.Id) &&
+                item.OzonProductId == normalized.OzonProductId &&
+                string.Equals(
+                    (item.OfferId ?? string.Empty).Trim(),
+                    normalized.OfferId,
+                    StringComparison.OrdinalIgnoreCase));
+
+            if (existing is null && normalized.OzonProductId > 0)
+            {
+                existing = task.Items.FirstOrDefault(item =>
+                    !matchedExisting.Contains(item.Id) &&
+                    item.OzonProductId == normalized.OzonProductId);
+            }
+
+            if (existing is not null)
+            {
+                matchedExisting.Add(existing.Id);
+                existing.OzonProductId = normalized.OzonProductId;
+                existing.OfferId = normalized.OfferId;
+                existing.ProductName = normalized.ProductName;
+                existing.ProductLink = normalized.ProductLink;
+                existing.RequiredQuantity = normalized.RequiredQuantity;
+                existing.EnforceMinimumQuantity = normalized.EnforceMinimumQuantity;
+                result.Add(existing);
+                continue;
+            }
+
+            result.Add(new ProductionTaskItem
+            {
+                OzonProductId = normalized.OzonProductId,
+                OfferId = normalized.OfferId,
+                ProductName = normalized.ProductName,
+                ProductLink = normalized.ProductLink,
+                RequiredQuantity = normalized.RequiredQuantity,
+                EnforceMinimumQuantity = normalized.EnforceMinimumQuantity,
+            });
+        }
+
+        foreach (var removed in task.Items.Where(item => !matchedExisting.Contains(item.Id)).ToList())
+        {
+            task.Items.Remove(removed);
+        }
+
+        task.Items.Clear();
+        task.Items.AddRange(result);
+
+        return result;
+    }
+
+    private static (long OzonProductId, string OfferId, string ProductName, string ProductLink, int RequiredQuantity, bool EnforceMinimumQuantity)
+        NormalizeTaskItemRequest(CreateProductionTaskItemRequest itemRequest) =>
+        (
+            itemRequest.OzonProductId,
+            (itemRequest.OfferId ?? string.Empty).Trim(),
+            (itemRequest.ProductName ?? string.Empty).Trim(),
+            (itemRequest.ProductLink ?? string.Empty).Trim(),
+            itemRequest.RequiredQuantity,
+            itemRequest.EnforceMinimumQuantity);
 
     public static bool IsValidOzonTaskItemRequest(CreateProductionTaskItemRequest item)
     {
@@ -5006,13 +5090,17 @@ static class ProductionTaskResponses
             return false;
         }
 
+        var offerId = item.OfferId ?? string.Empty;
+        var productName = item.ProductName ?? string.Empty;
+        var productLink = item.ProductLink ?? string.Empty;
+
         if (item.OzonProductId > 0)
         {
-            return !string.IsNullOrWhiteSpace(item.OfferId) || !string.IsNullOrWhiteSpace(item.ProductName);
+            return !string.IsNullOrWhiteSpace(offerId) || !string.IsNullOrWhiteSpace(productName);
         }
 
-        return !string.IsNullOrWhiteSpace(item.OfferId) ||
-               (!string.IsNullOrWhiteSpace(item.ProductName) && !string.IsNullOrWhiteSpace(item.ProductLink));
+        return !string.IsNullOrWhiteSpace(offerId) ||
+               (!string.IsNullOrWhiteSpace(productName) && !string.IsNullOrWhiteSpace(productLink));
     }
 
     public static async Task<List<ProductionCatalogItem>> BuildCatalogAsync(

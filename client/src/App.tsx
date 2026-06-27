@@ -6,12 +6,29 @@ import type { KzIntegrationSettings } from './KzRegionUi'
 import {
   getKzMarketplaceLabel,
   getKzTaskType,
+  getDefaultTaskFormMode,
+  getNovinkaMarketplaceLabel,
+  getVisibleNovinkaMarketplaces,
+  isMarketplaceTaskFormMode,
+  isKzMarketplaceTaskType,
+  isNovinkaCatalogTab,
+  appendNovinkaMarketplaceNote,
+  parseNovinkaCatalogTab,
+  resolveNovinkaMarketplace,
+  resolveNovinkaMarketplaceFromNotes,
+  resolveNovinkaMarketplaceFromTaskType,
+  resolveTaskFormNovinkaMarketplace,
+  resolveKzMarketplaceFromTaskType,
+  stripNovinkaMarketplaceNote,
+  toNovinkaCatalogTab,
   matchesShopRegionTaskType,
   readKzMarketplace,
   readShopRegion,
   SHOP_REGION_STORAGE_KEY,
   KZ_MARKETPLACE_STORAGE_KEY,
   type KzMarketplace,
+  type NovinkaMarketplace,
+  type NovinkaCatalogTab,
   type ShopRegion,
 } from './shopRegion'
 import './App.css'
@@ -22,6 +39,30 @@ type HomeBlockConfig = {
   id: string
   enabled: boolean
   actions: string[]
+  marketplaces?: KzMarketplace[]
+}
+
+const kzHomeSplitBlockIds = new Set(['production', 'analytics', 'products'])
+const allKzHomeMarketplaces: KzMarketplace[] = ['kaspi', 'satu', 'halyk']
+
+function getBlockMarketplaces(block: HomeBlockConfig): KzMarketplace[] {
+  if (!block.marketplaces?.length) {
+    return [...allKzHomeMarketplaces]
+  }
+
+  return allKzHomeMarketplaces.filter((marketplace) => block.marketplaces!.includes(marketplace))
+}
+
+function withDefaultBlockMarketplaces(block: HomeBlockConfig, enabled: boolean): HomeBlockConfig {
+  if (!kzHomeSplitBlockIds.has(block.id)) {
+    return { ...block, enabled }
+  }
+
+  return {
+    ...block,
+    enabled,
+    marketplaces: enabled ? getBlockMarketplaces(block) : block.marketplaces,
+  }
 }
 
 type User = {
@@ -336,6 +377,7 @@ type ProductionCatalogItem = {
   productLink: string
   fileCount: number
   completedAt?: string
+  marketplace?: NovinkaMarketplace
 }
 
 type ProductionTask = {
@@ -444,8 +486,6 @@ type DraftNovinkaItem = {
   tempId: string
   productName: string
   productLink: string
-  imageFile?: File
-  imagePreviewUrl?: string
 }
 
 function createTempId() {
@@ -712,6 +752,7 @@ function getRoleProfileHomeBlocks(role: string, roleProfiles: RoleProfile[]): Ho
       id: block.id,
       enabled: true,
       actions: block.actions.map((action) => action.id),
+      ...(kzHomeSplitBlockIds.has(block.id) ? { marketplaces: [...allKzHomeMarketplaces] } : {}),
     }))
   }
 
@@ -721,58 +762,193 @@ function getRoleProfileHomeBlocks(role: string, roleProfiles: RoleProfile[]): Ho
 function UserHomeBlocksEditor({
   homeBlocks,
   onChange,
+  disabled = false,
 }: {
   homeBlocks: HomeBlockConfig[]
   onChange: (nextBlocks: HomeBlockConfig[]) => void
+  disabled?: boolean
 }) {
+  function updateBlock(nextBlock: HomeBlockConfig) {
+    onChange([...homeBlocks.filter((entry) => entry.id !== nextBlock.id), nextBlock])
+  }
+
   return (
-    <div className="home-blocks-settings home-blocks-inline">
-      <p className="home-blocks-settings-hint">Какие блоки показывать на главной</p>
+    <div className="home-blocks-cards">
+      <p className="home-blocks-cards-hint">Блоки на главной странице</p>
       {homeBlockDefinitions.map((block) => {
         const blockEdit =
           homeBlocks.find((entry) => entry.id === block.id) ??
           ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
 
         return (
-          <fieldset key={block.id} className="home-block-settings">
-            <legend>
-              <label>
+          <details key={block.id} className="home-block-card" open={blockEdit.enabled}>
+            <summary className="home-block-card-summary">
+              <label
+                className="home-block-card-title"
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
                 <input
                   type="checkbox"
                   checked={blockEdit.enabled}
+                  disabled={disabled}
                   onChange={(event) => {
-                    const nextBlocks = [...homeBlocks.filter((entry) => entry.id !== block.id)]
-                    nextBlocks.push({
-                      ...blockEdit,
-                      enabled: event.target.checked,
-                      actions: event.target.checked ? block.actions.map((action) => action.id) : [],
-                    })
-                    onChange(nextBlocks)
+                    const enabled = event.target.checked
+                    updateBlock(
+                      withDefaultBlockMarketplaces(
+                        {
+                          ...blockEdit,
+                          enabled,
+                          actions: enabled ? block.actions.map((action) => action.id) : [],
+                          marketplaces:
+                            enabled && kzHomeSplitBlockIds.has(block.id)
+                              ? [...allKzHomeMarketplaces]
+                              : blockEdit.marketplaces,
+                        },
+                        enabled,
+                      ),
+                    )
                   }}
                 />
-                {block.label}
+                <span>{block.label}</span>
               </label>
-            </legend>
-            {blockEdit.enabled &&
-              block.actions.map((action) => (
-                <label key={action.id}>
+              {!blockEdit.enabled && <span className="home-block-card-off">Выключен</span>}
+            </summary>
+
+            {blockEdit.enabled && (
+              <div className="home-block-card-body">
+                {kzHomeSplitBlockIds.has(block.id) && (
+                  <div className="home-block-card-section">
+                    <p className="home-block-card-section-title">Маркетплейсы KZ</p>
+                    <div className="permission-options-grid">
+                      {allKzHomeMarketplaces.map((marketplace) => (
+                        <label key={marketplace} className="permission-option">
+                          <input
+                            type="checkbox"
+                            checked={getBlockMarketplaces(blockEdit).includes(marketplace)}
+                            disabled={disabled}
+                            onChange={(event) => {
+                              const current = getBlockMarketplaces(blockEdit)
+                              const nextMarketplaces = event.target.checked
+                                ? [...current, marketplace]
+                                : current.filter((item) => item !== marketplace)
+                              updateBlock({
+                                ...blockEdit,
+                                marketplaces: nextMarketplaces,
+                              })
+                            }}
+                          />
+                          {getKzMarketplaceLabel(marketplace)}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {block.actions.length > 0 && (
+                  <div className="home-block-card-section">
+                    <p className="home-block-card-section-title">Кнопки и действия</p>
+                    <div className="permission-options-grid">
+                      {block.actions.map((action) => (
+                        <label key={action.id} className="permission-option">
+                          <input
+                            type="checkbox"
+                            checked={blockEdit.actions.includes(action.id)}
+                            disabled={disabled}
+                            onChange={(event) => {
+                              const nextActions = event.target.checked
+                                ? [...blockEdit.actions, action.id]
+                                : blockEdit.actions.filter((value) => value !== action.id)
+                              updateBlock({ ...blockEdit, actions: nextActions })
+                            }}
+                          />
+                          {action.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </details>
+        )
+      })}
+    </div>
+  )
+}
+
+function UserPermissionsEditor({
+  role,
+  allowedFeatures,
+  onFeaturesChange,
+  homeBlocks,
+  onHomeBlocksChange,
+  featuresDisabled = false,
+  isRoleTemplate = false,
+}: {
+  role: string
+  allowedFeatures: string[]
+  onFeaturesChange: (nextFeatures: string[]) => void
+  homeBlocks: HomeBlockConfig[]
+  onHomeBlocksChange: (nextBlocks: HomeBlockConfig[]) => void
+  featuresDisabled?: boolean
+  isRoleTemplate?: boolean
+}) {
+  const isAdmin = role === 'Admin' && !isRoleTemplate
+
+  return (
+    <div className="user-permissions-cards">
+      <p className="user-permissions-hint">
+        Права по разделам. Карточку «Главная» — что видно на стартовой странице, остальные — доступ к функциям внутри разделов.
+      </p>
+      {featureGroups.map((group) => {
+        const enabledCount = group.items.filter((feature) =>
+          isAdmin || allowedFeatures.includes(feature.id),
+        ).length
+
+        return (
+        <details key={group.title} className="permission-card" open={group.title === 'Главная'}>
+          <summary className="permission-card-summary">
+            <span className="permission-card-title">{group.title}</span>
+            <span className="permission-card-count">
+              {enabledCount} из {group.items.length}
+            </span>
+          </summary>
+          <div className="permission-card-body">
+            {group.title === 'Главная' && (
+              <p className="permission-card-note">Доступ к разделу и блоки на главной странице</p>
+            )}
+            <div className="permission-options-grid">
+              {group.items.map((feature) => (
+                <label key={feature.id} className="permission-option">
                   <input
                     type="checkbox"
-                    checked={blockEdit.actions.includes(action.id)}
-                    onChange={(event) => {
-                      const nextActions = event.target.checked
-                        ? [...blockEdit.actions, action.id]
-                        : blockEdit.actions.filter((value) => value !== action.id)
-                      onChange([
-                        ...homeBlocks.filter((entry) => entry.id !== block.id),
-                        { ...blockEdit, actions: nextActions },
-                      ])
-                    }}
+                    checked={isAdmin || allowedFeatures.includes(feature.id)}
+                    disabled={featuresDisabled || isAdmin}
+                    onChange={(event) =>
+                      onFeaturesChange(
+                        event.target.checked
+                          ? [...allowedFeatures, feature.id]
+                          : allowedFeatures.filter((item) => item !== feature.id),
+                      )
+                    }
                   />
-                  {action.label}
+                  {feature.label}
                 </label>
               ))}
-          </fieldset>
+            </div>
+            {'homeBlocks' in group && group.homeBlocks && (!isAdmin || isRoleTemplate) && (
+              <>
+                <div className="permission-section-divider" />
+                <UserHomeBlocksEditor
+                  homeBlocks={homeBlocks}
+                  onChange={onHomeBlocksChange}
+                  disabled={featuresDisabled}
+                />
+              </>
+            )}
+          </div>
+        </details>
         )
       })}
     </div>
@@ -836,8 +1012,8 @@ const defaultUserFeatures = ['home', 'production', 'production.products', 'produ
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
-type ProductionCatalogTab = 'ozon' | 'kaspi' | 'satu' | 'halyk' | 'novinka' | 'editor'
-type TaskFormMode = 'ozon' | 'kaspi' | 'satu' | 'halyk' | 'novinka'
+type ProductionCatalogTab = 'ozon' | 'kaspi' | 'satu' | 'halyk' | NovinkaCatalogTab | 'editor'
+type TaskFormMode = 'ozon' | 'kaspi' | 'satu' | 'halyk'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
 type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales' | 'production'
 
@@ -909,6 +1085,16 @@ function App() {
   const [analyticsSnapshot, setAnalyticsSnapshot] = useState<OzonAnalyticsSnapshot | null>(null)
   const [homeAnalytics, setHomeAnalytics] = useState<OzonAnalytics | null>(null)
   const [homeAnalyticsStatus, setHomeAnalyticsStatus] = useState('')
+  const [homeKzAnalytics, setHomeKzAnalytics] = useState<Record<KzMarketplace, OzonAnalytics | null>>({
+    kaspi: null,
+    satu: null,
+    halyk: null,
+  })
+  const [homeKzAnalyticsStatus, setHomeKzAnalyticsStatus] = useState<Record<KzMarketplace, string>>({
+    kaspi: '',
+    satu: '',
+    halyk: '',
+  })
   const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>('summary')
   const [analyticsDateFrom, setAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
   const [analyticsDateTo, setAnalyticsDateTo] = useState(getDefaultAnalyticsDateTo)
@@ -928,8 +1114,12 @@ function App() {
   const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
   const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
-  const [taskFormMode, setTaskFormMode] = useState<TaskFormMode>('ozon')
-  const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>('ozon')
+  const [taskFormMode, setTaskFormMode] = useState<TaskFormMode>(() =>
+    getDefaultTaskFormMode(readShopRegion(), undefined, readKzMarketplace()),
+  )
+  const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>(() =>
+    readShopRegion() === 'rf' ? 'ozon' : readKzMarketplace(),
+  )
   const [kzProducts, setKzProducts] = useState<Record<KzMarketplace, OzonProduct[]>>({
     kaspi: [],
     satu: [],
@@ -977,8 +1167,9 @@ function App() {
   const [draftNovinkaItems, setDraftNovinkaItems] = useState<DraftNovinkaItem[]>([])
   const [novinkaProductName, setNovinkaProductName] = useState('')
   const [novinkaProductLink, setNovinkaProductLink] = useState('')
-  const [novinkaProductImageFile, setNovinkaProductImageFile] = useState<File>()
-  const [novinkaProductImagePreviewUrl, setNovinkaProductImagePreviewUrl] = useState('')
+  const [novinkaTaskMarketplace, setNovinkaTaskMarketplace] = useState<NovinkaMarketplace>(() =>
+    readShopRegion() === 'rf' ? 'ozon' : readKzMarketplace(),
+  )
   const [selectedNovinkaOfferId, setSelectedNovinkaOfferId] = useState('')
   const [productionFiles, setProductionFiles] = useState<ProductionFile[]>([])
   const [productionFilePaths, setProductionFilePaths] = useState<ProductionFilePath[]>([])
@@ -999,6 +1190,7 @@ function App() {
   const [taskQuantity, setTaskQuantity] = useState('')
   const [taskNovinkaQuantity, setTaskNovinkaQuantity] = useState('')
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false)
+  const [showCreateNovinkaTaskModal, setShowCreateNovinkaTaskModal] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [taskIsUrgent, setTaskIsUrgent] = useState(false)
   const [cancelTaskId, setCancelTaskId] = useState<string | null>(null)
@@ -1112,7 +1304,9 @@ function App() {
   const productionLookupProducts =
     shopRegion === 'rf'
       ? ozonProducts
-      : [...kzProducts.kaspi, ...kzProducts.satu, ...kzProducts.halyk]
+      : activeTab === 'production' && productionSubTab !== 'products'
+        ? kzProducts[kzTaskMarketplace]
+        : kzProducts[kzMarketplace]
   const productStatusCounts = useMemo(() => {
     const counts = {
       all: catalogProductsSource.length,
@@ -1165,10 +1359,9 @@ function App() {
           isProductionTaskVisibleForUser(task, user?.role, user?.allowedFeatures) &&
           matchesShopRegionTaskType(shopRegion, task.taskType ?? 'Ozon') &&
           (shopRegion === 'rf' ||
-            task.taskType === 'Novinka' ||
-            task.taskType === getKzTaskType(kzTaskMarketplace)),
+            matchesKzProductionMarketplace(task, kzTaskMarketplace, productionFiles)),
       ),
-    [productionTasks, user?.role, user?.allowedFeatures, shopRegion, kzTaskMarketplace],
+    [productionTasks, user?.role, user?.allowedFeatures, shopRegion, kzTaskMarketplace, productionFiles],
   )
   const canSeeDesignerProductionTasks = canSeeNovinkaProductionTasks(user?.role, user?.allowedFeatures)
   const canSeeOzonProductionTasksFlag = canSeeOzonProductionTasks(user?.role, user?.allowedFeatures)
@@ -1247,18 +1440,43 @@ function App() {
     (): ProductionCatalogItem[] => buildNovinkaCatalogFromFiles(productionFiles),
     [productionFiles],
   )
+  const activeNovinkaCatalogMarketplace = parseNovinkaCatalogTab(productionCatalogTab)
+  const taskFormNovinkaCatalogItems = useMemo(
+    () =>
+      filterNovinkaCatalogByMarketplace(
+        novinkaProductionCatalogItems,
+        resolveTaskFormNovinkaMarketplace(shopRegion, taskFormMode, kzTaskMarketplace),
+      ),
+    [novinkaProductionCatalogItems, shopRegion, taskFormMode, kzTaskMarketplace],
+  )
+  const editorNovinkaCatalogItems = useMemo(
+    () =>
+      filterNovinkaCatalogByMarketplace(
+        novinkaProductionCatalogItems,
+        shopRegion === 'rf' ? 'ozon' : (activeNovinkaCatalogMarketplace ?? kzMarketplace),
+      ),
+    [novinkaProductionCatalogItems, shopRegion, activeNovinkaCatalogMarketplace, kzMarketplace],
+  )
+  const supplyNovinkaCatalogItems = useMemo(
+    () => filterNovinkaCatalogByMarketplace(novinkaProductionCatalogItems, 'ozon'),
+    [novinkaProductionCatalogItems],
+  )
   const activeProductionCatalog =
-    productionCatalogTab === 'novinka'
-      ? novinkaProductionCatalogItems
-      : productionCatalogTab === 'ozon'
+    activeNovinkaCatalogMarketplace !== null
+      ? filterNovinkaCatalogByMarketplace(novinkaProductionCatalogItems, activeNovinkaCatalogMarketplace)
+      : shopRegion === 'rf' && productionCatalogTab === 'ozon'
         ? ozonProductionCatalogItems
-        : kzProductionCatalogItems[productionCatalogTab as KzMarketplace] ?? []
+        : productionCatalogTab === 'kaspi' ||
+            productionCatalogTab === 'satu' ||
+            productionCatalogTab === 'halyk'
+          ? kzProductionCatalogItems[productionCatalogTab] ?? []
+          : []
   const isMarketplaceProductionCatalogTab =
-    productionCatalogTab === 'ozon' ||
+    (shopRegion === 'rf' && productionCatalogTab === 'ozon') ||
     productionCatalogTab === 'kaspi' ||
     productionCatalogTab === 'satu' ||
     productionCatalogTab === 'halyk'
-  const editorSelectedNovinka = novinkaProductionCatalogItems.find(
+  const editorSelectedNovinka = editorNovinkaCatalogItems.find(
     (item) => item.offerId === editorNovinkaOfferId,
   )
   const editorSelectedOzon = ozonProducts.find(
@@ -1462,6 +1680,20 @@ function App() {
   const canEditSettings = () => hasFeature('settings.edit')
   const isHomeBlockEnabled = (blockId: string) =>
     user?.role === 'Admin' || Boolean(user?.homeBlocks?.some((block) => block.id === blockId && block.enabled))
+  const getHomeBlockKzMarketplaces = (blockId: string): KzMarketplace[] => {
+    if (!isHomeBlockEnabled(blockId) || !kzHomeSplitBlockIds.has(blockId)) {
+      return []
+    }
+
+    if (user?.role === 'Admin') {
+      return [...allKzHomeMarketplaces]
+    }
+
+    const block = user?.homeBlocks?.find((entry) => entry.id === blockId && entry.enabled)
+    return block ? getBlockMarketplaces(block) : []
+  }
+  const hasVisibleKzHomeBlock = (blockId: string) =>
+    shopRegion === 'kz' ? getHomeBlockKzMarketplaces(blockId).length > 0 : isHomeBlockEnabled(blockId)
   const hasHomeAction = (blockId: string, action: string) =>
     user?.role === 'Admin' ||
     Boolean(
@@ -1523,20 +1755,32 @@ function App() {
       return canViewUsers()
     }
 
+    if (tab.id === 'supplies' && shopRegion === 'kz') {
+      return false
+    }
+
     return hasFeature(tab.id)
   })
-  const homeProductionStats = useMemo(() => {
-    const activeTasks = visibleProductionTasks.filter((task) => !task.isArchived)
+  const homeProductionStats = useMemo(
+    () => computeHomeProductionStats(visibleProductionTasks),
+    [visibleProductionTasks],
+  )
+  const homeKzProductionStats = useMemo(() => {
+    const baseTasks = productionTasks.filter(
+      (task) =>
+        isProductionTaskVisibleForUser(task, user?.role, user?.allowedFeatures) &&
+        matchesShopRegionTaskType('kz', task.taskType ?? 'Ozon'),
+    )
 
-    return {
-      new: activeTasks.filter((task) => task.status === 'New').length,
-      inProgress: activeTasks.filter((task) => task.status === 'InProgress').length,
-      cancelled: activeTasks.filter((task) => task.status === 'Cancelled').length,
-      completed: activeTasks.filter((task) => task.status === 'Completed').length,
-      urgent: activeTasks.filter((task) => task.isUrgent).length,
-      total: activeTasks.length,
-    }
-  }, [visibleProductionTasks])
+    return Object.fromEntries(
+      (['kaspi', 'satu', 'halyk'] as const).map((marketplace) => [
+        marketplace,
+        computeHomeProductionStats(
+          baseTasks.filter((task) => matchesKzProductionMarketplace(task, marketplace, productionFiles)),
+        ),
+      ]),
+    ) as Record<KzMarketplace, ReturnType<typeof computeHomeProductionStats>>
+  }, [productionTasks, user?.role, user?.allowedFeatures, productionFiles])
   const homeSupplyStats = useMemo(() => {
     const active = supplies.filter((supply) => !supply.isArchived)
 
@@ -1552,32 +1796,87 @@ function App() {
     const to = new Date(getDefaultAnalyticsDateTo())
     return `${from.toLocaleDateString('ru-RU')} — ${to.toLocaleDateString('ru-RU')}`
   }, [])
-  const homeProductStats = useMemo(() => {
-    const productsSource =
-      shopRegion === 'rf'
-        ? ozonProducts
-        : [...kzProducts.kaspi, ...kzProducts.satu, ...kzProducts.halyk]
-    const stats = {
-      total: productsSource.length,
-      selling: 0,
-      ready: 0,
-      archived: 0,
+  const homeProductStats = useMemo(() => computeCatalogProductStats(ozonProducts), [ozonProducts])
+  const kzCatalogAnalyticsProducts = useMemo(() => {
+    if (shopRegion !== 'kz') {
+      return []
     }
 
-    for (const product of productsSource) {
-      const group = getProductStatusGroup(product.status)
+    return kzProducts[kzMarketplace].map((product) => ({
+      key: product.sku ? `sku:${product.sku}` : `offer:${product.offerId}`,
+      productName: product.name,
+      offerId: product.offerId,
+      sku: product.sku,
+      status: product.status,
+      imageUrl: product.imageUrl,
+      price: product.price,
+      currencyCode: product.currencyCode,
+      stockTotal: 0,
+    }))
+  }, [shopRegion, kzMarketplace, kzProducts])
+  const filteredKzCatalogAnalyticsProducts = useMemo(() => {
+    const filtered =
+      unsoldProductStatusFilter === 'all'
+        ? kzCatalogAnalyticsProducts
+        : kzCatalogAnalyticsProducts.filter(
+            (row) => getProductStatusGroup(row.status) === unsoldProductStatusFilter,
+          )
 
+    const query = analyticsRowSearch.trim().toLowerCase()
+    if (!query) {
+      return filtered
+    }
+
+    return filtered.filter((row) =>
+      [row.productName, row.offerId, row.sku]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    )
+  }, [kzCatalogAnalyticsProducts, unsoldProductStatusFilter, analyticsRowSearch])
+  const kzUnsoldProductStatusCounts = useMemo(() => {
+    const counts = { all: kzCatalogAnalyticsProducts.length, selling: 0, ready: 0 }
+
+    for (const row of kzCatalogAnalyticsProducts) {
+      const group = getProductStatusGroup(row.status)
       if (group === 'selling') {
-        stats.selling++
+        counts.selling += 1
       } else if (group === 'ready') {
-        stats.ready++
-      } else if (group === 'archived') {
-        stats.archived++
+        counts.ready += 1
       }
     }
 
-    return stats
-  }, [ozonProducts, shopRegion, kzProducts])
+    return counts
+  }, [kzCatalogAnalyticsProducts])
+  const visibleProductionAnalyticsReport = useMemo((): ProductionAnalyticsReport | null => {
+    if (!productionAnalyticsReport || shopRegion === 'rf') {
+      return productionAnalyticsReport
+    }
+
+    const activeTaskType = getKzTaskType(kzMarketplace)
+    const tasks = productionAnalyticsReport.tasks.filter(
+      (task) =>
+        task.taskType === activeTaskType ||
+        (task.taskType === 'Novinka' && matchesKzProductionMarketplace(task, kzMarketplace)),
+    )
+    const activeUserNames = new Set(tasks.map((task) => task.assignedUserName || '—'))
+    const summary = productionAnalyticsReport.summary
+      .filter((row) => activeUserNames.has(row.userName))
+      .map((row) => {
+        const userTasks = tasks.filter((task) => (task.assignedUserName || '—') === row.userName)
+        const itemCount = userTasks.reduce(
+          (sum, task) => sum + getProductionTaskItems(task).length,
+          0,
+        )
+
+        return {
+          ...row,
+          taskCount: userTasks.length,
+          itemCount,
+        }
+      })
+
+    return { summary, tasks }
+  }, [productionAnalyticsReport, shopRegion, kzMarketplace])
 
   useEffect(() => {
     if (!token) {
@@ -1657,9 +1956,9 @@ function App() {
       productionCatalogTab === 'editor' &&
       !canEditProductionProducts()
     ) {
-      setProductionCatalogTab('ozon')
+      setProductionCatalogTab(shopRegion === 'rf' ? 'ozon' : kzMarketplace)
     }
-  }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab, productionCatalogTab])
+  }, [activeTab, user, productionSubTab, supplySubTab, analyticsSubTab, productionCatalogTab, shopRegion, kzMarketplace])
 
   useEffect(() => {
     if (!token || activeTab !== 'production' || productionSubTab !== 'products') {
@@ -1817,33 +2116,108 @@ function App() {
   }, [token, user?.id, user?.role])
 
   useEffect(() => {
-    if (!token) {
+    if (shopRegion !== 'kz' || productionCatalogTab !== 'ozon') {
+      return
+    }
+
+    setProductionCatalogTab(kzMarketplace)
+  }, [shopRegion, productionCatalogTab, kzMarketplace])
+
+  useEffect(() => {
+    if (shopRegion === 'kz') {
+      setAnalytics(null)
+      setAnalyticsSnapshot(null)
+      setHomeAnalytics(null)
+      setHomeKzAnalytics({ kaspi: null, satu: null, halyk: null })
+      setHomeKzAnalyticsStatus({ kaspi: '', satu: '', halyk: '' })
+      if (activeTab === 'supplies') {
+        setActiveTab('home')
+      }
+    }
+  }, [shopRegion, activeTab])
+
+  useEffect(() => {
+    if (!token || shopRegion !== 'rf') {
       return
     }
 
     loadOzonProducts()
-  }, [token, user?.role, user?.allowedFeatures])
+  }, [token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
-    if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics')) {
+    if (!token || shopRegion !== 'kz') {
+      return
+    }
+
+    if (activeTab === 'home') {
+      for (const marketplace of ['kaspi', 'satu', 'halyk'] as const) {
+        if (kzProducts[marketplace].length === 0) {
+          void loadKzProducts(marketplace)
+        }
+      }
+    }
+
+    if (activeTab === 'production' && productionSubTab === 'products') {
+      const marketplace =
+        productionCatalogTab === 'kaspi' ||
+        productionCatalogTab === 'satu' ||
+        productionCatalogTab === 'halyk'
+          ? productionCatalogTab
+          : kzMarketplace
+      if (kzProducts[marketplace].length === 0) {
+        void loadKzProducts(marketplace)
+      }
+    }
+
+    if (activeTab === 'products' && kzProducts[kzMarketplace].length === 0) {
+      void loadKzProducts(kzMarketplace)
+    }
+
+    if (activeTab === 'analytics') {
+      for (const marketplace of ['kaspi', 'satu', 'halyk'] as const) {
+        if (kzProducts[marketplace].length === 0) {
+          void loadKzProducts(marketplace)
+        }
+      }
+    }
+  }, [
+    token,
+    shopRegion,
+    activeTab,
+    productionSubTab,
+    productionCatalogTab,
+    kzMarketplace,
+    kzProducts,
+  ])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics') || shopRegion !== 'rf') {
       return
     }
 
     loadHomeAnalytics()
-  }, [activeTab, token, user?.role, user?.allowedFeatures])
+  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
-    if (!token || activeTab !== 'analytics' || !hasFeature('analytics')) {
+    if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics') || shopRegion !== 'kz') {
+      return
+    }
+
+    loadAllHomeKzAnalytics()
+  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || shopRegion !== 'rf') {
       return
     }
 
     setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
     setAnalyticsDateTo(getDefaultAnalyticsDateTo())
     void loadAnalyticsSnapshot()
-  }, [activeTab, token, user?.role, user?.allowedFeatures])
+  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
-    if (!token || activeTab !== 'analytics' || !hasFeature('analytics')) {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || shopRegion !== 'rf') {
       return
     }
 
@@ -1852,7 +2226,7 @@ function App() {
     }
 
     loadAnalytics()
-  }, [analyticsDateFrom, analyticsDateTo, activeTab, token, user?.role, user?.allowedFeatures])
+  }, [analyticsDateFrom, analyticsDateTo, activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
     if (!token || activeTab !== 'analytics' || analyticsSubTab !== 'production') {
@@ -3765,12 +4139,31 @@ function App() {
   function handleShopRegionChange(region: ShopRegion) {
     setShopRegion(region)
     localStorage.setItem(SHOP_REGION_STORAGE_KEY, region)
+    const nextTaskMode = getDefaultTaskFormMode(region, user?.role, kzTaskMarketplace)
     if (region === 'kz') {
-      setProductionCatalogTab(kzMarketplace)
-      setTaskFormMode(kzTaskMarketplace)
+      setProductionCatalogTab(
+        isNovinkaCatalogTab(productionCatalogTab)
+          ? toNovinkaCatalogTab(kzMarketplace)
+          : kzMarketplace,
+      )
+      setTaskFormMode(nextTaskMode)
+      setAnalytics(null)
+      setAnalyticsSnapshot(null)
+      setHomeAnalytics(null)
+      setHomeKzAnalytics({ kaspi: null, satu: null, halyk: null })
+      setHomeKzAnalyticsStatus({ kaspi: '', satu: '', halyk: '' })
+      setAnalyticsStatus('')
+      if (activeTab === 'supplies') {
+        setActiveTab('home')
+      }
     } else {
-      setProductionCatalogTab('ozon')
-      setTaskFormMode('ozon')
+      setProductionCatalogTab(
+        isNovinkaCatalogTab(productionCatalogTab) ? 'novinka-ozon' : 'ozon',
+      )
+      setTaskFormMode(nextTaskMode)
+      setHomeKzAnalytics({ kaspi: null, satu: null, halyk: null })
+      setHomeKzAnalyticsStatus({ kaspi: '', satu: '', halyk: '' })
+      setAnalyticsStatus('')
     }
   }
 
@@ -3779,15 +4172,16 @@ function App() {
     localStorage.setItem(KZ_MARKETPLACE_STORAGE_KEY, marketplace)
     if (productionCatalogTab === 'kaspi' || productionCatalogTab === 'satu' || productionCatalogTab === 'halyk') {
       setProductionCatalogTab(marketplace)
+    } else if (isNovinkaCatalogTab(productionCatalogTab)) {
+      setProductionCatalogTab(toNovinkaCatalogTab(marketplace))
     }
   }
 
   function handleKzTaskMarketplaceChange(marketplace: KzMarketplace) {
     setKzTaskMarketplace(marketplace)
     localStorage.setItem(KZ_MARKETPLACE_STORAGE_KEY, marketplace)
-    if (taskFormMode !== 'novinka') {
-      setTaskFormMode(marketplace)
-    }
+    setTaskFormMode(marketplace)
+    setSelectedTaskNovinkaOfferId('')
   }
 
   async function loadOzonStocks() {
@@ -3881,6 +4275,50 @@ function App() {
     setHomeAnalyticsStatus(`Обновлено: ${new Date(data.timestamp).toLocaleString('ru-RU')}`)
   }
 
+  async function loadHomeKzAnalytics(marketplace: KzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setHomeKzAnalyticsStatus((current) => ({
+      ...current,
+      [marketplace]: `Загружаем аналитику ${label} за текущий месяц...`,
+    }))
+
+    const params = new URLSearchParams({
+      dateFrom: getDefaultAnalyticsDateFrom(),
+      dateTo: getDefaultAnalyticsDateTo(),
+    })
+
+    const response = await fetch(`/api/kz/${marketplace}/analytics?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      setHomeKzAnalyticsStatus((current) => ({
+        ...current,
+        [marketplace]: getApiErrorMessage(
+          errorText,
+          `Не удалось получить аналитику ${label}`,
+        ),
+      }))
+      return
+    }
+
+    const data: OzonAnalytics = await response.json()
+    setHomeKzAnalytics((current) => ({ ...current, [marketplace]: data }))
+    setHomeKzAnalyticsStatus((current) => ({
+      ...current,
+      [marketplace]: `Обновлено: ${new Date(data.timestamp).toLocaleString('ru-RU')}`,
+    }))
+  }
+
+  function loadAllHomeKzAnalytics() {
+    for (const marketplace of ['kaspi', 'satu', 'halyk'] as const) {
+      void loadHomeKzAnalytics(marketplace)
+    }
+  }
+
   function openTab(
     tab: TabId,
     subTab?: {
@@ -3955,6 +4393,15 @@ function App() {
   }
 
   async function refreshAnalytics() {
+    if (shopRegion === 'kz') {
+      if (analyticsSubTab === 'production') {
+        await loadProductionAnalyticsReport()
+      } else if (kzProducts[kzMarketplace].length === 0) {
+        await loadKzProducts(kzMarketplace)
+      }
+      return
+    }
+
     if (analyticsSubTab === 'production') {
       await loadProductionAnalyticsReport()
       return
@@ -4199,13 +4646,18 @@ function App() {
     setProductionStatus(data.length ? `Найдено записей: ${data.length}` : 'Записей пока нет')
   }
 
-  async function uploadProductionFileForTaskItem(item: ProductionTaskItem, file: File) {
+  async function uploadProductionFileForTaskItem(
+    item: ProductionTaskItem,
+    file: File,
+    taskType?: ProductionTask['taskType'],
+  ) {
+    const marketplace = resolveNovinkaMarketplaceFromTaskType(taskType, shopRegion, kzTaskMarketplace)
     const formData = new FormData()
     formData.append('ozonProductId', item.ozonProductId > 0 ? String(item.ozonProductId) : '0')
     formData.append('offerId', item.offerId)
     formData.append('productName', item.productName)
     formData.append('productLink', item.productLink ?? '')
-    formData.append('notes', '')
+    formData.append('notes', appendNovinkaMarketplaceNote('', marketplace))
     formData.append('file', file)
 
     const response = await fetch('/api/production/files', {
@@ -4223,28 +4675,6 @@ function App() {
 
     setTaskStatus('Файл загружен')
     await loadProductionFiles(productionSearch)
-  }
-
-  async function uploadNovinkaImageForTaskItem(item: ProductionTaskItem, file: File) {
-    const formData = new FormData()
-    formData.append('ozonProductId', '0')
-    formData.append('offerId', item.offerId)
-    formData.append('productName', item.productName)
-    formData.append('productLink', item.productLink ?? '')
-    formData.append('notes', 'Фото товара')
-    formData.append('file', file)
-
-    const response = await fetch('/api/production/files', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: formData,
-    })
-
-    if (!response.ok) {
-      throw new Error('Не удалось загрузить картинку новинки')
-    }
   }
 
   async function downloadProductionFile(id: string) {
@@ -4475,11 +4905,6 @@ function App() {
 
   function resetTaskForm() {
     setDraftTaskItems([])
-    setDraftNovinkaItems([])
-    setNovinkaProductName('')
-    setNovinkaProductLink('')
-    setNovinkaProductImageFile(undefined)
-    setNovinkaProductImagePreviewUrl('')
     setTaskIsUrgent(false)
     setSelectedTaskProductId('')
     setSelectedTaskNovinkaOfferId('')
@@ -4488,20 +4913,29 @@ function App() {
     setEditingTaskId(null)
   }
 
-  function setNovinkaProductImage(file?: File) {
-    setNovinkaProductImageFile(file)
-    setNovinkaProductImagePreviewUrl((current) => {
-      if (current) {
-        URL.revokeObjectURL(current)
-      }
+  function resetNovinkaTaskForm() {
+    setDraftNovinkaItems([])
+    setNovinkaProductName('')
+    setNovinkaProductLink('')
+    setTaskIsUrgent(false)
+    setEditingTaskId(null)
+    setTaskFormStatus('')
+  }
 
-      return file ? URL.createObjectURL(file) : ''
-    })
+  function openCreateNovinkaTaskModal() {
+    resetNovinkaTaskForm()
+    setNovinkaTaskMarketplace(shopRegion === 'rf' ? 'ozon' : kzTaskMarketplace)
+    setShowCreateNovinkaTaskModal(true)
+  }
+
+  function closeNovinkaTaskFormModal() {
+    setShowCreateNovinkaTaskModal(false)
+    resetNovinkaTaskForm()
   }
 
   function addDraftNovinkaToOzonTask() {
     const quantity = Number(taskNovinkaQuantity)
-    const selectedNovinka = novinkaProductionCatalogItems.find(
+    const selectedNovinka = taskFormNovinkaCatalogItems.find(
       (item) => item.offerId === selectedTaskNovinkaOfferId,
     )
 
@@ -4541,7 +4975,7 @@ function App() {
       return
     }
 
-    const sourceNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === editorNovinkaOfferId)
+    const sourceNovinka = editorNovinkaCatalogItems.find((item) => item.offerId === editorNovinkaOfferId)
     const targetOzonProductId = Number(editorOzonProductId)
 
     if (!sourceNovinka) {
@@ -4612,26 +5046,44 @@ function App() {
         tempId: createTempId(),
         productName,
         productLink,
-        imageFile: novinkaProductImageFile,
-        imagePreviewUrl: novinkaProductImagePreviewUrl,
       },
     ])
     setNovinkaProductName('')
     setNovinkaProductLink('')
-    setNovinkaProductImageFile(undefined)
-    setNovinkaProductImagePreviewUrl('')
     setTaskFormStatus('')
     setTaskStatus('Новинка добавлена в задачу')
   }
 
+  function getTaskFormProducts(mode: TaskFormMode = taskFormMode): OzonProduct[] {
+    if (shopRegion === 'rf') {
+      return ozonProducts
+    }
+
+    if (mode === 'kaspi' || mode === 'satu' || mode === 'halyk') {
+      return kzProducts[mode] ?? []
+    }
+
+    return kzProducts[kzTaskMarketplace] ?? []
+  }
+
   function openCreateTaskModal() {
     resetTaskForm()
-    const defaultMode = user?.role === 'Designer' ? 'novinka' : 'ozon'
+    const defaultMode = getDefaultTaskFormMode(shopRegion, user?.role, kzTaskMarketplace)
     setTaskFormMode(defaultMode)
     setTaskFormStatus('')
     setShowCreateTaskModal(true)
-    if (defaultMode !== 'novinka' && ozonProducts.length === 0) {
-      void loadOzonProducts()
+    if (isMarketplaceTaskFormMode(defaultMode)) {
+      if (shopRegion === 'rf' && ozonProducts.length === 0) {
+        void loadOzonProducts()
+      } else if (shopRegion === 'kz') {
+        const marketplace =
+          defaultMode === 'kaspi' || defaultMode === 'satu' || defaultMode === 'halyk'
+            ? defaultMode
+            : kzTaskMarketplace
+        if ((kzProducts[marketplace] ?? []).length === 0) {
+          void loadKzProducts(marketplace)
+        }
+      }
     }
     if (productionFiles.length === 0) {
       void loadProductionFiles('')
@@ -4650,40 +5102,51 @@ function App() {
       return
     }
 
-    setEditingTaskId(task.id)
     setTaskIsUrgent(task.isUrgent)
+
     if (isNovinkaTask(task)) {
-      setTaskFormMode('novinka')
+      setEditingTaskId(task.id)
+      setNovinkaTaskMarketplace(
+        resolveNovinkaMarketplaceForTask(task, productionFiles) ??
+          (shopRegion === 'rf' ? 'ozon' : kzTaskMarketplace),
+      )
       setDraftNovinkaItems(
         getProductionTaskItems(task).map((item) => ({
           tempId: createTempId(),
           productName: item.productName,
-          productLink: item.productLink ?? '',
+          productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
         })),
       )
-      setDraftTaskItems([])
+      setShowCreateNovinkaTaskModal(true)
+      return
+    }
+
+    setEditingTaskId(task.id)
+    const taskType = task.taskType ?? 'Ozon'
+    if (shopRegion === 'kz' && isKzMarketplaceTaskType(taskType)) {
+      setTaskFormMode(resolveKzMarketplaceFromTaskType(taskType))
     } else {
       setTaskFormMode('ozon')
-      setDraftTaskItems(
-        getProductionTaskItems(task).map((item) => {
-          const isNovinkaItem =
-            item.ozonProductId <= 0 &&
-            (item.offerId.startsWith('NV-') || Boolean(item.productLink?.trim()))
-          return {
-            tempId: createTempId(),
-            ozonProductId: item.ozonProductId,
-            offerId: item.offerId,
-            productName: item.productName,
-            productLink: item.productLink,
-            imageUrl: ozonProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
-            requiredQuantity: item.requiredQuantity,
-            enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
-            isNovinka: isNovinkaItem,
-          }
-        }),
-      )
-      setDraftNovinkaItems([])
     }
+    setDraftTaskItems(
+      getProductionTaskItems(task).map((item) => {
+        const isNovinkaItem =
+          item.ozonProductId <= 0 &&
+          (item.offerId.startsWith('NV-') || Boolean(item.productLink?.trim()))
+        return {
+          tempId: createTempId(),
+          ozonProductId: item.ozonProductId,
+          offerId: item.offerId,
+          productName: item.productName,
+          productLink: item.productLink,
+          imageUrl:
+            productionLookupProducts.find((product) => product.productId === item.ozonProductId)?.imageUrl ?? '',
+          requiredQuantity: item.requiredQuantity,
+          enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+          isNovinka: isNovinkaItem,
+        }
+      }),
+    )
     setSelectedTaskProductId('')
     setTaskQuantity('')
     setShowCreateTaskModal(true)
@@ -4691,12 +5154,7 @@ function App() {
   }
 
   function addDraftTaskItem() {
-    const productsSource =
-      shopRegion === 'rf'
-        ? ozonProducts
-        : taskFormMode === 'novinka' || taskFormMode === 'ozon'
-          ? activeKzProducts
-          : kzProducts[taskFormMode as KzMarketplace]
+    const productsSource = getTaskFormProducts()
     const product = productsSource.find((item) => String(item.productId) === selectedTaskProductId)
     const quantity = Number(taskQuantity)
 
@@ -4722,112 +5180,49 @@ function App() {
     setTaskStatus('Товар добавлен в задачу')
   }
 
-  async function saveTaskFromDraft() {
-    const hasOzonProductionItems = draftTaskItems.some((item) => item.requiredQuantity > 0)
-    const isNovinka = taskFormMode === 'novinka' && !hasOzonProductionItems
+  async function saveNovinkaTaskFromDraft() {
+    const taskIdBeingEdited = editingTaskId
     let novinkaItems = [...draftNovinkaItems]
-    let ozonItems = [...draftTaskItems]
 
-    if (isNovinka) {
-      const productName = novinkaProductName.trim()
-      const productLink = novinkaProductLink.trim()
-      if (productName && productLink) {
-        novinkaItems = [
-          ...novinkaItems,
-          {
-            tempId: createTempId(),
-            productName,
-            productLink,
-            imageFile: novinkaProductImageFile,
-            imagePreviewUrl: novinkaProductImagePreviewUrl,
-          },
-        ]
-      }
-    } else {
-      const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
-      const quantity = Number(taskQuantity)
-      if (product && Number.isFinite(quantity) && quantity > 0) {
-        ozonItems = [
-          ...ozonItems,
-          {
-            tempId: createTempId(),
-            ozonProductId: product.productId,
-            offerId: product.offerId,
-            productName: product.name,
-            imageUrl: product.imageUrl,
-            requiredQuantity: quantity,
-            enforceMinimumQuantity: false,
-          },
-        ]
-      }
-
-      const novinka = novinkaProductionCatalogItems.find(
-        (item) => item.offerId === selectedTaskNovinkaOfferId,
-      )
-      const novinkaQuantity = Number(taskNovinkaQuantity)
-      if (novinka && Number.isFinite(novinkaQuantity) && novinkaQuantity > 0 && novinka.fileCount > 0) {
-        ozonItems = [
-          ...ozonItems,
-          {
-            tempId: createTempId(),
-            ozonProductId: novinka.ozonProductId ?? 0,
-            offerId: novinka.offerId,
-            productName: novinka.productName,
-            productLink: novinka.productLink,
-            imageUrl: '',
-            requiredQuantity: novinkaQuantity,
-            enforceMinimumQuantity: false,
-            isNovinka: true,
-          },
-        ]
-      }
+    const productName = novinkaProductName.trim()
+    const productLink = novinkaProductLink.trim()
+    if (productName && productLink) {
+      novinkaItems = [
+        ...novinkaItems,
+        {
+          tempId: createTempId(),
+          productName,
+          productLink,
+        },
+      ]
     }
 
-    const draftItems = isNovinka ? novinkaItems : ozonItems
-
-    if (draftItems.length === 0) {
-      setTaskFormStatus(
-        isNovinka
-          ? 'Добавьте новинку или заполните наименование и ссылку'
-          : 'Добавьте товар или новинку из списка и укажите количество',
-      )
+    if (novinkaItems.length === 0) {
+      setTaskFormStatus('Добавьте новинку или заполните наименование и ссылку')
       return
     }
 
     setTaskFormSaving(true)
     setTaskFormStatus('')
 
-    const payload = isNovinka
-      ? {
-          taskType: 'Novinka',
-          isUrgent: taskIsUrgent,
-          items: novinkaItems.map((item) => ({
-            ozonProductId: 0,
-            offerId: '',
-            productName: item.productName,
-            productLink: item.productLink,
-            requiredQuantity: 0,
-            enforceMinimumQuantity: false,
-          })),
-        }
-      : {
-          taskType: shopRegion === 'rf' ? 'Ozon' : getKzTaskType(taskFormMode as KzMarketplace),
-          isUrgent: taskIsUrgent,
-          items: ozonItems.map((item) => ({
-            ozonProductId: item.ozonProductId,
-            offerId: item.offerId,
-            productName: item.productName,
-            productLink: item.productLink ?? '',
-            requiredQuantity: item.requiredQuantity,
-            enforceMinimumQuantity: item.enforceMinimumQuantity,
-          })),
-        }
+    const payload = {
+      taskType: 'Novinka',
+      isUrgent: taskIsUrgent,
+      items: novinkaItems.map((item) => ({
+        ozonProductId: 0,
+        offerId: '',
+        productName: item.productName,
+        productLink: appendNovinkaMarketplaceNote(item.productLink, novinkaTaskMarketplace),
+        requiredQuantity: 0,
+        enforceMinimumQuantity: false,
+      })),
+    }
 
     try {
       const response = await fetch(
-        editingTaskId ? `/api/production/tasks/${editingTaskId}` : '/api/production/tasks',
+        taskIdBeingEdited ? `/api/production/tasks/${taskIdBeingEdited}` : '/api/production/tasks',
         {
-          method: editingTaskId ? 'PUT' : 'POST',
+          method: taskIdBeingEdited ? 'PUT' : 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
@@ -4837,44 +5232,142 @@ function App() {
       )
 
       if (!response.ok) {
-        const message = await response.text()
-        setTaskFormStatus(message || (editingTaskId ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу'))
+        const message = getApiErrorMessage(
+          await response.text(),
+          taskIdBeingEdited ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу',
+        )
+        setTaskFormStatus(message)
         setTaskFormSaving(false)
         return
       }
 
-      const wasEdit = Boolean(editingTaskId)
+      const wasEdit = Boolean(taskIdBeingEdited)
       const savedTask: ProductionTask | null = response.status === 204 ? null : await response.json()
-      let savedStatus = wasEdit ? 'Задача обновлена' : 'Задача создана'
       if (!wasEdit && savedTask?.id && user?.id) {
         markTaskNotificationsSeen('new', [savedTask.id])
       }
-      if (!wasEdit && isNovinka && savedTask?.items?.length) {
-        const savedItems = getProductionTaskItems(savedTask)
-        const uploadDrafts = novinkaItems.filter((item) => item.imageFile)
-        if (uploadDrafts.length > 0) {
-          try {
-            for (const draft of uploadDrafts) {
-              const savedItem =
-                savedItems.find(
-                  (item) =>
-                    item.productName.trim() === draft.productName.trim() &&
-                    (item.productLink ?? '').trim() === draft.productLink.trim(),
-                ) ?? savedItems[novinkaItems.indexOf(draft)]
 
-              if (savedItem && draft.imageFile) {
-                await uploadNovinkaImageForTaskItem(savedItem, draft.imageFile)
-              }
-            }
-            await loadProductionFiles(productionSearch)
-          } catch {
-            savedStatus = 'Задача создана, но картинку новинки загрузить не удалось'
-          }
-        }
+      setTaskFormSaving(false)
+      closeNovinkaTaskFormModal()
+      setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
+      void loadProductionTasks()
+    } catch {
+      setTaskFormStatus('Не удалось сохранить задачу')
+      setTaskFormSaving(false)
+    }
+  }
+
+  async function saveTaskFromDraft() {
+    const taskIdBeingEdited = editingTaskId
+    let ozonItems = [...draftTaskItems]
+
+    const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
+    const quantity = Number(taskQuantity)
+    if (product && Number.isFinite(quantity) && quantity > 0) {
+      ozonItems = [
+        ...ozonItems,
+        {
+          tempId: createTempId(),
+          ozonProductId: product.productId,
+          offerId: product.offerId,
+          productName: product.name,
+          imageUrl: product.imageUrl,
+          requiredQuantity: quantity,
+          enforceMinimumQuantity: false,
+        },
+      ]
+    }
+
+    const novinka = taskFormNovinkaCatalogItems.find((item) => item.offerId === selectedTaskNovinkaOfferId)
+    const novinkaQuantity = Number(taskNovinkaQuantity)
+    if (novinka && Number.isFinite(novinkaQuantity) && novinkaQuantity > 0 && novinka.fileCount > 0) {
+      ozonItems = [
+        ...ozonItems,
+        {
+          tempId: createTempId(),
+          ozonProductId: novinka.ozonProductId ?? 0,
+          offerId: novinka.offerId,
+          productName: novinka.productName,
+          productLink: novinka.productLink,
+          imageUrl: '',
+          requiredQuantity: novinkaQuantity,
+          enforceMinimumQuantity: false,
+          isNovinka: true,
+        },
+      ]
+    }
+
+    if (ozonItems.length === 0) {
+      setTaskFormStatus('Добавьте товар или новинку из списка и укажите количество')
+      return
+    }
+
+    const normalizedOzonItems = ozonItems.map((item) => ({
+      ...item,
+      offerId: item.offerId ?? '',
+      productName: item.productName ?? '',
+      productLink: item.productLink ?? '',
+      requiredQuantity: Math.max(0, Math.round(Number(item.requiredQuantity) || 0)),
+    }))
+
+    if (normalizedOzonItems.some((item) => item.requiredQuantity <= 0)) {
+      setTaskFormStatus('Укажите количество больше нуля для каждого товара')
+      return
+    }
+
+    setTaskFormSaving(true)
+    setTaskFormStatus('')
+
+    const payload = {
+      taskType:
+        shopRegion === 'rf'
+          ? 'Ozon'
+          : isMarketplaceTaskFormMode(taskFormMode)
+            ? getKzTaskType(taskFormMode as KzMarketplace)
+            : getKzTaskType(kzTaskMarketplace),
+      isUrgent: taskIsUrgent,
+      items: normalizedOzonItems.map((item) => ({
+        ozonProductId: item.ozonProductId ?? 0,
+        offerId: item.offerId,
+        productName: item.productName,
+        productLink: item.productLink,
+        requiredQuantity: item.requiredQuantity,
+        enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+      })),
+    }
+
+    try {
+      const response = await fetch(
+        taskIdBeingEdited ? `/api/production/tasks/${taskIdBeingEdited}` : '/api/production/tasks',
+        {
+          method: taskIdBeingEdited ? 'PUT' : 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        },
+      )
+
+      if (!response.ok) {
+        const message = getApiErrorMessage(
+          await response.text(),
+          taskIdBeingEdited ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу',
+        )
+        setTaskFormStatus(message)
+        setTaskFormSaving(false)
+        return
       }
+
+      const wasEdit = Boolean(taskIdBeingEdited)
+      const savedTask: ProductionTask | null = response.status === 204 ? null : await response.json()
+      if (!wasEdit && savedTask?.id && user?.id) {
+        markTaskNotificationsSeen('new', [savedTask.id])
+      }
+
       setTaskFormSaving(false)
       closeTaskFormModal()
-      setTaskStatus(savedStatus)
+      setTaskStatus(wasEdit ? 'Задача обновлена' : 'Задача создана')
       void loadProductionTasks()
     } catch {
       setTaskFormStatus('Не удалось сохранить задачу')
@@ -5161,7 +5654,7 @@ function App() {
 
   function addReserveSupplyProduct() {
     const quantity = Number(reserveQuantity)
-    const selectedNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const selectedNovinka = supplyNovinkaCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
 
     if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
       setSupplyStatus('Выберите новинку из списка и укажите количество')
@@ -5393,7 +5886,7 @@ function App() {
 
   function addEditReserveSupplyProduct() {
     const quantity = Number(editReserveQuantity)
-    const selectedNovinka = novinkaProductionCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const selectedNovinka = supplyNovinkaCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
 
     if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
       setSupplyStatus('Выберите новинку из списка и укажите количество')
@@ -5650,170 +6143,28 @@ function App() {
                 </div>
               </div>
 
+              {shopRegion === 'rf' ? (
               <div className="home-blocks">
                 {isHomeBlockEnabled('production') && (
-                  <article className="home-block">
-                    <div className="home-block-head">
-                      <div>
-                        <h3>Производство</h3>
-                        <p>
-                          {homeProductionStats.urgent > 0
-                            ? `${homeProductionStats.urgent} срочных · `
-                            : ''}
-                          {homeProductionStats.total} активных задач
-                        </p>
-                      </div>
-                      <button type="button" className="home-block-link" onClick={() => openTab('production', { production: 'tasks' })}>
-                        Открыть
-                      </button>
-                    </div>
-                    <div className="home-metrics">
-                      <div className="home-metric">
-                        <span>Новые</span>
-                        <strong>{homeProductionStats.new}</strong>
-                      </div>
-                      <div className="home-metric home-metric-urgent">
-                        <span>Срочные</span>
-                        <strong>{homeProductionStats.urgent}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>В работе</span>
-                        <strong>{homeProductionStats.inProgress}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Отменённые</span>
-                        <strong>{homeProductionStats.cancelled}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Выполненные</span>
-                        <strong>{homeProductionStats.completed}</strong>
-                      </div>
-                    </div>
-                    <div className="home-block-actions">
-                      {hasHomeAction('production', 'production.tasks') && (
-                        <button type="button" onClick={() => openTab('production', { production: 'tasks' })}>
-                          Задачи
-                        </button>
-                      )}
-                      {hasHomeAction('production', 'production.tasks') && homeProductionStats.urgent > 0 && (
-                        <button
-                          type="button"
-                          className="home-block-urgent"
-                          onClick={() => openTab('production', { production: 'tasks', taskUrgency: 'urgent' })}
-                        >
-                          Срочные
-                        </button>
-                      )}
-                      {hasHomeAction('production', 'production.inProgress') && (
-                        <button type="button" onClick={() => openTab('production', { production: 'inProgress' })}>
-                          В работе
-                        </button>
-                      )}
-                      {hasHomeAction('production', 'production.cancelled') && (
-                        <button type="button" onClick={() => openTab('production', { production: 'cancelled' })}>
-                          Отменённые
-                        </button>
-                      )}
-                      {hasHomeAction('production', 'production.completed') && (
-                        <button type="button" onClick={() => openTab('production', { production: 'completed' })}>
-                          Выполненные
-                        </button>
-                      )}
-                    </div>
-                  </article>
+                  <HomeProductionBlock
+                    title="Производство"
+                    stats={homeProductionStats}
+                    hasHomeAction={hasHomeAction}
+                    onOpen={(subTab, taskUrgency) => openTab('production', { production: subTab, taskUrgency })}
+                  />
                 )}
 
-                {isHomeBlockEnabled('analytics') && shopRegion === 'rf' && (
-                  <article className="home-block">
-                    <div className="home-block-head">
-                      <div>
-                        <h3>Аналитика</h3>
-                        <p>За текущий месяц · {homeMonthPeriodLabel}</p>
-                        {homeAnalyticsStatus && <small className="home-block-status">{homeAnalyticsStatus}</small>}
-                      </div>
-                      <button type="button" className="home-block-link" onClick={() => openTab('analytics', { analytics: 'summary' })}>
-                        Открыть
-                      </button>
-                    </div>
-                    <div className="home-metrics">
-                      <div className="home-metric">
-                        <span>Продажи</span>
-                        <strong>{homeAnalytics?.salesTotalCount ?? '—'}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Выручка</span>
-                        <strong>
-                          {homeAnalytics ? formatMoney(homeAnalytics.revenueTotal, 'KZT') : '—'}
-                        </strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Баланс Ozon</span>
-                        <strong>
-                          {homeAnalytics?.accountBalance === null || homeAnalytics?.accountBalance === undefined
-                            ? '—'
-                            : formatMoney(homeAnalytics.accountBalance, homeAnalytics.accountBalanceCurrency || 'KZT')}
-                        </strong>
-                      </div>
-                      <div className="home-metric home-metric-loss">
-                        <span>Комиссия Ozon</span>
-                        <strong>
-                          {homeAnalytics ? formatLossMoney(homeAnalytics.commissionTotal, 'KZT') : '—'}
-                        </strong>
-                      </div>
-                      <div className="home-metric home-metric-loss">
-                        <span>Логистика</span>
-                        <strong>
-                          {homeAnalytics ? formatLossMoney(homeAnalytics.logisticsTotal, 'KZT') : '—'}
-                        </strong>
-                      </div>
-                      <div className="home-metric home-metric-loss">
-                        <span>Логистика отменённых</span>
-                        <strong>
-                          {homeAnalytics
-                            ? formatLossMoney(homeAnalytics.cancelledLogisticsTotal, 'KZT')
-                            : '—'}
-                        </strong>
-                      </div>
-                    </div>
-                    <div className="home-metrics home-metrics-secondary">
-                      <div className="home-metric">
-                        <span>Собираются</span>
-                        <strong>{homeAnalytics?.awaitingDeliverCount ?? '—'}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Едут</span>
-                        <strong>{homeAnalytics?.inTransitCount ?? '—'}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Доставлены</span>
-                        <strong>{homeAnalytics?.deliveredProductCount ?? '—'}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Отменены</span>
-                        <strong>{homeAnalytics?.cancelledCount ?? '—'}</strong>
-                      </div>
-                    </div>
-                    <div className="home-block-actions">
-                      {hasHomeAction('analytics', 'analytics.summary') && (
-                        <button type="button" onClick={() => openTab('analytics', { analytics: 'summary' })}>
-                          Общая аналитика
-                        </button>
-                      )}
-                      {hasHomeAction('analytics', 'analytics.topProducts') && (
-                        <button type="button" onClick={() => openTab('analytics', { analytics: 'topProducts' })}>
-                          Топ товары
-                        </button>
-                      )}
-                      {hasHomeAction('analytics', 'analytics.noSales') && (
-                        <button type="button" onClick={() => openTab('analytics', { analytics: 'noSales' })}>
-                          Без продаж
-                        </button>
-                      )}
-                      <button type="button" className="home-block-refresh" onClick={loadHomeAnalytics}>
-                        Обновить
-                      </button>
-                    </div>
-                  </article>
+                {isHomeBlockEnabled('analytics') && (
+                  <HomeAnalyticsBlock
+                    title="Аналитика"
+                    periodLabel={homeMonthPeriodLabel}
+                    status={homeAnalyticsStatus}
+                    analytics={homeAnalytics}
+                    marketplaceLabel="Ozon"
+                    hasHomeAction={hasHomeAction}
+                    onOpenAnalytics={(subTab) => openTab('analytics', { analytics: subTab })}
+                    onRefresh={loadHomeAnalytics}
+                  />
                 )}
 
                 {isHomeBlockEnabled('supplies') && (
@@ -5871,59 +6222,96 @@ function App() {
                 )}
 
                 {isHomeBlockEnabled('products') && (
-                  <article className="home-block">
-                    <div className="home-block-head">
-                      <div>
-                        <h3>Товары</h3>
-                        <p>
-                          {shopRegion === 'rf'
-                            ? `${homeProductStats.total} товаров на Ozon`
-                            : `${homeProductStats.total} товаров Kaspi / Satu / Halyk`}
-                        </p>
-                        {catalogProductsStatus && <small className="home-block-status">{catalogProductsStatus}</small>}
-                      </div>
-                      <button type="button" className="home-block-link" onClick={() => openTab('products')}>
-                        Открыть
-                      </button>
-                    </div>
-                    <div className="home-metrics">
-                      <div className="home-metric">
-                        <span>Всего</span>
-                        <strong>{homeProductStats.total}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Готов к продаже</span>
-                        <strong>{homeProductStats.ready}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>В архиве</span>
-                        <strong>{homeProductStats.archived}</strong>
-                      </div>
-                      <div className="home-metric">
-                        <span>Продается</span>
-                        <strong>{homeProductStats.selling}</strong>
-                      </div>
-                    </div>
-                    <div className="home-block-actions">
-                      <button type="button" onClick={() => openTab('products')}>
-                        Каталог товаров
-                      </button>
-                      <button
-                        type="button"
-                        className="home-block-refresh"
-                        onClick={() => (shopRegion === 'rf' ? void loadOzonProducts() : void loadKzProducts())}
-                      >
-                        Обновить
-                      </button>
-                    </div>
-                  </article>
+                  <HomeProductsBlock
+                    title="Товары"
+                    subtitle={`${homeProductStats.total} товаров на Ozon`}
+                    status={ozonStatus}
+                    stats={homeProductStats}
+                    onOpen={() => openTab('products')}
+                    onRefresh={() => void loadOzonProducts()}
+                  />
                 )}
               </div>
+              ) : (
+              <div className="home-dashboard-kz">
+                {hasVisibleKzHomeBlock('production') && (
+                  <div className="home-blocks home-blocks-kz-row">
+                    {getHomeBlockKzMarketplaces('production').map((marketplace) => (
+                      <HomeProductionBlock
+                        key={marketplace}
+                        title={`Производство · ${getKzMarketplaceLabel(marketplace)}`}
+                        stats={homeKzProductionStats[marketplace]}
+                        hasHomeAction={hasHomeAction}
+                        onOpen={(subTab, taskUrgency) => {
+                          handleKzTaskMarketplaceChange(marketplace)
+                          openTab('production', { production: subTab, taskUrgency })
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
 
-              {!isHomeBlockEnabled('production') &&
+                {hasVisibleKzHomeBlock('analytics') && (
+                  <div className="home-blocks home-blocks-kz-row">
+                    {getHomeBlockKzMarketplaces('analytics').map((marketplace) => (
+                      <HomeAnalyticsBlock
+                        key={marketplace}
+                        title={`Аналитика · ${getKzMarketplaceLabel(marketplace)}`}
+                        periodLabel={homeMonthPeriodLabel}
+                        status={homeKzAnalyticsStatus[marketplace]}
+                        analytics={homeKzAnalytics[marketplace]}
+                        marketplaceLabel={getKzMarketplaceLabel(marketplace)}
+                        hasHomeAction={hasHomeAction}
+                        onOpenAnalytics={(subTab) => {
+                          handleKzMarketplaceChange(marketplace)
+                          openTab('analytics', { analytics: subTab })
+                        }}
+                        onRefresh={() => void loadHomeKzAnalytics(marketplace)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {hasVisibleKzHomeBlock('products') && (
+                  <div className="home-blocks home-blocks-kz-row">
+                    {getHomeBlockKzMarketplaces('products').map((marketplace) => {
+                      const label = getKzMarketplaceLabel(marketplace)
+                      const stats = computeCatalogProductStats(kzProducts[marketplace])
+
+                      return (
+                        <HomeProductsBlock
+                          key={marketplace}
+                          title={`Товары · ${label}`}
+                          subtitle={`${stats.total} товаров на ${label}`}
+                          status={kzProductsStatus[marketplace]}
+                          stats={stats}
+                          onOpen={() => {
+                            handleKzMarketplaceChange(marketplace)
+                            openTab('products')
+                          }}
+                          onRefresh={() => void loadKzProducts(marketplace)}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              )}
+
+              {shopRegion === 'rf' &&
+                !isHomeBlockEnabled('production') &&
                 !isHomeBlockEnabled('analytics') &&
                 !isHomeBlockEnabled('supplies') &&
                 !isHomeBlockEnabled('products') && (
+                <div className="empty-state">
+                  <strong>Нет доступных блоков для главной страницы.</strong>
+                </div>
+              )}
+
+              {shopRegion === 'kz' &&
+                !hasVisibleKzHomeBlock('production') &&
+                !hasVisibleKzHomeBlock('analytics') &&
+                !hasVisibleKzHomeBlock('products') && (
                 <div className="empty-state">
                   <strong>Нет доступных блоков для главной страницы.</strong>
                 </div>
@@ -6088,10 +6476,17 @@ function App() {
               )}
 
               {productionSubTab !== 'products' && shopRegion === 'kz' && (
-                <KzMarketplaceTabs
-                  activeMarketplace={kzTaskMarketplace}
-                  onChange={handleKzTaskMarketplaceChange}
-                />
+                <div className="production-task-marketplace-row">
+                  <KzMarketplaceTabs
+                    activeMarketplace={kzTaskMarketplace}
+                    onChange={handleKzTaskMarketplaceChange}
+                  />
+                  {canCreateProductionTasks() && productionSubTab === 'tasks' && (
+                    <button type="button" className="production-novinka-create-btn" onClick={openCreateNovinkaTaskModal}>
+                      Новинка
+                    </button>
+                  )}
+                </div>
               )}
 
               {productionSubTab === 'products' && (
@@ -6125,16 +6520,21 @@ function App() {
                           </button>
                         ))
                       )}
-                      <button
-                        type="button"
-                        className={productionCatalogTab === 'novinka' ? 'active' : ''}
-                        onClick={() => {
-                          setProductionCatalogTab('novinka')
-                          setProductEditorStatus('')
-                        }}
-                      >
-                        Новинки
-                      </button>
+                      {getVisibleNovinkaMarketplaces(shopRegion).map((marketplace) => (
+                        <button
+                          key={`novinka-${marketplace}`}
+                          type="button"
+                          className={
+                            productionCatalogTab === toNovinkaCatalogTab(marketplace) ? 'active' : ''
+                          }
+                          onClick={() => {
+                            setProductionCatalogTab(toNovinkaCatalogTab(marketplace))
+                            setProductEditorStatus('')
+                          }}
+                        >
+                          Новинки {getNovinkaMarketplaceLabel(marketplace)}
+                        </button>
+                      ))}
                       {canEditProductionProducts() && (
                         <button
                           type="button"
@@ -6160,7 +6560,7 @@ function App() {
                         className="search-form"
                         onSubmit={(event) => {
                           event.preventDefault()
-                          if (productionCatalogTab === 'novinka') {
+                          if (isNovinkaCatalogTab(productionCatalogTab)) {
                             void loadProductionFiles(productionSearch)
                           } else if (shopRegion === 'rf') {
                             void loadOzonProducts()
@@ -6182,7 +6582,7 @@ function App() {
                   {productionCatalogTab === 'editor' && canEditProductionProducts() ? (
                     <ProductTypeEditorPanel
                       token={token}
-                      novinkaProducts={novinkaProductionCatalogItems}
+                      novinkaProducts={editorNovinkaCatalogItems}
                       ozonProducts={productionLookupProducts}
                       selectedNovinkaOfferId={editorNovinkaOfferId}
                       selectedOzonProductId={editorOzonProductId}
@@ -6199,15 +6599,15 @@ function App() {
                     <>
                   <div className="section-title soft-title">
                     <h2>
-                      {productionCatalogTab === 'novinka'
-                        ? 'Новинки'
+                      {activeNovinkaCatalogMarketplace !== null
+                        ? `Новинки ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)}`
                         : shopRegion === 'rf'
                           ? 'Товары на Ozon'
                           : `Товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)}`}
                     </h2>
                     <p>
-                      {productionCatalogTab === 'novinka'
-                        ? `Новинки с файлами · ${filteredProductionCatalog.length}`
+                      {activeNovinkaCatalogMarketplace !== null
+                        ? `Новинки ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с файлами · ${filteredProductionCatalog.length}`
                         : shopRegion === 'rf'
                           ? `Все товары Ozon · ${filteredProductionCatalog.length}`
                           : `Все товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} · ${filteredProductionCatalog.length}`}
@@ -6250,7 +6650,7 @@ function App() {
                                     ? shopRegion === 'rf'
                                       ? 'Ozon'
                                       : getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)
-                                    : 'Новинка'}
+                                    : getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace ?? 'ozon')}
                                 </small>
                               </span>
                             </span>
@@ -6286,7 +6686,7 @@ function App() {
                                 <a href={ozonProduct.productUrl} target="_blank" rel="noreferrer">
                                   {shopRegion === 'rf' ? 'Ozon' : getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)}
                                 </a>
-                              ) : productionCatalogTab === 'novinka' && item.productLink ? (
+                              ) : activeNovinkaCatalogMarketplace !== null && item.productLink ? (
                                 <a href={item.productLink} target="_blank" rel="noreferrer">
                                   Товар
                                 </a>
@@ -6305,7 +6705,9 @@ function App() {
                             ? shopRegion === 'rf'
                               ? 'Товары Ozon пока не загружены.'
                               : `Товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} пока не загружены.`
-                            : 'Пока нет новинок с файлами для производства.'}
+                            : activeNovinkaCatalogMarketplace !== null
+                              ? `Пока нет новинок ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с файлами для производства.`
+                              : 'Пока нет новинок с файлами для производства.'}
                         </strong>
                       </div>
                     )}
@@ -6319,6 +6721,15 @@ function App() {
                 <>
                   {canCreateProductionTasks() && (
                     <div className="supply-create-bar">
+                      {shopRegion === 'rf' && (
+                        <button
+                          type="button"
+                          className="production-novinka-create-btn"
+                          onClick={openCreateNovinkaTaskModal}
+                        >
+                          Новинка
+                        </button>
+                      )}
                       <button type="button" onClick={openCreateTaskModal}>
                         Создать задачу
                       </button>
@@ -6329,78 +6740,47 @@ function App() {
                     <div className="modal-backdrop" role="presentation">
                       <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
                         <div className="modal-title-row">
-                          <h3>
-                            {editingTaskId
-                              ? taskFormMode === 'novinka'
-                                ? 'Редактировать задачу новинки'
-                                : 'Редактировать задачу'
-                              : taskFormMode === 'novinka'
-                                ? 'Создать задачу новинки'
-                                : 'Создать задачу'}
-                          </h3>
+                          <h3>{editingTaskId ? 'Редактировать задачу' : 'Создать задачу'}</h3>
                           <button type="button" onClick={closeTaskFormModal}>
                             Закрыть
                           </button>
                         </div>
 
-                        {!editingTaskId && (
+                        {!editingTaskId && shopRegion === 'kz' && (
                           <div className="task-form-mode-tabs">
-                            {shopRegion === 'rf' ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className={`task-form-mode-tab ${taskFormMode === 'ozon' ? 'active' : ''}`}
-                                  onClick={() => setTaskFormMode('ozon')}
-                                >
-                                  Производство / Ozon
-                                </button>
-                                <button
-                                  type="button"
-                                  className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
-                                  onClick={() => setTaskFormMode('novinka')}
-                                >
-                                  Новинка
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                {(['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
-                                  <button
-                                    key={marketplace}
-                                    type="button"
-                                    className={`task-form-mode-tab ${taskFormMode === marketplace ? 'active' : ''}`}
-                                    onClick={() => {
-                                      setTaskFormMode(marketplace)
-                                      handleKzTaskMarketplaceChange(marketplace)
-                                    }}
-                                  >
-                                    {getKzMarketplaceLabel(marketplace)}
-                                  </button>
-                                ))}
-                                <button
-                                  type="button"
-                                  className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
-                                  onClick={() => setTaskFormMode('novinka')}
-                                >
-                                  Новинка
-                                </button>
-                              </>
-                            )}
+                            {(['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
+                              <button
+                                key={marketplace}
+                                type="button"
+                                className={`task-form-mode-tab ${taskFormMode === marketplace ? 'active' : ''}`}
+                                onClick={() => {
+                                  setTaskFormMode(marketplace)
+                                  handleKzTaskMarketplaceChange(marketplace)
+                                }}
+                              >
+                                {getKzMarketplaceLabel(marketplace)}
+                              </button>
+                            ))}
                           </div>
                         )}
 
                         <div className="task-form task-form-modal">
-                          {taskFormMode !== 'novinka' ? (
-                            <div className="supply-forms">
+                          <div className="supply-forms">
                               <div className="supply-form-block supply-form-block-ozon">
                                 <strong>
                                   {shopRegion === 'rf'
                                     ? 'Товар из Ozon'
-                                    : `Товар из ${getKzMarketplaceLabel(taskFormMode as KzMarketplace)}`}
+                                    : `Товар из ${getKzMarketplaceLabel(
+                                        taskFormMode === 'kaspi' ||
+                                          taskFormMode === 'satu' ||
+                                          taskFormMode === 'halyk'
+                                          ? taskFormMode
+                                          : kzTaskMarketplace,
+                                      )}`}
                                 </strong>
                                 <ProductSearchInput
                                   listId="task-products"
-                                  products={shopRegion === 'rf' ? ozonProducts : kzProducts[taskFormMode as KzMarketplace]}
+                                  products={getTaskFormProducts()}
                                   selectedProductId={selectedTaskProductId}
                                   onProductIdChange={setSelectedTaskProductId}
                                   placeholder="Начните писать название или артикул"
@@ -6409,7 +6789,7 @@ function App() {
                                 />
                                 <div className="task-form-modal-compose supply-form-compose">
                                   {(() => {
-                                    const selectedTaskProduct = ozonProducts.find(
+                                    const selectedTaskProduct = getTaskFormProducts().find(
                                       (item) => String(item.productId) === selectedTaskProductId,
                                     )
                                     const supplyHint = selectedTaskProduct
@@ -6450,10 +6830,15 @@ function App() {
                               </div>
 
                               <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
-                                <strong>Новинки из каталога</strong>
+                                <strong>
+                                  Новинки из каталога ·{' '}
+                                  {getNovinkaMarketplaceLabel(
+                                    resolveTaskFormNovinkaMarketplace(shopRegion, taskFormMode, kzTaskMarketplace),
+                                  )}
+                                </strong>
                                 <NovinkaSearchInput
                                   listId="task-novinka-products"
-                                  products={novinkaProductionCatalogItems}
+                                  products={taskFormNovinkaCatalogItems}
                                   selectedOfferId={selectedTaskNovinkaOfferId}
                                   onOfferIdChange={setSelectedTaskNovinkaOfferId}
                                   placeholder="Начните писать название или артикул"
@@ -6461,7 +6846,7 @@ function App() {
                                 />
                                 <div className="task-form-modal-compose supply-form-compose">
                                   {(() => {
-                                    const selectedTaskNovinka = novinkaProductionCatalogItems.find(
+                                    const selectedTaskNovinka = taskFormNovinkaCatalogItems.find(
                                       (item) => item.offerId === selectedTaskNovinkaOfferId,
                                     )
 
@@ -6504,79 +6889,10 @@ function App() {
                                 </div>
                               </div>
                             </div>
-                          ) : (
-                            <div className="supply-form-block supply-form-block-novinka task-novinka-create-block">
-                              <strong>Новая новинка</strong>
-                              <span className="product-type-editor-hint">
-                                Укажите наименование и ссылку на товар. Файлы производства добавятся при выполнении задачи.
-                              </span>
-                              <div className="novinka-task-fields">
-                                <label className="novinka-task-field">
-                                  <span>Наименование товара</span>
-                                  <input
-                                    className="novinka-task-input"
-                                    placeholder="Введите название"
-                                    value={novinkaProductName}
-                                    onChange={(event) => setNovinkaProductName(event.target.value)}
-                                  />
-                                </label>
-                                <label className="novinka-task-field">
-                                  <span>Ссылка на товар</span>
-                                  <input
-                                    className="novinka-task-input"
-                                    placeholder="https://..."
-                                    value={novinkaProductLink}
-                                    onChange={(event) => setNovinkaProductLink(event.target.value)}
-                                  />
-                                </label>
-                                <label className="novinka-task-field">
-                                  <span>Картинка товара</span>
-                                  <input
-                                    className="novinka-task-input"
-                                    type="file"
-                                    accept="image/*"
-                                    onChange={(event) => setNovinkaProductImage(event.target.files?.[0])}
-                                  />
-                                </label>
-                              </div>
-                              <div className="novinka-task-compose-actions">
-                                {novinkaProductImagePreviewUrl ? (
-                                  <ProductImageHoverPreview
-                                    imageUrl={novinkaProductImagePreviewUrl}
-                                    name={novinkaProductName || 'Новинка'}
-                                  >
-                                    <ProductThumb
-                                      imageUrl={novinkaProductImagePreviewUrl}
-                                      name={novinkaProductName || 'Новинка'}
-                                      large
-                                    />
-                                  </ProductImageHoverPreview>
-                                ) : novinkaProductLink.trim() ? (
-                                  <LinkHoverPreview
-                                    url={novinkaProductLink}
-                                    name={novinkaProductName || 'Новинка'}
-                                    token={token}
-                                  />
-                                ) : (
-                                  <div className="task-form-modal-preview task-form-modal-preview-empty">
-                                    <span>Превью появится после ввода ссылки</span>
-                                  </div>
-                                )}
-                                <button
-                                  type="button"
-                                  className="task-form-modal-btn novinka-add-btn"
-                                  onClick={addDraftNovinkaItem}
-                                >
-                                  Добавить
-                                </button>
-                              </div>
-                            </div>
-                          )}
                         </div>
 
                         <div className="data-table modal-table">
-                          {taskFormMode === 'ozon' ? (
-                            <>
+                          <>
                           <div className="table-row task-draft-row table-head">
                             <span>Товар</span>
                             <span>Артикул</span>
@@ -6692,57 +7008,7 @@ function App() {
                               <strong>Добавьте товары в задачу.</strong>
                             </div>
                           )}
-                            </>
-                          ) : (
-                            <>
-                              <div className="table-row task-draft-row novinka-draft-row table-head">
-                                <span>Товар</span>
-                                <span>Ссылка</span>
-                                <span></span>
-                              </div>
-                              {draftNovinkaItems.map((item) => (
-                                <div className="table-row task-draft-row novinka-draft-row" key={item.tempId}>
-                                  <span className="product-mini task-draft-product-mini">
-                                    {item.imagePreviewUrl ? (
-                                      <ProductImageHoverPreview imageUrl={item.imagePreviewUrl} name={item.productName}>
-                                        <ProductThumb imageUrl={item.imagePreviewUrl} name={item.productName} large />
-                                      </ProductImageHoverPreview>
-                                    ) : (
-                                      <LinkHoverPreview
-                                        url={item.productLink}
-                                        name={item.productName}
-                                        token={token}
-                                      />
-                                    )}
-                                    <span>
-                                      <strong>{item.productName}</strong>
-                                    </span>
-                                  </span>
-                                  <span>
-                                    <NovinkaExternalLinkButton url={item.productLink} />
-                                  </span>
-                                  <span>
-                                    <button
-                                      type="button"
-                                      className="danger"
-                                      onClick={() =>
-                                        setDraftNovinkaItems((current) =>
-                                          current.filter((entry) => entry.tempId !== item.tempId),
-                                        )
-                                      }
-                                    >
-                                      Убрать
-                                    </button>
-                                  </span>
-                                </div>
-                              ))}
-                              {draftNovinkaItems.length === 0 && (
-                                <div className="empty-state">
-                                  <strong>Добавьте новинки в задачу.</strong>
-                                </div>
-                              )}
-                            </>
-                          )}
+                          </>
                         </div>
 
                         <div className="supply-actions task-form-modal-footer">
@@ -6751,6 +7017,130 @@ function App() {
                             type="button"
                             disabled={taskFormSaving}
                             onClick={() => void saveTaskFromDraft()}
+                          >
+                            {taskFormSaving ? 'Сохранение...' : editingTaskId ? 'Сохранить' : 'Создать'}
+                          </button>
+                          <label className="task-urgent-toggle">
+                            <input
+                              type="checkbox"
+                              checked={taskIsUrgent}
+                              onChange={(event) => setTaskIsUrgent(event.target.checked)}
+                            />
+                            Срочно
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {showCreateNovinkaTaskModal && (canCreateProductionTasks() || (editingTaskId && canEditProductionTasks())) && (
+                    <div className="modal-backdrop" role="presentation">
+                      <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
+                        <div className="modal-title-row">
+                          <h3>{editingTaskId ? 'Редактировать задачу новинки' : 'Создать задачу новинки'}</h3>
+                          <button type="button" onClick={closeNovinkaTaskFormModal}>
+                            Закрыть
+                          </button>
+                        </div>
+
+                        {shopRegion === 'kz' && (
+                          <div className="task-form-mode-tabs novinka-task-marketplace-tabs">
+                            {(['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
+                              <button
+                                key={marketplace}
+                                type="button"
+                                className={`task-form-mode-tab ${novinkaTaskMarketplace === marketplace ? 'active' : ''}`}
+                                onClick={() => setNovinkaTaskMarketplace(marketplace)}
+                              >
+                                {getKzMarketplaceLabel(marketplace)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="task-form task-form-modal">
+                          <div className="supply-form-block supply-form-block-novinka task-novinka-create-block">
+                            <strong>
+                              {shopRegion === 'rf'
+                                ? 'Новая новинка'
+                                : `Новая новинка · ${getNovinkaMarketplaceLabel(novinkaTaskMarketplace)}`}
+                            </strong>
+                            <span className="product-type-editor-hint">
+                              Укажите наименование и ссылку на товар. Превью и файлы производства появятся после
+                              загрузки макетов при выполнении задачи.
+                            </span>
+                            <div className="novinka-task-fields">
+                              <label className="novinka-task-field">
+                                <span>Наименование товара</span>
+                                <input
+                                  className="novinka-task-input"
+                                  placeholder="Введите название"
+                                  value={novinkaProductName}
+                                  onChange={(event) => setNovinkaProductName(event.target.value)}
+                                />
+                              </label>
+                              <label className="novinka-task-field">
+                                <span>Ссылка на товар</span>
+                                <input
+                                  className="novinka-task-input"
+                                  placeholder="https://..."
+                                  value={novinkaProductLink}
+                                  onChange={(event) => setNovinkaProductLink(event.target.value)}
+                                />
+                              </label>
+                            </div>
+                            <div className="novinka-task-compose-actions">
+                              <button type="button" className="task-form-modal-btn novinka-add-btn" onClick={addDraftNovinkaItem}>
+                                Добавить
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="data-table modal-table">
+                          <div className="table-row task-draft-row novinka-draft-row table-head">
+                            <span>Товар</span>
+                            <span>Ссылка</span>
+                            <span></span>
+                          </div>
+                          {draftNovinkaItems.map((item) => (
+                            <div className="table-row task-draft-row novinka-draft-row" key={item.tempId}>
+                              <span className="product-mini task-draft-product-mini">
+                                <span>
+                                  <strong>{item.productName}</strong>
+                                </span>
+                              </span>
+                              <span>
+                                <NovinkaExternalLinkButton url={item.productLink} />
+                              </span>
+                              <span>
+                                <button
+                                  type="button"
+                                  className="danger"
+                                  onClick={() =>
+                                    setDraftNovinkaItems((current) =>
+                                      current.filter((entry) => entry.tempId !== item.tempId),
+                                    )
+                                  }
+                                >
+                                  Убрать
+                                </button>
+                              </span>
+                            </div>
+                          ))}
+                          {draftNovinkaItems.length === 0 && (
+                            <div className="empty-state">
+                              <strong>Добавьте новинки в задачу.</strong>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="supply-actions task-form-modal-footer">
+                          {taskFormStatus && <p className="modal-status">{taskFormStatus}</p>}
+                          <button
+                            type="button"
+                            disabled={taskFormSaving}
+                            onClick={() => void saveNovinkaTaskFromDraft()}
                           >
                             {taskFormSaving ? 'Сохранение...' : editingTaskId ? 'Сохранить' : 'Создать'}
                           </button>
@@ -7052,7 +7442,7 @@ function App() {
                 )}
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
-                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && (
+                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && shopRegion === 'rf' && (
                   <div className="date-filter">
                     <label>
                       <span>С</span>
@@ -7124,7 +7514,13 @@ function App() {
               {productionAnalyticsStatus && analyticsSubTab === 'production' && (
                 <p className="analytics-status-line">{productionAnalyticsStatus}</p>
               )}
-              {analyticsSubTab === 'summary' && (
+              {analyticsSubTab === 'summary' && shopRegion === 'kz' && (
+                <KzCatalogAnalyticsPanel
+                  products={kzProducts[kzMarketplace]}
+                  marketplace={kzMarketplace}
+                />
+              )}
+              {analyticsSubTab === 'summary' && shopRegion === 'rf' && (
                 <>
                   <AnalyticsPipelineBoard snapshot={analyticsSnapshot} analytics={analytics} />
                   <div className="analytics-table-toolbar">
@@ -7200,7 +7596,13 @@ function App() {
                   </div>
                 </>
               )}
-              {analyticsSubTab === 'topProducts' && (
+              {analyticsSubTab === 'topProducts' && shopRegion === 'kz' && (
+                <div className="empty-state">
+                  <strong>Топ товаров {getKzMarketplaceLabel(kzMarketplace)}</strong>
+                  <span>Данные Ozon в разделе KZ не отображаются.</span>
+                </div>
+              )}
+              {analyticsSubTab === 'topProducts' && shopRegion === 'rf' && (
                 <>
                   <div className="ozon-status">
                     <strong>Все продажи без фильтра по статусу доставки</strong>
@@ -7248,7 +7650,85 @@ function App() {
                   </div>
                 </>
               )}
-              {analyticsSubTab === 'noSales' && (
+              {analyticsSubTab === 'noSales' && shopRegion === 'kz' && (
+                <>
+                  <div className="ozon-status">
+                    <strong>Каталог {getKzMarketplaceLabel(kzMarketplace)}</strong>
+                    <span>
+                      Данные Ozon в KZ не используются · найдено: {filteredKzCatalogAnalyticsProducts.length}
+                      {unsoldProductStatusFilter !== 'all'
+                        ? ` из ${kzCatalogAnalyticsProducts.length}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div className="analytics-table-toolbar">
+                    <input
+                      className="toolbar-search"
+                      placeholder="Поиск по товару, артикулу или SKU"
+                      value={analyticsRowSearch}
+                      onChange={(event) => setAnalyticsRowSearch(event.target.value)}
+                    />
+                  </div>
+                  <div className="analytics-status-filters-bar unsold-status-filters-bar">
+                    <div className="analytics-status-filters">
+                      {(
+                        [
+                          ['all', 'Все'],
+                          ['selling', 'Продается'],
+                          ['ready', 'Готов к продаже'],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={unsoldProductStatusFilter === value ? 'active' : ''}
+                          onClick={() => setUnsoldProductStatusFilter(value)}
+                        >
+                          {label}
+                          <small>{kzUnsoldProductStatusCounts[value] ?? 0}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="data-table">
+                    <div className="table-row unsold-products-row table-head">
+                      <span>Товар</span>
+                      <span>Артикул</span>
+                      <span>SKU</span>
+                      <span>Статус</span>
+                      <span>Цена</span>
+                    </div>
+                    {filteredKzCatalogAnalyticsProducts.map((row) => (
+                      <div className="table-row unsold-products-row" key={row.key}>
+                        <span className="unsold-product-name">
+                          {row.imageUrl ? (
+                            <ProductImageHoverPreview imageUrl={row.imageUrl} name={row.productName}>
+                              <ProductThumb imageUrl={row.imageUrl} name={row.productName} />
+                            </ProductImageHoverPreview>
+                          ) : (
+                            <ProductThumb name={row.productName} />
+                          )}
+                          <strong>{row.productName}</strong>
+                        </span>
+                        <OfferIdCell offerId={row.offerId} />
+                        <span>{row.sku || '-'}</span>
+                        <span>{translateProductStatus(row.status)}</span>
+                        <span>{formatMoney(row.price, row.currencyCode)}</span>
+                      </div>
+                    ))}
+                    {filteredKzCatalogAnalyticsProducts.length === 0 && (
+                      <div className="empty-state">
+                        <strong>
+                          {kzCatalogAnalyticsProducts.length === 0
+                            ? `Товары ${getKzMarketplaceLabel(kzMarketplace)} ещё не загружены.`
+                            : 'Нет товаров с выбранным статусом.'}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {analyticsSubTab === 'noSales' && shopRegion === 'rf' && (
                 <>
                   <div className="ozon-status">
                     <strong>Товары без единой продажи</strong>
@@ -7346,7 +7826,7 @@ function App() {
                     <div className="production-analytics-sections-grid">
                   {(['designer', 'production'] as const).map((section) => {
                     const sectionTitle = section === 'designer' ? 'Дизайнеры' : 'Производство'
-                    const sectionRows = (productionAnalyticsReport?.summary ?? []).filter((row) =>
+                    const sectionRows = (visibleProductionAnalyticsReport?.summary ?? []).filter((row) =>
                       section === 'designer'
                         ? row.role === 'Designer'
                         : row.role !== 'Designer',
@@ -7408,7 +7888,7 @@ function App() {
                     <section className="production-analytics-tasks-block">
                       <div className="production-analytics-tasks-block-head">
                         <h3>Позиции задач</h3>
-                        <span>{productionAnalyticsReport?.tasks.length ?? 0} задач за период</span>
+                        <span>{visibleProductionAnalyticsReport?.tasks.length ?? 0} задач за период</span>
                       </div>
                   <div className="production-analytics-tasks-table">
                     <div
@@ -7423,7 +7903,7 @@ function App() {
                       <span>Факт</span>
                       {user?.role === 'Admin' && <span>Действия</span>}
                     </div>
-                    {(productionAnalyticsReport?.tasks ?? []).flatMap((task) => {
+                    {(visibleProductionAnalyticsReport?.tasks ?? []).flatMap((task) => {
                       const items = getProductionTaskItems(task)
                       return items.map((item, itemIndex) => (
                         <div
@@ -7453,7 +7933,7 @@ function App() {
                         </div>
                       ))
                     })}
-                    {(productionAnalyticsReport?.tasks.length ?? 0) === 0 && (
+                    {(visibleProductionAnalyticsReport?.tasks.length ?? 0) === 0 && (
                       <div className="production-analytics-empty">
                         Нет задач для отображения.
                       </div>
@@ -7465,11 +7945,11 @@ function App() {
                     <ProductionAnalyticsUserDetailModal
                       userName={productionAnalyticsDetailUserName}
                       summaryRow={
-                        productionAnalyticsReport?.summary.find(
+                        visibleProductionAnalyticsReport?.summary.find(
                           (row) => row.userName === productionAnalyticsDetailUserName,
                         ) ?? null
                       }
-                      tasks={(productionAnalyticsReport?.tasks ?? []).filter(
+                      tasks={(visibleProductionAnalyticsReport?.tasks ?? []).filter(
                         (task) => (task.assignedUserName || '—') === productionAnalyticsDetailUserName,
                       )}
                       isAdmin={user?.role === 'Admin'}
@@ -7570,7 +8050,7 @@ function App() {
             </section>
           )}
 
-          {activeTab === 'supplies' && (
+          {activeTab === 'supplies' && shopRegion === 'rf' && (
             <section className="tab-panel">
               <div className="section-title">
                 <div>
@@ -7702,7 +8182,7 @@ function App() {
                       listIdPrefix="supply-products"
                       token={token}
                       ozonProducts={productionLookupProducts}
-                      novinkaProducts={novinkaProductionCatalogItems}
+                      novinkaProducts={supplyNovinkaCatalogItems}
                       items={draftSupplyItems}
                       setItems={setDraftSupplyItems}
                       productId={supplyProductId}
@@ -7819,7 +8299,7 @@ function App() {
                   listIdPrefix={`edit-supply-${editingSupplyId}`}
                   token={token}
                   ozonProducts={ozonProducts}
-                  novinkaProducts={novinkaProductionCatalogItems}
+                  novinkaProducts={supplyNovinkaCatalogItems}
                   items={editSupplyItems}
                   setItems={setEditSupplyItems}
                   productId={editSupplyProductId}
@@ -8326,39 +8806,17 @@ function App() {
                 <button type="submit" className="user-form-submit">
                   Добавить
                 </button>
-                <div className="feature-checks feature-checks-compact user-form-features">
-                  {featureGroups.map((group) => (
-                    <fieldset
-                      key={group.title}
-                      className={'homeBlocks' in group && group.homeBlocks ? 'home-feature-fieldset' : undefined}
-                    >
-                      <legend>{group.title}</legend>
-                      {group.items.map((feature) => (
-                        <label key={feature.id}>
-                          <input
-                            type="checkbox"
-                            checked={newUser.role === 'Admin' || newUser.allowedFeatures.includes(feature.id)}
-                            disabled={newUser.role === 'Admin'}
-                            onChange={(event) =>
-                              setNewUser((current) => ({
-                                ...current,
-                                allowedFeatures: event.target.checked
-                                  ? [...current.allowedFeatures, feature.id]
-                                  : current.allowedFeatures.filter((item) => item !== feature.id),
-                              }))
-                            }
-                          />
-                          {feature.label}
-                        </label>
-                      ))}
-                      {'homeBlocks' in group && group.homeBlocks && newUser.role !== 'Admin' && (
-                        <UserHomeBlocksEditor
-                          homeBlocks={newUser.homeBlocks}
-                          onChange={(homeBlocks) => setNewUser((current) => ({ ...current, homeBlocks }))}
-                        />
-                      )}
-                    </fieldset>
-                  ))}
+                <div className="user-form-features">
+                  <UserPermissionsEditor
+                    role={newUser.role}
+                    allowedFeatures={newUser.allowedFeatures}
+                    onFeaturesChange={(allowedFeatures) =>
+                      setNewUser((current) => ({ ...current, allowedFeatures }))
+                    }
+                    homeBlocks={newUser.homeBlocks}
+                    onHomeBlocksChange={(homeBlocks) => setNewUser((current) => ({ ...current, homeBlocks }))}
+                    featuresDisabled={newUser.role === 'Admin'}
+                  />
                 </div>
               </form>
               )}
@@ -8530,45 +8988,24 @@ function App() {
                             ))}
                           </select>
                         </label>
-                        <div className="feature-checks feature-checks-compact user-feature-checks">
-                          {featureGroups.map((group) => (
-                            <fieldset key={group.title} className={'homeBlocks' in group && group.homeBlocks ? 'home-feature-fieldset' : undefined}>
-                              <legend>{group.title}</legend>
-                              {group.items.map((feature) => (
-                                <label key={feature.id}>
-                                  <input
-                                    type="checkbox"
-                                    checked={edit.role === 'Admin' || editFeatures.includes(feature.id)}
-                                    disabled={edit.role === 'Admin'}
-                                    onChange={(event) =>
-                                      setUserSettingsEdits((current) => ({
-                                        ...current,
-                                        [item.id]: {
-                                          ...edit,
-                                          allowedFeatures: event.target.checked
-                                            ? [...editFeatures, feature.id]
-                                            : editFeatures.filter((value) => value !== feature.id),
-                                        },
-                                      }))
-                                    }
-                                  />
-                                  {feature.label}
-                                </label>
-                              ))}
-                              {'homeBlocks' in group && group.homeBlocks && edit.role !== 'Admin' && (
-                                <UserHomeBlocksEditor
-                                  homeBlocks={editHomeBlocks}
-                                  onChange={(homeBlocks) =>
-                                    setUserSettingsEdits((current) => ({
-                                      ...current,
-                                      [item.id]: { ...edit, homeBlocks },
-                                    }))
-                                  }
-                                />
-                              )}
-                            </fieldset>
-                          ))}
-                        </div>
+                        <UserPermissionsEditor
+                          role={edit.role}
+                          allowedFeatures={editFeatures}
+                          onFeaturesChange={(allowedFeatures) =>
+                            setUserSettingsEdits((current) => ({
+                              ...current,
+                              [item.id]: { ...edit, allowedFeatures },
+                            }))
+                          }
+                          homeBlocks={editHomeBlocks}
+                          onHomeBlocksChange={(homeBlocks) =>
+                            setUserSettingsEdits((current) => ({
+                              ...current,
+                              [item.id]: { ...edit, homeBlocks },
+                            }))
+                          }
+                          featuresDisabled={edit.role === 'Admin'}
+                        />
                         <button type="button" className="user-action-btn user-settings-save" onClick={() => void saveUserSettings(item.id)}>
                           {savedUserSettingsIds[item.id] ? 'Сохранено' : 'Сохранить настройки'}
                         </button>
@@ -9165,7 +9602,12 @@ function App() {
                 <summary className="role-profiles-head">
                   <div>
                     <h3>Роли и главная страница</h3>
-                    <p>{roleProfilesStatus || (canEditSettings() ? 'Шаблоны доступа и блоки главной' : 'Только просмотр — изменение недоступно')}</p>
+                    <p>
+                      {roleProfilesStatus ||
+                        (canEditSettings()
+                          ? 'Шаблоны доступа и блоки главной · нажмите «Показать»'
+                          : 'Только просмотр — нажмите «Показать»')}
+                    </p>
                   </div>
                 </summary>
                 <div className="role-profiles-list">
@@ -9211,96 +9653,25 @@ function App() {
                             Может менять пароли
                           </label>
                         </div>
-                        <div className="feature-checks feature-checks-compact">
-                          {featureGroups.map((group) => (
-                            <fieldset key={group.title}>
-                              <legend>{group.title}</legend>
-                              {group.items.map((feature) => (
-                                <label key={feature.id}>
-                                  <input
-                                    type="checkbox"
-                                    checked={editFeatures.includes(feature.id)}
-                                    disabled={!canEditSettings()}
-                                    onChange={(event) =>
-                                      setRoleProfileEdits((current) => ({
-                                        ...current,
-                                        [profile.role]: {
-                                          ...edit,
-                                          allowedFeatures: event.target.checked
-                                            ? [...editFeatures, feature.id]
-                                            : editFeatures.filter((item) => item !== feature.id),
-                                        },
-                                      }))
-                                    }
-                                  />
-                                  {feature.label}
-                                </label>
-                              ))}
-                            </fieldset>
-                          ))}
-                        </div>
-                        <div className="home-blocks-settings home-blocks-compact">
-                          <h5>Блоки главной</h5>
-                          {homeBlockDefinitions.map((block) => {
-                            const blockEdit =
-                              edit.homeBlocks.find((item) => item.id === block.id) ??
-                              ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
-                            return (
-                              <fieldset key={block.id} className="home-block-settings">
-                                <legend>
-                                  <label>
-                                    <input
-                                      type="checkbox"
-                                      checked={blockEdit.enabled}
-                                      disabled={!canEditSettings()}
-                                      onChange={(event) =>
-                                        setRoleProfileEdits((current) => {
-                                          const nextBlocks = [...edit.homeBlocks.filter((item) => item.id !== block.id)]
-                                          nextBlocks.push({
-                                            ...blockEdit,
-                                            enabled: event.target.checked,
-                                            actions: event.target.checked ? block.actions.map((item) => item.id) : [],
-                                          })
-                                          return {
-                                            ...current,
-                                            [profile.role]: { ...edit, homeBlocks: nextBlocks },
-                                          }
-                                        })
-                                      }
-                                    />
-                                    {block.label}
-                                  </label>
-                                </legend>
-                                {blockEdit.enabled &&
-                                  block.actions.map((action) => (
-                                    <label key={action.id}>
-                                      <input
-                                        type="checkbox"
-                                        checked={blockEdit.actions.includes(action.id)}
-                                        disabled={!canEditSettings()}
-                                        onChange={(event) =>
-                                          setRoleProfileEdits((current) => {
-                                            const nextActions = event.target.checked
-                                              ? [...blockEdit.actions, action.id]
-                                              : blockEdit.actions.filter((item) => item !== action.id)
-                                            const nextBlocks = [
-                                              ...edit.homeBlocks.filter((item) => item.id !== block.id),
-                                              { ...blockEdit, actions: nextActions },
-                                            ]
-                                            return {
-                                              ...current,
-                                              [profile.role]: { ...edit, homeBlocks: nextBlocks },
-                                            }
-                                          })
-                                        }
-                                      />
-                                      {action.label}
-                                    </label>
-                                  ))}
-                              </fieldset>
-                            )
-                          })}
-                        </div>
+                        <UserPermissionsEditor
+                          role={edit.role}
+                          allowedFeatures={editFeatures}
+                          onFeaturesChange={(allowedFeatures) =>
+                            setRoleProfileEdits((current) => ({
+                              ...current,
+                              [profile.role]: { ...edit, allowedFeatures },
+                            }))
+                          }
+                          homeBlocks={edit.homeBlocks}
+                          onHomeBlocksChange={(homeBlocks) =>
+                            setRoleProfileEdits((current) => ({
+                              ...current,
+                              [profile.role]: { ...edit, homeBlocks },
+                            }))
+                          }
+                          featuresDisabled={!canEditSettings()}
+                          isRoleTemplate
+                        />
                         {canEditSettings() && (
                           <button type="button" className="user-action-btn role-profile-save" onClick={() => void saveRoleProfile(profile.role)}>
                             Сохранить роль
@@ -10095,7 +10466,8 @@ function ProductSearchInput({
   hideInlinePreview?: boolean
   showClearButton?: boolean
 }) {
-  const selectedProduct = products.find((product) => String(product.productId) === selectedProductId)
+  const safeProducts = products ?? []
+  const selectedProduct = safeProducts.find((product) => String(product.productId) === selectedProductId)
   const selectedLabel = selectedProduct ? formatProductSelectedLabel(selectedProduct) : ''
   const [query, setQuery] = useState(selectedLabel)
   const [isOpen, setIsOpen] = useState(false)
@@ -10103,7 +10475,7 @@ function ProductSearchInput({
   const controlRef = useRef<HTMLDivElement>(null)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProducts = normalizedQuery
-    ? products
+    ? safeProducts
         .filter((product) =>
           [
             product.name,
@@ -10116,7 +10488,7 @@ function ProductSearchInput({
             .some((value) => String(value).toLowerCase().includes(normalizedQuery)),
         )
         .slice(0, 80)
-    : products.slice(0, 80)
+    : safeProducts.slice(0, 80)
 
   useEffect(() => {
     setQuery(selectedLabel)
@@ -11028,11 +11400,13 @@ function getProductionTaskTableLabels(tableMode: ReturnType<typeof getProduction
 }
 
 function renderNovinkaItemLink(item: ProductionTaskItem) {
-  if (!item.productLink?.trim()) {
+  const productLink = stripNovinkaMarketplaceNote(item.productLink)
+
+  if (!productLink) {
     return '—'
   }
 
-  return <NovinkaExternalLinkButton url={item.productLink} />
+  return <NovinkaExternalLinkButton url={productLink} />
 }
 
 function useProductionFilePreviewUrl(fileId: string, token: string, enabled: boolean) {
@@ -11399,7 +11773,7 @@ function ProductionTaskTable({
             <strong>{getProductionTaskSummary(task)}</strong>
             <small>
               {task.isUrgent ? 'Срочно · ' : ''}
-              {novinka ? 'Новинка · ' : ''}
+              {novinka ? `${getProductionTaskTypeLabel(task, productionFiles)} · ` : ''}
               {task.status === 'Cancelled' && task.cancelledAt
                 ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
                 : `Создана: ${formatDateTime(task.createdAt)}`}
@@ -11426,7 +11800,7 @@ function ProductionTaskTable({
           {showTypeColumn && (
             <span className="task-col-type">
               <span className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}>
-                {getProductionTaskTypeLabel(task)}
+                {getProductionTaskTypeLabel(task, productionFiles)}
               </span>
             </span>
           )}
@@ -11450,7 +11824,7 @@ function ProductionTaskTable({
           <span className="task-col-creator">{task.createdByDisplayName || '-'}</span>
           <span className="task-col-assignee">{task.assignedUserName || '-'}</span>
           <span className="task-actions">
-            {!completed && !cancelled && task.status === 'New' && isAdmin && onEdit && (
+            {!completed && !cancelled && task.status === 'New' && onEdit && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
                 onEdit(task)
@@ -11686,8 +12060,72 @@ function isNovinkaTask(task: ProductionTask) {
   )
 }
 
-function getProductionTaskTypeLabel(task: ProductionTask) {
-  return isNovinkaTask(task) ? 'Новинка' : 'Ozon'
+function resolveNovinkaMarketplaceForTask(
+  task: ProductionTask,
+  productionFiles: ProductionFile[] = [],
+): NovinkaMarketplace | null {
+  if (!isNovinkaTask(task)) {
+    return null
+  }
+
+  const items = getProductionTaskItems(task)
+
+  for (const item of items) {
+    const fromLinkTag = resolveNovinkaMarketplaceFromNotes(item.productLink)
+    if (fromLinkTag) {
+      return fromLinkTag
+    }
+  }
+
+  for (const item of items) {
+    const fromUrl = resolveNovinkaMarketplace(item.productLink, '')
+    if (fromUrl !== 'ozon') {
+      return fromUrl
+    }
+  }
+
+  for (const item of items) {
+    const files = getProductionFilesForTaskItem(item, productionFiles)
+    if (files.length > 0) {
+      return resolveNovinkaMarketplaceForFileGroup(files)
+    }
+  }
+
+  return null
+}
+
+function matchesKzProductionMarketplace(
+  task: ProductionTask,
+  marketplace: KzMarketplace,
+  productionFiles: ProductionFile[] = [],
+) {
+  if (isNovinkaTask(task)) {
+    const resolved = resolveNovinkaMarketplaceForTask(task, productionFiles)
+    if (resolved === null) {
+      return true
+    }
+
+    return resolved === marketplace
+  }
+
+  return task.taskType === getKzTaskType(marketplace)
+}
+
+function getProductionTaskTypeLabel(task: ProductionTask, productionFiles: ProductionFile[] = []) {
+  if (isKzMarketplaceTaskType(task.taskType ?? 'Ozon')) {
+    return getKzMarketplaceLabel(resolveKzMarketplaceFromTaskType(task.taskType))
+  }
+
+  if (!isNovinkaTask(task)) {
+    return 'Ozon'
+  }
+
+  const marketplace = resolveNovinkaMarketplaceForTask(task, productionFiles)
+  if (marketplace && marketplace !== 'ozon') {
+    return `Новинка · ${getNovinkaMarketplaceLabel(marketplace)}`
+  }
+
+  return 'Новинка'
 }
 
 function toDatetimeLocalValue(value?: string) {
@@ -12204,6 +12642,28 @@ function getNovinkaCatalogKey(file: ProductionFile) {
   return name
 }
 
+function filterNovinkaCatalogByMarketplace(
+  items: ProductionCatalogItem[],
+  marketplace: NovinkaMarketplace,
+) {
+  return items.filter((item) => (item.marketplace ?? 'ozon') === marketplace)
+}
+
+function resolveNovinkaMarketplaceForFileGroup(files: ProductionFile[]): NovinkaMarketplace {
+  for (const file of files) {
+    const fromNotes = resolveNovinkaMarketplaceFromNotes(file.notes)
+    if (fromNotes) {
+      return fromNotes
+    }
+  }
+
+  const latest = files.reduce((left, right) =>
+    new Date(left.createdAt).getTime() >= new Date(right.createdAt).getTime() ? left : right,
+  )
+
+  return resolveNovinkaMarketplace(latest.productLink, latest.notes)
+}
+
 function buildNovinkaCatalogFromFiles(files: ProductionFile[]): ProductionCatalogItem[] {
   const groups = new Map<string, ProductionFile[]>()
 
@@ -12230,6 +12690,7 @@ function buildNovinkaCatalogFromFiles(files: ProductionFile[]): ProductionCatalo
         productLink: latest.productLink ?? '',
         fileCount: group.length,
         completedAt: latestCreatedAt,
+        marketplace: resolveNovinkaMarketplaceForFileGroup(group),
       }
     })
     .sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
@@ -12602,7 +13063,7 @@ function ProductionTaskArchiveTable({
               <span
                 className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}
               >
-                {getProductionTaskTypeLabel(task)}
+                {getProductionTaskTypeLabel(task, productionFiles)}
               </span>
             </span>
           )}
@@ -13272,6 +13733,325 @@ function StockRow({
   )
 }
 
+function KzCatalogAnalyticsPanel({
+  products,
+  marketplace,
+}: {
+  products: OzonProduct[]
+  marketplace: KzMarketplace
+}) {
+  const stats = useMemo(() => {
+    const result = {
+      total: products.length,
+      selling: 0,
+      ready: 0,
+      archived: 0,
+    }
+
+    for (const product of products) {
+      const group = getProductStatusGroup(product.status)
+      if (group === 'selling') {
+        result.selling++
+      } else if (group === 'ready') {
+        result.ready++
+      } else if (group === 'archived') {
+        result.archived++
+      }
+    }
+
+    return result
+  }, [products])
+
+  return (
+    <>
+      <div className="analytics-pipeline">
+        <section className="analytics-pipeline-panel analytics-pipeline-panel--summary">
+          <div className="analytics-pipeline-grid analytics-pipeline-grid--summary">
+            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c1">
+              <span>Всего позиций</span>
+              <strong>{stats.total}</strong>
+            </div>
+            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c2">
+              <span>Товаров в продаже</span>
+              <strong>{stats.selling}</strong>
+            </div>
+            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c3">
+              <span>Готовых к продаже</span>
+              <strong>{stats.ready}</strong>
+            </div>
+            <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell--s1c4">
+              <span>В архиве</span>
+              <strong>{stats.archived}</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div className="empty-state">
+        <strong>Аналитика продаж {getKzMarketplaceLabel(marketplace)}</strong>
+        <span>
+          Данные Ozon в разделе KZ не показываются. Сводка построена только по каталогу{' '}
+          {getKzMarketplaceLabel(marketplace)}.
+        </span>
+      </div>
+    </>
+  )
+}
+
+function computeHomeProductionStats(tasks: ProductionTask[]) {
+  const activeTasks = tasks.filter((task) => !task.isArchived)
+
+  return {
+    new: activeTasks.filter((task) => task.status === 'New').length,
+    inProgress: activeTasks.filter((task) => task.status === 'InProgress').length,
+    cancelled: activeTasks.filter((task) => task.status === 'Cancelled').length,
+    completed: activeTasks.filter((task) => task.status === 'Completed').length,
+    urgent: activeTasks.filter((task) => task.isUrgent).length,
+    total: activeTasks.length,
+  }
+}
+
+function HomeProductionBlock({
+  title,
+  stats,
+  hasHomeAction,
+  onOpen,
+}: {
+  title: string
+  stats: ReturnType<typeof computeHomeProductionStats>
+  hasHomeAction: (blockId: string, actionId: string) => boolean
+  onOpen: (subTab: ProductionSubTab, taskUrgency?: 'all' | 'urgent' | 'normal') => void
+}) {
+  return (
+    <article className="home-block">
+      <div className="home-block-head">
+        <div>
+          <h3>{title}</h3>
+          <p>
+            {stats.urgent > 0 ? `${stats.urgent} срочных · ` : ''}
+            {stats.total} активных задач
+          </p>
+        </div>
+        <button type="button" className="home-block-link" onClick={() => onOpen('tasks')}>
+          Открыть
+        </button>
+      </div>
+      <div className="home-metrics">
+        <div className="home-metric">
+          <span>Новые</span>
+          <strong>{stats.new}</strong>
+        </div>
+        <div className="home-metric home-metric-urgent">
+          <span>Срочные</span>
+          <strong>{stats.urgent}</strong>
+        </div>
+        <div className="home-metric">
+          <span>В работе</span>
+          <strong>{stats.inProgress}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Отменённые</span>
+          <strong>{stats.cancelled}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Выполненные</span>
+          <strong>{stats.completed}</strong>
+        </div>
+      </div>
+      <div className="home-block-actions">
+        {hasHomeAction('production', 'production.tasks') && (
+          <button type="button" onClick={() => onOpen('tasks')}>
+            Задачи
+          </button>
+        )}
+        {hasHomeAction('production', 'production.tasks') && stats.urgent > 0 && (
+          <button type="button" className="home-block-urgent" onClick={() => onOpen('tasks', 'urgent')}>
+            Срочные
+          </button>
+        )}
+        {hasHomeAction('production', 'production.inProgress') && (
+          <button type="button" onClick={() => onOpen('inProgress')}>
+            В работе
+          </button>
+        )}
+        {hasHomeAction('production', 'production.cancelled') && (
+          <button type="button" onClick={() => onOpen('cancelled')}>
+            Отменённые
+          </button>
+        )}
+        {hasHomeAction('production', 'production.completed') && (
+          <button type="button" onClick={() => onOpen('completed')}>
+            Выполненные
+          </button>
+        )}
+      </div>
+    </article>
+  )
+}
+
+function HomeProductsBlock({
+  title,
+  subtitle,
+  status,
+  stats,
+  onOpen,
+  onRefresh,
+}: {
+  title: string
+  subtitle: string
+  status?: string
+  stats: ReturnType<typeof computeCatalogProductStats>
+  onOpen: () => void
+  onRefresh: () => void
+}) {
+  return (
+    <article className="home-block">
+      <div className="home-block-head">
+        <div>
+          <h3>{title}</h3>
+          <p>{subtitle}</p>
+          {status && <small className="home-block-status">{status}</small>}
+        </div>
+        <button type="button" className="home-block-link" onClick={onOpen}>
+          Открыть
+        </button>
+      </div>
+      <div className="home-metrics">
+        <div className="home-metric">
+          <span>Всего</span>
+          <strong>{stats.total}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Готов к продаже</span>
+          <strong>{stats.ready}</strong>
+        </div>
+        <div className="home-metric">
+          <span>В архиве</span>
+          <strong>{stats.archived}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Продается</span>
+          <strong>{stats.selling}</strong>
+        </div>
+      </div>
+      <div className="home-block-actions">
+        <button type="button" onClick={onOpen}>
+          Каталог товаров
+        </button>
+        <button type="button" className="home-block-refresh" onClick={onRefresh}>
+          Обновить
+        </button>
+      </div>
+    </article>
+  )
+}
+
+function HomeAnalyticsBlock({
+  title,
+  periodLabel,
+  status,
+  analytics,
+  marketplaceLabel,
+  hasHomeAction,
+  onOpenAnalytics,
+  onRefresh,
+}: {
+  title: string
+  periodLabel: string
+  status?: string
+  analytics: OzonAnalytics | null
+  marketplaceLabel: string
+  hasHomeAction: (blockId: string, actionId: string) => boolean
+  onOpenAnalytics: (subTab: AnalyticsSubTab) => void
+  onRefresh: () => void
+}) {
+  const currency = analytics?.accountBalanceCurrency || 'KZT'
+
+  return (
+    <article className="home-block">
+      <div className="home-block-head">
+        <div>
+          <h3>{title}</h3>
+          <p>За текущий месяц · {periodLabel}</p>
+          {status && <small className="home-block-status">{status}</small>}
+        </div>
+        <button type="button" className="home-block-link" onClick={() => onOpenAnalytics('summary')}>
+          Открыть
+        </button>
+      </div>
+      <div className="home-metrics">
+        <div className="home-metric">
+          <span>Продажи</span>
+          <strong>{analytics?.salesTotalCount ?? '—'}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Выручка</span>
+          <strong>{analytics ? formatMoney(analytics.revenueTotal, currency) : '—'}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Баланс {marketplaceLabel}</span>
+          <strong>
+            {analytics?.accountBalance === null || analytics?.accountBalance === undefined
+              ? '—'
+              : formatMoney(analytics.accountBalance, analytics.accountBalanceCurrency || currency)}
+          </strong>
+        </div>
+        <div className="home-metric home-metric-loss">
+          <span>Комиссия {marketplaceLabel}</span>
+          <strong>{analytics ? formatLossMoney(analytics.commissionTotal, currency) : '—'}</strong>
+        </div>
+        <div className="home-metric home-metric-loss">
+          <span>Логистика</span>
+          <strong>{analytics ? formatLossMoney(analytics.logisticsTotal, currency) : '—'}</strong>
+        </div>
+        <div className="home-metric home-metric-loss">
+          <span>Логистика отменённых</span>
+          <strong>
+            {analytics ? formatLossMoney(analytics.cancelledLogisticsTotal, currency) : '—'}
+          </strong>
+        </div>
+      </div>
+      <div className="home-metrics home-metrics-secondary">
+        <div className="home-metric">
+          <span>Собираются</span>
+          <strong>{analytics?.awaitingDeliverCount ?? '—'}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Едут</span>
+          <strong>{analytics?.inTransitCount ?? '—'}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Доставлены</span>
+          <strong>{analytics?.deliveredProductCount ?? '—'}</strong>
+        </div>
+        <div className="home-metric">
+          <span>Отменены</span>
+          <strong>{analytics?.cancelledCount ?? '—'}</strong>
+        </div>
+      </div>
+      <div className="home-block-actions">
+        {hasHomeAction('analytics', 'analytics.summary') && (
+          <button type="button" onClick={() => onOpenAnalytics('summary')}>
+            Общая аналитика
+          </button>
+        )}
+        {hasHomeAction('analytics', 'analytics.topProducts') && (
+          <button type="button" onClick={() => onOpenAnalytics('topProducts')}>
+            Топ товары
+          </button>
+        )}
+        {hasHomeAction('analytics', 'analytics.noSales') && (
+          <button type="button" onClick={() => onOpenAnalytics('noSales')}>
+            Без продаж
+          </button>
+        )}
+        <button type="button" className="home-block-refresh" onClick={onRefresh}>
+          Обновить
+        </button>
+      </div>
+    </article>
+  )
+}
+
 function getApiErrorMessage(errorText: string, fallback: string) {
   if (!errorText.trim()) {
     return fallback
@@ -13479,6 +14259,29 @@ function translateStatus(status: string) {
   }
 
   return statuses[normalized] ?? status
+}
+
+function computeCatalogProductStats(products: OzonProduct[]) {
+  const stats = {
+    total: products.length,
+    selling: 0,
+    ready: 0,
+    archived: 0,
+  }
+
+  for (const product of products) {
+    const group = getProductStatusGroup(product.status)
+
+    if (group === 'selling') {
+      stats.selling += 1
+    } else if (group === 'ready') {
+      stats.ready += 1
+    } else if (group === 'archived') {
+      stats.archived += 1
+    }
+  }
+
+  return stats
 }
 
 function getProductStatusGroup(status: string): 'selling' | 'ready' | 'archived' | 'unknown' {

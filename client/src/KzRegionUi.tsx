@@ -18,10 +18,17 @@ type RegionSwitcherProps = {
 
 export function RegionSwitcher({ shopRegion, onChange }: RegionSwitcherProps) {
   return (
-    <div className="region-switcher" role="group" aria-label="Регион магазина">
+    <div
+      className="region-switcher"
+      role="group"
+      aria-label="Регион магазина"
+      data-region={shopRegion}
+    >
+      <div className="region-switcher-thumb" aria-hidden="true" />
       <button
         type="button"
         className={shopRegion === 'rf' ? 'active' : ''}
+        aria-pressed={shopRegion === 'rf'}
         onClick={() => onChange('rf')}
       >
         LShop РФ
@@ -29,6 +36,7 @@ export function RegionSwitcher({ shopRegion, onChange }: RegionSwitcherProps) {
       <button
         type="button"
         className={shopRegion === 'kz' ? 'active' : ''}
+        aria-pressed={shopRegion === 'kz'}
         onClick={() => onChange('kz')}
       >
         LShop KZ

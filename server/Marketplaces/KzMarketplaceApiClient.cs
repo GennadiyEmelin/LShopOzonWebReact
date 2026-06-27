@@ -54,6 +54,59 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
             JsonDocument.Parse("{}").RootElement);
     }
 
+    public Task<OzonAnalyticsResult> GetAnalyticsAsync(
+        string marketplace,
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken)
+    {
+        _ = from;
+        _ = to;
+        _ = cancellationToken;
+        var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
+        var credentialSet = credentials.Get(normalized);
+        if (!credentialSet.IsConfigured)
+        {
+            return Task.FromResult(CreateEmptyAnalytics());
+        }
+
+        // Пока у Kaspi / Satu / Halyk нет полноценного API продаж — возвращаем пустую сводку той же формы, что Ozon.
+        return Task.FromResult(CreateEmptyAnalytics());
+    }
+
+    public static OzonAnalyticsResult CreateEmptyAnalytics(string currencyCode = "KZT") =>
+        new(
+            [],
+            [],
+            [],
+            [],
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            null,
+            currencyCode,
+            0,
+            0,
+            0,
+            DateTimeOffset.UtcNow.ToString("O"));
+
     public async Task<KzMarketplaceTestResult> TestConnectionAsync(string marketplace, CancellationToken cancellationToken)
     {
         var credentialSet = EnsureConfigured(marketplace);

@@ -12,7 +12,7 @@ public class RoleProfile
     public bool CanChangeOtherUserPasswords { get; set; }
 }
 
-public record HomeBlockConfig(string Id, bool Enabled, List<string> Actions);
+public record HomeBlockConfig(string Id, bool Enabled, List<string> Actions, List<string>? Marketplaces = null);
 
 public static class HomeBlocksCatalog
 {
@@ -70,7 +70,16 @@ public static class HomeBlocksCatalog
                         .Where(definition.Actions.Contains)
                         .Distinct()
                         .ToList();
-                    return new HomeBlockConfig(block.Id, block.Enabled, actions);
+                    var marketplaces = (block.Marketplaces ?? [])
+                        .Where(marketplace => marketplace is "kaspi" or "satu" or "halyk")
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Select(marketplace => marketplace.ToLowerInvariant())
+                        .ToList();
+                    return new HomeBlockConfig(
+                        block.Id,
+                        block.Enabled,
+                        actions,
+                        marketplaces.Count > 0 ? marketplaces : null);
                 })
                 .ToList();
         }
