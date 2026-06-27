@@ -2335,6 +2335,108 @@ app.MapPut("/api/production/catalog/convert-to-ozon", async (
         targetProduct.ProductUrl));
 }).RequireAuthorization();
 
+app.MapPut("/api/production/catalog/file-path", async (
+    UpsertCatalogFilePathRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
+    {
+        return Results.Forbid();
+    }
+
+    var path = request.Path?.Trim() ?? string.Empty;
+    if (path.Length < 3)
+    {
+        return Results.BadRequest("Укажите путь к файлу (минимум 3 символа).");
+    }
+
+    var offerId = request.OfferId?.Trim() ?? string.Empty;
+    var productName = request.ProductName?.Trim() ?? string.Empty;
+    var productLink = request.ProductLink?.Trim() ?? string.Empty;
+    var ozonProductId = request.OzonProductId is > 0 ? request.OzonProductId : null;
+
+    if (string.IsNullOrWhiteSpace(offerId) && ozonProductId is null)
+    {
+        return Results.BadRequest("Выберите товар.");
+    }
+
+    if (string.IsNullOrWhiteSpace(productName))
+    {
+        return Results.BadRequest("Укажите название товара.");
+    }
+
+    var existingPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+        entry.Path == path &&
+        ((!string.IsNullOrWhiteSpace(offerId) && entry.OfferId == offerId) ||
+         (ozonProductId.HasValue && entry.OzonProductId == ozonProductId)));
+
+    ProductionFilePath savedPath;
+    if (existingPath is null)
+    {
+        savedPath = new ProductionFilePath
+        {
+            OzonProductId = ozonProductId,
+            OfferId = offerId,
+            ProductName = productName,
+            ProductLink = productLink,
+            Path = path
+        };
+        db.ProductionFilePaths.Add(savedPath);
+    }
+    else
+    {
+        savedPath = existingPath;
+    }
+
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Путь к файлу в каталоге",
+        "ProductionCatalog",
+        offerId != string.Empty ? offerId : ozonProductId?.ToString() ?? productName,
+        $"{productName}: {path}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ProductionFilePathListItem(
+        savedPath.Id,
+        savedPath.OzonProductId,
+        savedPath.OfferId,
+        savedPath.ProductName,
+        savedPath.ProductLink,
+        savedPath.Path,
+        savedPath.CreatedAt));
+}).RequireAuthorization();
+
+app.MapDelete("/api/production/catalog/file-path/{id:guid}", async (
+    Guid id,
+    AppDbContext db,
+    ClaimsPrincipal principal) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
+    {
+        return Results.Forbid();
+    }
+
+    var path = await db.ProductionFilePaths.FindAsync(id);
+    if (path is null)
+    {
+        return Results.NotFound();
+    }
+
+    db.ProductionFilePaths.Remove(path);
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Удаление пути в каталоге",
+        "ProductionCatalog",
+        path.Id.ToString(),
+        $"{path.ProductName}: {path.Path}");
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+}).RequireAuthorization();
+
 app.MapGet("/api/link-preview", async (string? url, IHttpClientFactory httpClientFactory, ClaimsPrincipal principal) =>
 {
     if (principal.Identity?.IsAuthenticated != true)
@@ -4254,6 +4356,12 @@ record ProductionFilePathListItem(
     string Path,
     DateTimeOffset CreatedAt);
 record UpdateProductionTaskItemFilePathRequest(string Path);
+record UpsertCatalogFilePathRequest(
+    string? OfferId,
+    long? OzonProductId,
+    string ProductName,
+    string? ProductLink,
+    string Path);
 record DeleteProductionFileResponse(bool ReworkTaskCreated, Guid? TaskId);
 record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
 record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink);

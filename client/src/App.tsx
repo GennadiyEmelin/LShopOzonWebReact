@@ -6774,6 +6774,12 @@ function App() {
                       saving={productEditorSaving}
                       onConvert={() => void convertNovinkaToOzon()}
                       onLoadOzonProducts={() => void loadOzonProducts()}
+                      productionFiles={productionFiles}
+                      productionFilePaths={productionFilePaths}
+                      onRefreshProductionData={() => loadProductionFiles(productionSearch)}
+                      onDownloadFile={downloadProductionFile}
+                      onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                      shopRegion={shopRegion}
                     />
                   ) : (
                     <>
@@ -10857,6 +10863,12 @@ function ProductTypeEditorPanel({
   saving,
   onConvert,
   onLoadOzonProducts,
+  productionFiles,
+  productionFilePaths,
+  onRefreshProductionData,
+  onDownloadFile,
+  onDeleteFile,
+  shopRegion,
 }: {
   token: string
   novinkaProducts: ProductionCatalogItem[]
@@ -10871,6 +10883,12 @@ function ProductTypeEditorPanel({
   saving: boolean
   onConvert: () => void
   onLoadOzonProducts: () => void
+  productionFiles: ProductionFile[]
+  productionFilePaths: ProductionFilePath[]
+  onRefreshProductionData: () => Promise<void>
+  onDownloadFile: (id: string) => void
+  onDeleteFile?: (id: string) => void
+  shopRegion: ShopRegion
 }) {
   return (
     <>
@@ -10941,7 +10959,326 @@ function ProductTypeEditorPanel({
         </button>
         {status && <p className="modal-status">{status}</p>}
       </div>
+
+      <ProductCatalogFilesEditor
+        token={token}
+        novinkaProducts={novinkaProducts}
+        ozonProducts={ozonProducts}
+        productionFiles={productionFiles}
+        productionFilePaths={productionFilePaths}
+        onRefreshProductionData={onRefreshProductionData}
+        onDownloadFile={onDownloadFile}
+        onDeleteFile={onDeleteFile}
+        shopRegion={shopRegion}
+      />
     </>
+  )
+}
+
+function ProductCatalogFilesEditor({
+  token,
+  novinkaProducts,
+  ozonProducts,
+  productionFiles,
+  productionFilePaths,
+  onRefreshProductionData,
+  onDownloadFile,
+  onDeleteFile,
+  shopRegion,
+}: {
+  token: string
+  novinkaProducts: ProductionCatalogItem[]
+  ozonProducts: OzonProduct[]
+  productionFiles: ProductionFile[]
+  productionFilePaths: ProductionFilePath[]
+  onRefreshProductionData: () => Promise<void>
+  onDownloadFile: (id: string) => void
+  onDeleteFile?: (id: string) => void
+  shopRegion: ShopRegion
+}) {
+  const [targetMode, setTargetMode] = useState<'novinka' | 'ozon'>('novinka')
+  const [filesNovinkaOfferId, setFilesNovinkaOfferId] = useState('')
+  const [filesOzonProductId, setFilesOzonProductId] = useState('')
+  const [pathDraft, setPathDraft] = useState('')
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [filesStatus, setFilesStatus] = useState('')
+  const [filesSaving, setFilesSaving] = useState(false)
+
+  const selectedNovinka = novinkaProducts.find((item) => item.offerId === filesNovinkaOfferId)
+  const selectedOzon = ozonProducts.find((product) => String(product.productId) === filesOzonProductId)
+  const selectedCatalogItem: ProductionCatalogItem | undefined =
+    targetMode === 'novinka' && selectedNovinka
+      ? selectedNovinka
+      : selectedOzon
+        ? {
+            offerId: selectedOzon.offerId,
+            ozonProductId: selectedOzon.productId,
+            productName: selectedOzon.name,
+            productLink: selectedOzon.productUrl ?? '',
+            fileCount: 0,
+          }
+        : undefined
+
+  const itemFiles = selectedCatalogItem
+    ? getProductionFilesForCatalogItem(selectedCatalogItem, productionFiles)
+    : []
+  const itemPaths = selectedCatalogItem
+    ? getProductionPathsForCatalogItem(selectedCatalogItem, productionFilePaths)
+    : []
+
+  async function deleteCatalogPath(pathId: string) {
+    if (!window.confirm('Удалить путь к файлу?')) {
+      return
+    }
+
+    const response = await fetch(`/api/production/catalog/file-path/${pathId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setFilesStatus(getApiErrorMessage(await response.text(), 'Не удалось удалить путь'))
+      return
+    }
+
+    setFilesStatus('Путь удалён')
+    await onRefreshProductionData()
+  }
+
+  async function saveCatalogAssets() {
+    if (!selectedCatalogItem) {
+      setFilesStatus('Выберите новинку или товар Ozon')
+      return
+    }
+
+    const trimmedPath = pathDraft.trim()
+    if (trimmedPath.length > 0 && trimmedPath.length < 3) {
+      setFilesStatus('Путь к файлу должен содержать минимум 3 символа')
+      return
+    }
+
+    if (trimmedPath.length === 0 && pendingFiles.length === 0) {
+      setFilesStatus('Укажите путь или выберите файлы для загрузки')
+      return
+    }
+
+    setFilesSaving(true)
+    setFilesStatus('')
+
+    try {
+      if (trimmedPath.length >= 3) {
+        const response = await fetch('/api/production/catalog/file-path', {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            offerId: selectedCatalogItem.offerId,
+            ozonProductId: selectedCatalogItem.ozonProductId ?? null,
+            productName: selectedCatalogItem.productName,
+            productLink: selectedCatalogItem.productLink ?? '',
+            path: trimmedPath,
+          }),
+        })
+
+        if (!response.ok) {
+          setFilesStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить путь'))
+          return
+        }
+      }
+
+      const marketplace =
+        targetMode === 'novinka'
+          ? selectedNovinka?.marketplace ?? (shopRegion === 'rf' ? 'ozon' : 'kaspi')
+          : 'ozon'
+
+      const uploadedCount = pendingFiles.length
+
+      for (const file of pendingFiles) {
+        const formData = new FormData()
+        formData.append(
+          'ozonProductId',
+          selectedCatalogItem.ozonProductId ? String(selectedCatalogItem.ozonProductId) : '0',
+        )
+        formData.append('offerId', selectedCatalogItem.offerId)
+        formData.append('productName', selectedCatalogItem.productName)
+        formData.append('productLink', selectedCatalogItem.productLink ?? '')
+        formData.append('notes', appendNovinkaMarketplaceNote('', marketplace))
+        formData.append('file', file)
+
+        const response = await fetch('/api/production/files', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        })
+
+        if (!response.ok) {
+          setFilesStatus(getApiErrorMessage(await response.text(), `Не удалось загрузить файл ${file.name}`))
+          return
+        }
+      }
+
+      setPathDraft('')
+      setPendingFiles([])
+      await onRefreshProductionData()
+      setFilesStatus(
+        uploadedCount > 0 && trimmedPath.length >= 3
+          ? `Сохранено: путь и ${uploadedCount} файл(ов)`
+          : uploadedCount > 0
+            ? `Загружено файлов: ${uploadedCount}`
+            : 'Путь сохранён',
+      )
+    } finally {
+      setFilesSaving(false)
+    }
+  }
+
+  return (
+    <section className="product-catalog-files-editor">
+      <div className="section-title soft-title">
+        <h2>Файлы и пути производства</h2>
+        <p>Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.</p>
+      </div>
+
+      <div className="inner-tabs product-catalog-files-tabs">
+        <button
+          type="button"
+          className={targetMode === 'novinka' ? 'active' : ''}
+          onClick={() => setTargetMode('novinka')}
+        >
+          Новинка
+        </button>
+        <button
+          type="button"
+          className={targetMode === 'ozon' ? 'active' : ''}
+          onClick={() => setTargetMode('ozon')}
+        >
+          Товар Ozon
+        </button>
+      </div>
+
+      <div className="product-catalog-files-picker">
+        {targetMode === 'novinka' ? (
+          <>
+            <span className="product-type-editor-hint">Выберите новинку из списка</span>
+            <NovinkaSearchInput
+              listId="product-editor-files-novinka-list"
+              products={novinkaProducts}
+              selectedOfferId={filesNovinkaOfferId}
+              onOfferIdChange={setFilesNovinkaOfferId}
+              placeholder="Начните писать название или артикул"
+              showClearButton
+            />
+          </>
+        ) : (
+          <>
+            <span className="product-type-editor-hint">Выберите товар из каталога Ozon</span>
+            <ProductSearchInput
+              listId="product-editor-files-ozon-list"
+              products={ozonProducts}
+              selectedProductId={filesOzonProductId}
+              onProductIdChange={setFilesOzonProductId}
+              placeholder="Начните писать название или артикул"
+              hideInlinePreview
+              showClearButton
+            />
+          </>
+        )}
+      </div>
+
+      {selectedCatalogItem ? (
+        <div className="product-catalog-files-current">
+          <NovinkaProductPreview
+            item={selectedCatalogItem}
+            token={token}
+            files={itemFiles}
+            paths={itemPaths}
+          />
+
+          {itemPaths.length > 0 && (
+            <div className="product-catalog-files-list">
+              <strong>Текущие пути</strong>
+              {itemPaths.map((entry) => (
+                <div className="product-catalog-files-row" key={entry.id}>
+                  <PathCopyBlock path={entry.path} />
+                  <button type="button" className="danger" onClick={() => void deleteCatalogPath(entry.id)}>
+                    Удалить
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {itemFiles.length > 0 && (
+            <div className="product-catalog-files-list">
+              <strong>Текущие файлы</strong>
+              {itemFiles.map((file) => (
+                <div className="product-catalog-files-row" key={file.id}>
+                  <span>
+                    <strong>{file.fileName}</strong>
+                    <small>{formatDateTime(file.createdAt)}</small>
+                  </span>
+                  <span className="product-catalog-files-actions">
+                    <button type="button" onClick={() => onDownloadFile(file.id)}>
+                      Скачать
+                    </button>
+                    {onDeleteFile && (
+                      <button type="button" className="danger" onClick={() => void onDeleteFile(file.id)}>
+                        Удалить
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="task-form-modal-preview task-form-modal-preview-empty product-catalog-files-empty">
+          <span>Выберите товар, чтобы добавить файлы и пути</span>
+        </div>
+      )}
+
+      <div className="product-catalog-files-form">
+        <label className="product-catalog-files-field">
+          <span>Путь к файлу на диске</span>
+          <input
+            type="text"
+            value={pathDraft}
+            placeholder="Например: D:\Production\Товар\макет.psd"
+            onChange={(event) => setPathDraft(event.target.value)}
+          />
+        </label>
+
+        <label className="product-catalog-files-field">
+          <span>Файлы для загрузки</span>
+          <input
+            type="file"
+            multiple
+            onChange={(event) => setPendingFiles(Array.from(event.target.files ?? []))}
+          />
+          {pendingFiles.length > 0 && (
+            <small>Выбрано файлов: {pendingFiles.length}</small>
+          )}
+        </label>
+      </div>
+
+      <div className="supply-create-bar product-type-editor-footer">
+        <button
+          type="button"
+          disabled={!selectedCatalogItem || filesSaving}
+          onClick={() => void saveCatalogAssets()}
+        >
+          {filesSaving ? 'Сохранение...' : 'Сохранить'}
+        </button>
+        {filesStatus && <p className="modal-status">{filesStatus}</p>}
+      </div>
+    </section>
   )
 }
 
