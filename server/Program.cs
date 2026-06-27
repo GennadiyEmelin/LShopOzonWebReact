@@ -3146,6 +3146,21 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
         builtItems = ProductionTaskResponses.ReconcileTaskItems(task, requestItems);
     }
 
+    foreach (var item in builtItems)
+    {
+        var entry = db.Entry(item);
+        if (entry.State == EntityState.Detached)
+        {
+            item.ProductionTaskId = task.Id;
+            task.Items.Add(item);
+        }
+        else if (entry.State == EntityState.Modified
+                 && !await db.ProductionTaskItems.AsNoTracking().AnyAsync(existing => existing.Id == item.Id))
+        {
+            entry.State = EntityState.Added;
+        }
+    }
+
     var firstItem = builtItems[0];
     task.OzonProductId = firstItem.OzonProductId;
     task.OfferId = (firstItem.OfferId ?? string.Empty).Trim();
@@ -5085,29 +5100,25 @@ static class ProductionTaskResponses
             }
 
             var itemId = Guid.NewGuid();
-            result.Add(new ProductionTaskItem
+            var newItem = new ProductionTaskItem
             {
                 Id = itemId,
+                ProductionTaskId = task.Id,
                 OzonProductId = 0,
                 OfferId = BuildNovinkaOfferId(itemId),
                 ProductName = normalized.ProductName,
                 ProductLink = normalized.ProductLink,
                 RequiredQuantity = 0,
                 EnforceMinimumQuantity = false,
-            });
+            };
+            task.Items.Add(newItem);
+            result.Add(newItem);
         }
 
-        foreach (var removed in task.Items.Where(item => !matchedExisting.Contains(item.Id)).ToList())
+        var keepIds = result.Select(item => item.Id).ToHashSet();
+        foreach (var removed in task.Items.Where(item => !keepIds.Contains(item.Id)).ToList())
         {
             task.Items.Remove(removed);
-        }
-
-        foreach (var item in result)
-        {
-            if (task.Items.All(existing => existing.Id != item.Id))
-            {
-                task.Items.Add(item);
-            }
         }
 
         return result;
@@ -5151,28 +5162,24 @@ static class ProductionTaskResponses
                 continue;
             }
 
-            result.Add(new ProductionTaskItem
+            var newItem = new ProductionTaskItem
             {
+                ProductionTaskId = task.Id,
                 OzonProductId = normalized.OzonProductId,
                 OfferId = normalized.OfferId,
                 ProductName = normalized.ProductName,
                 ProductLink = normalized.ProductLink,
                 RequiredQuantity = normalized.RequiredQuantity,
                 EnforceMinimumQuantity = normalized.EnforceMinimumQuantity,
-            });
+            };
+            task.Items.Add(newItem);
+            result.Add(newItem);
         }
 
-        foreach (var removed in task.Items.Where(item => !matchedExisting.Contains(item.Id)).ToList())
+        var keepIds = result.Select(item => item.Id).ToHashSet();
+        foreach (var removed in task.Items.Where(item => !keepIds.Contains(item.Id)).ToList())
         {
             task.Items.Remove(removed);
-        }
-
-        foreach (var item in result)
-        {
-            if (task.Items.All(existing => existing.Id != item.Id))
-            {
-                task.Items.Add(item);
-            }
         }
 
         return result;

@@ -5210,8 +5210,8 @@ function App() {
     const itemPayload = novinkaItems.map((item) => ({
       ozonProductId: 0,
       offerId: item.offerId ?? '',
-      productName: item.productName,
-      productLink: appendNovinkaMarketplaceNote(item.productLink, novinkaTaskMarketplace),
+      productName: (item.productName ?? '').trim(),
+      productLink: appendNovinkaMarketplaceNote(item.productLink ?? '', novinkaTaskMarketplace),
       requiredQuantity: 0,
       enforceMinimumQuantity: false,
     }))
