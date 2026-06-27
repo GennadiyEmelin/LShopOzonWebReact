@@ -1440,8 +1440,12 @@ function App() {
     [kzProducts, productionFiles],
   )
   const novinkaProductionCatalogItems = useMemo(
-    (): ProductionCatalogItem[] => buildNovinkaCatalogFromFiles(productionFiles),
-    [productionFiles],
+    (): ProductionCatalogItem[] =>
+      mergeNovinkaCatalogItems(
+        buildNovinkaCatalogFromFiles(productionFiles),
+        buildNovinkaCatalogFromSupplyReserves(supplies),
+      ),
+    [productionFiles, supplies],
   )
   const activeNovinkaCatalogMarketplace = parseNovinkaCatalogTab(productionCatalogTab)
   const taskFormNovinkaCatalogItems = useMemo(
@@ -11067,7 +11071,7 @@ function NovinkaSearchInput({
             <div className="product-search-menu product-search-menu-fixed product-search-menu-empty" style={menuStyle}>
               <span>
                 {products.length === 0
-                  ? 'Список новинок пуст. Завершите задачи по новинкам с файлами.'
+                  ? 'Список новинок пуст. Добавьте новый товар в поставку или завершите задачи по новинкам с файлами.'
                   : 'По вашему запросу ничего не найдено.'}
               </span>
             </div>
@@ -12865,6 +12869,70 @@ function resolveNovinkaMarketplaceForFileGroup(files: ProductionFile[]): Novinka
   )
 
   return resolveNovinkaMarketplace(latest.productLink, latest.notes)
+}
+
+function getSupplyReserveOfferId(item: SupplyItem) {
+  const trimmed = item.offerId?.trim()
+  if (trimmed) {
+    return trimmed
+  }
+
+  return `NV-${item.id.replace(/-/g, '')}`
+}
+
+function buildNovinkaCatalogFromSupplyReserves(supplies: Supply[]): ProductionCatalogItem[] {
+  const seen = new Set<string>()
+  const items: ProductionCatalogItem[] = []
+
+  for (const supply of supplies) {
+    if (supply.isArchived) {
+      continue
+    }
+
+    for (const item of supply.items) {
+      if (!item.isReserve) {
+        continue
+      }
+
+      const offerId = getSupplyReserveOfferId(item)
+      const key = offerId.toUpperCase()
+      if (seen.has(key)) {
+        continue
+      }
+
+      seen.add(key)
+      items.push({
+        offerId,
+        productName: item.productName,
+        productLink: '',
+        fileCount: 0,
+        completedAt: supply.sentAt ?? supply.createdAt,
+        marketplace: 'ozon',
+      })
+    }
+  }
+
+  return items.sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
+}
+
+function mergeNovinkaCatalogItems(
+  fromFiles: ProductionCatalogItem[],
+  fromSupplies: ProductionCatalogItem[],
+): ProductionCatalogItem[] {
+  const byOfferId = new Map<string, ProductionCatalogItem>()
+
+  for (const item of fromFiles) {
+    byOfferId.set(item.offerId.toUpperCase(), item)
+  }
+
+  for (const item of fromSupplies) {
+    const key = item.offerId.toUpperCase()
+    if (!byOfferId.has(key)) {
+      byOfferId.set(key, item)
+    }
+  }
+
+  return [...byOfferId.values()].sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
 }
 
 function buildNovinkaCatalogFromFiles(files: ProductionFile[]): ProductionCatalogItem[] {

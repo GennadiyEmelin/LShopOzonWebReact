@@ -3628,6 +3628,24 @@ app.MapGet("/api/supplies", async (AppDbContext db, ClaimsPrincipal principal) =
         .OrderByDescending(supply => supply.CreatedAt)
         .ToListAsync();
 
+    var staleReserveItems = await db.SupplyItems
+        .Where(item => item.IsReserve && item.OfferId == string.Empty)
+        .ToListAsync();
+    if (staleReserveItems.Count > 0)
+    {
+        foreach (var item in staleReserveItems)
+        {
+            item.OfferId = ProductionTaskResponses.BuildNovinkaOfferId(item.Id);
+        }
+
+        await db.SaveChangesAsync();
+        supplies = await db.Supplies
+            .AsNoTracking()
+            .Include(supply => supply.Items)
+            .OrderByDescending(supply => supply.CreatedAt)
+            .ToListAsync();
+    }
+
     var supplyIds = supplies.Select(supply => supply.Id.ToString()).ToList();
     var histories = await db.AuditLogs
         .AsNoTracking()
@@ -3693,14 +3711,7 @@ app.MapPost("/api/supplies", async (
     var supply = new Supply
     {
         Status = SupplyStatuses.Created,
-        Items = request.Items.Select(item => new SupplyItem
-        {
-            OzonProductId = item.IsReserve ? null : item.OzonProductId,
-            OfferId = item.IsReserve ? string.Empty : item.OfferId.Trim(),
-            ProductName = item.ProductName.Trim(),
-            Quantity = item.Quantity,
-            IsReserve = item.IsReserve
-        }).ToList()
+        Items = request.Items.Select(SupplyItemFactory.Create).ToList()
     };
 
     if (supply.Items.Any(item => item.Quantity <= 0 || string.IsNullOrWhiteSpace(item.ProductName)))
@@ -3784,14 +3795,7 @@ app.MapPost("/api/supplies/import", async (
     var supply = new Supply
     {
         Status = SupplyStatuses.Created,
-        Items = importedItems.Select(item => new SupplyItem
-        {
-            OzonProductId = item.IsReserve ? null : item.OzonProductId,
-            OfferId = item.IsReserve ? string.Empty : item.OfferId.Trim(),
-            ProductName = item.ProductName.Trim(),
-            Quantity = item.Quantity,
-            IsReserve = item.IsReserve
-        }).ToList()
+        Items = importedItems.Select(SupplyItemFactory.Create).ToList()
     };
 
     if (supply.Items.Any(item => item.Quantity <= 0 || string.IsNullOrWhiteSpace(item.ProductName)))
@@ -3945,15 +3949,11 @@ app.MapPut("/api/supplies/{id:guid}", async (
         return Results.BadRequest("В поставке должен быть хотя бы один товар.");
     }
 
-    var updatedItems = request.Items.Select(item => new SupplyItem
+    var updatedItems = request.Items.Select(item => SupplyItemFactory.Create(item)).ToList();
+    foreach (var item in updatedItems)
     {
-        SupplyId = supply.Id,
-        OzonProductId = item.IsReserve ? null : item.OzonProductId,
-        OfferId = item.IsReserve ? string.Empty : item.OfferId.Trim(),
-        ProductName = item.ProductName.Trim(),
-        Quantity = item.Quantity,
-        IsReserve = item.IsReserve
-    }).ToList();
+        item.SupplyId = supply.Id;
+    }
 
     if (updatedItems.Any(item => item.Quantity <= 0 || string.IsNullOrWhiteSpace(item.ProductName)))
     {
@@ -5584,6 +5584,35 @@ static class ExcelExport
             dividend = (dividend - modulo) / 26;
         }
         return name;
+    }
+}
+
+static class SupplyItemFactory
+{
+    public static SupplyItem Create(CreateSupplyItemRequest request)
+    {
+        var itemId = Guid.NewGuid();
+        var isReserve = request.IsReserve;
+
+        return new SupplyItem
+        {
+            Id = itemId,
+            OzonProductId = isReserve ? null : request.OzonProductId,
+            OfferId = isReserve
+                ? NormalizeReserveOfferId(itemId, request.OfferId)
+                : request.OfferId.Trim(),
+            ProductName = request.ProductName.Trim(),
+            Quantity = request.Quantity,
+            IsReserve = isReserve
+        };
+    }
+
+    public static string NormalizeReserveOfferId(Guid itemId, string? offerId)
+    {
+        var trimmed = offerId?.Trim() ?? string.Empty;
+        return string.IsNullOrWhiteSpace(trimmed)
+            ? ProductionTaskResponses.BuildNovinkaOfferId(itemId)
+            : trimmed;
     }
 }
 
