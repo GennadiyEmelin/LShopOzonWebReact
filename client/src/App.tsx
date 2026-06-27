@@ -11,6 +11,7 @@ import {
   getVisibleNovinkaMarketplaces,
   isMarketplaceTaskFormMode,
   isKzMarketplaceTaskType,
+  isKzNovinkaMarketplace,
   isNovinkaCatalogTab,
   appendNovinkaMarketplaceNote,
   parseNovinkaCatalogTab,
@@ -1285,6 +1286,7 @@ function App() {
   const [seenCancelledTaskNotificationIds, setSeenCancelledTaskNotificationIds] = useState<string[]>([])
   const [seenCompletedTaskNotificationIds, setSeenCompletedTaskNotificationIds] = useState<string[]>([])
   const [seenCreatedSupplyIds, setSeenCreatedSupplyIds] = useState<string[]>([])
+  const [seenSupplyAnalyticsKeys, setSeenSupplyAnalyticsKeys] = useState<string[]>([])
   const knownNewTaskIdsRef = useRef<Set<string> | null>(null)
   const knownCancelledForCreatorRef = useRef<Set<string> | null>(null)
   const knownNewSupplyIdsRef = useRef<Set<string> | null>(null)
@@ -1647,6 +1649,9 @@ function App() {
   const allActiveSupplies = supplies.filter((supply) => !supply.isArchived)
   const unseenSupplies = allActiveSupplies.filter((supply) => !seenCreatedSupplyIds.includes(supply.id))
   const unseenCreatedSupplies = unseenSupplies.filter((supply) => supply.status === 'Created')
+  const unseenSupplyAnalytics = supplyAnalytics.filter(
+    (item) => !seenSupplyAnalyticsKeys.includes(getSupplyAnalyticsRowKey(item)),
+  )
   const hasFeature = (feature: string) =>
     user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes(feature))
   const hasSubFeature = (feature: string, _fallback: string) => hasFeature(feature)
@@ -1744,7 +1749,93 @@ function App() {
   const productionNotificationTotal = canSeeProductionNotifications
     ? unseenNewProductionTasks.length + unseenCancelledForCreator.length
     : 0
-  const supplyNotificationTotal = canSeeSupplyNotifications ? unseenCreatedSupplies.length : 0
+  const supplyNotificationTotal = canSeeSupplyNotifications
+    ? unseenCreatedSupplies.length + unseenSupplyAnalytics.length
+    : 0
+  const isTransientProductionStatus = (value: string) =>
+    Boolean(value) &&
+    !value.startsWith('Задач:') &&
+    !value.startsWith('Найдено записей:') &&
+    value !== 'Записей пока нет' &&
+    value !== 'Фото, данные и задачи'
+  const productionRegionSuffix = useMemo(() => {
+    if (shopRegion === 'rf') {
+      return ' · LShop РФ'
+    }
+
+    if (productionSubTab === 'products') {
+      const marketplace =
+        productionCatalogTab === 'kaspi' ||
+        productionCatalogTab === 'satu' ||
+        productionCatalogTab === 'halyk'
+          ? productionCatalogTab
+          : activeNovinkaCatalogMarketplace && isKzNovinkaMarketplace(activeNovinkaCatalogMarketplace)
+            ? activeNovinkaCatalogMarketplace
+            : kzMarketplace
+
+      return ` · ${getKzMarketplaceLabel(marketplace)}`
+    }
+
+    return ` · ${getKzMarketplaceLabel(kzTaskMarketplace)}`
+  }, [
+    shopRegion,
+    productionSubTab,
+    productionCatalogTab,
+    activeNovinkaCatalogMarketplace,
+    kzMarketplace,
+    kzTaskMarketplace,
+  ])
+  const productionSectionSubtitle = useMemo(() => {
+    if (productionSubTab === 'tasks') {
+      if (isTransientProductionStatus(taskStatus)) {
+        return taskStatus
+      }
+
+      return allNewProductionTasks.length
+        ? `Задач: ${allNewProductionTasks.length}${productionRegionSuffix}`
+        : `Задач пока нет${productionRegionSuffix}`
+    }
+
+    if (productionSubTab === 'inProgress') {
+      return allInProgressProductionTasks.length
+        ? `В работе: ${allInProgressProductionTasks.length}${productionRegionSuffix}`
+        : `Задач в работе пока нет${productionRegionSuffix}`
+    }
+
+    if (productionSubTab === 'cancelled') {
+      return allCancelledProductionTasks.length
+        ? `Отменённых: ${allCancelledProductionTasks.length}${productionRegionSuffix}`
+        : `Отменённых задач пока нет${productionRegionSuffix}`
+    }
+
+    if (productionSubTab === 'completed') {
+      return allCompletedProductionTasks.length
+        ? `Выполненных: ${allCompletedProductionTasks.length}${productionRegionSuffix}`
+        : `Выполненных задач пока нет${productionRegionSuffix}`
+    }
+
+    if (isTransientProductionStatus(productionStatus)) {
+      return productionStatus
+    }
+
+    if (productionSubTab === 'products') {
+      return filteredProductionCatalog.length
+        ? `Найдено записей: ${filteredProductionCatalog.length}${productionRegionSuffix}`
+        : `Записей пока нет${productionRegionSuffix}`
+    }
+
+    return productionStatus || 'Фото, данные и задачи'
+  }, [
+    productionSubTab,
+    taskStatus,
+    productionStatus,
+    allNewProductionTasks.length,
+    allInProgressProductionTasks.length,
+    allCancelledProductionTasks.length,
+    allCompletedProductionTasks.length,
+    filteredProductionCatalog.length,
+    productionRegionSuffix,
+  ])
   const notificationTotal =
     productionNotificationTotal + supplyNotificationTotal + (canSeeChatNotifications ? chatUnreadTotal : 0)
   const visibleTabs = tabs.filter((tab) => {
@@ -1896,6 +1987,7 @@ function App() {
       setSeenCancelledTaskNotificationIds([])
       setSeenCompletedTaskNotificationIds([])
       setSeenCreatedSupplyIds([])
+      setSeenSupplyAnalyticsKeys([])
       return
     }
 
@@ -1904,7 +1996,46 @@ function App() {
     setSeenCancelledTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'cancelled')))
     setSeenCompletedTaskNotificationIds(readStringListFromStorage(getTaskNotificationStorageKey(user.id, 'completed')))
     setSeenCreatedSupplyIds(readStringListFromStorage(getSupplyNotificationStorageKey(user.id)))
+    setSeenSupplyAnalyticsKeys(readStringListFromStorage(getSupplyAnalyticsNotificationStorageKey(user.id)))
   }, [user?.id])
+
+  useEffect(() => {
+    if (activeTab !== 'production' || !user?.id) {
+      return
+    }
+
+    if (productionSubTab === 'tasks') {
+      markTaskNotificationsSeen('new', allNewProductionTasks.map((task) => task.id))
+    } else if (productionSubTab === 'inProgress') {
+      markTaskNotificationsSeen('in-progress', allInProgressProductionTasks.map((task) => task.id))
+    } else if (productionSubTab === 'cancelled') {
+      markTaskNotificationsSeen('cancelled', allCancelledProductionTasks.map((task) => task.id))
+    } else if (productionSubTab === 'completed') {
+      markTaskNotificationsSeen('completed', allCompletedProductionTasks.map((task) => task.id))
+    }
+  }, [
+    activeTab,
+    productionSubTab,
+    user?.id,
+    allNewProductionTasks,
+    allInProgressProductionTasks,
+    allCancelledProductionTasks,
+    allCompletedProductionTasks,
+  ])
+
+  useEffect(() => {
+    if (activeTab !== 'supplies' || !user?.id) {
+      return
+    }
+
+    if (supplySubTab === 'all' || supplySubTab === 'create') {
+      markSupplyNotificationsSeen(allActiveSupplies.map((supply) => supply.id))
+    } else if (supplySubTab === 'editor') {
+      markSupplyNotificationsSeen(createdSupplies.map((supply) => supply.id))
+    } else if (supplySubTab === 'analytics') {
+      markSupplyAnalyticsSeen(supplyAnalytics.map((item) => getSupplyAnalyticsRowKey(item)))
+    }
+  }, [activeTab, supplySubTab, user?.id, allActiveSupplies, createdSupplies, supplyAnalytics])
 
   useEffect(() => {
     if (!user || visibleTabs.some((tab) => tab.id === activeTab)) {
@@ -4644,7 +4775,6 @@ function App() {
     } else {
       setProductionFilePaths([])
     }
-    setProductionStatus(data.length ? `Найдено записей: ${data.length}` : 'Записей пока нет')
   }
 
   async function uploadProductionFileForTaskItem(
@@ -4812,6 +4942,19 @@ function App() {
     })
   }
 
+  function markSupplyAnalyticsSeen(keys: string[]) {
+    if (!user?.id || keys.length === 0) {
+      return
+    }
+
+    const storageKey = getSupplyAnalyticsNotificationStorageKey(user.id)
+    setSeenSupplyAnalyticsKeys((current) => {
+      const next = Array.from(new Set([...current, ...keys]))
+      localStorage.setItem(storageKey, JSON.stringify(next))
+      return next
+    })
+  }
+
   function markChatNotificationsSeen(chatType: 'user' | 'group', chatId: string) {
     setChatThreads((current) =>
       current.map((item) =>
@@ -4824,6 +4967,7 @@ function App() {
     markTaskNotificationsSeen('new', unseenNewProductionTasks.map((task) => task.id))
     markTaskNotificationsSeen('cancelled', unseenCancelledForCreator.map((task) => task.id))
     markSupplyNotificationsSeen(unseenCreatedSupplies.map((supply) => supply.id))
+    markSupplyAnalyticsSeen(supplyAnalytics.map((item) => getSupplyAnalyticsRowKey(item)))
     chatThreads
       .filter((item) => (item.unreadCount ?? 0) > 0)
       .forEach((item) => markChatNotificationsSeen(item.type, item.id))
@@ -4901,7 +5045,6 @@ function App() {
     knownNewTaskIdsRef.current = nextTaskIds
     productionTaskStatusRef.current = Object.fromEntries(data.map((task) => [task.id, task.status]))
     setProductionTasks(data)
-    setTaskStatus(data.length ? `Задач: ${data.length}` : 'Задач пока нет')
   }
 
   function resetTaskForm() {
@@ -5768,6 +5911,32 @@ function App() {
     await loadSupplyAnalytics()
   }
 
+  async function updateSupplyDates(id: string, sentAt?: string, acceptedAt?: string) {
+    const response = await fetch(`/api/supplies/${id}/dates`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sentAt: sentAt ?? null,
+        acceptedAt: acceptedAt ?? null,
+      }),
+    })
+
+    if (!response.ok) {
+      setSupplyStatus(getApiErrorMessage(await response.text(), 'Не удалось обновить даты поставки'))
+      return false
+    }
+
+    setSupplyStatus('Даты поставки обновлены')
+    await loadSupplies()
+    if (user?.role === 'Admin') {
+      await loadSupplyAnalytics()
+    }
+    return true
+  }
+
   async function updateSupplyStatus(id: string, status: SupplyStatus) {
     if (
       status === 'Sent' &&
@@ -6348,7 +6517,7 @@ function App() {
               <div className="section-title">
                 <div>
                   <h2>Производство</h2>
-                  <p>{productionSubTab === 'tasks' ? taskStatus : productionStatus || 'Фото, данные и задачи'}</p>
+                  <p>{productionSectionSubtitle}</p>
                 </div>
                 <span className="section-actions">
                   {productionSubTab === 'archive' && user?.role === 'Admin' && hasSubFeature('production.archive', 'production') && (
@@ -6418,7 +6587,7 @@ function App() {
                   hidden={!hasSubFeature('production.tasks', 'production')}
                 >
                   Задачи
-                  {renderTabBadge(unseenNewProductionTasks.length || allNewProductionTasks.length)}
+                  {renderTabBadge(unseenNewProductionTasks.length)}
                 </button>
                 <button
                   type="button"
@@ -6430,7 +6599,7 @@ function App() {
                   hidden={!hasSubFeature('production.inProgress', 'production')}
                 >
                   В работе
-                  {renderTabBadge(unseenInProgressProductionTasks.length || allInProgressProductionTasks.length)}
+                  {renderTabBadge(unseenInProgressProductionTasks.length)}
                 </button>
                 <button
                   type="button"
@@ -6442,7 +6611,7 @@ function App() {
                   hidden={!hasSubFeature('production.cancelled', 'production')}
                 >
                   Отменённые
-                  {renderTabBadge(unseenCancelledProductionTasks.length || allCancelledProductionTasks.length)}
+                  {renderTabBadge(unseenCancelledProductionTasks.length)}
                 </button>
                 <button
                   type="button"
@@ -6454,7 +6623,7 @@ function App() {
                   hidden={!hasSubFeature('production.completed', 'production')}
                 >
                   Выполненные
-                  {renderTabBadge(unseenCompletedProductionTasks.length || allCompletedProductionTasks.length)}
+                  {renderTabBadge(unseenCompletedProductionTasks.length)}
                 </button>
               </div>
 
@@ -8097,10 +8266,13 @@ function App() {
                   <button
                     type="button"
                     className={supplySubTab === 'editor' ? 'active' : ''}
-                    onClick={() => setSupplySubTab('editor')}
+                    onClick={() => {
+                      markSupplyNotificationsSeen(createdSupplies.map((supply) => supply.id))
+                      setSupplySubTab('editor')
+                    }}
                   >
                     Редактор поставок
-                    {renderTabBadge(createdSupplies.length)}
+                    {renderTabBadge(unseenCreatedSupplies.length)}
                   </button>
                 )}
                 <button
@@ -8113,16 +8285,19 @@ function App() {
                   hidden={!hasSubFeature('supplies.all', 'supplies')}
                 >
                   Все поставки
-                  {renderTabBadge(unseenSupplies.length || allActiveSupplies.length)}
+                  {renderTabBadge(unseenSupplies.length)}
                 </button>
                 {hasSubFeature('supplies.analytics', 'supplies') && (
                   <button
                     type="button"
                     className={supplySubTab === 'analytics' ? 'active' : ''}
-                    onClick={() => setSupplySubTab('analytics')}
+                    onClick={() => {
+                      markSupplyAnalyticsSeen(supplyAnalytics.map((item) => getSupplyAnalyticsRowKey(item)))
+                      setSupplySubTab('analytics')
+                    }}
                   >
                     Аналитика поставок
-                    {renderTabBadge(supplyAnalytics.length)}
+                    {renderTabBadge(unseenSupplyAnalytics.length)}
                   </button>
                 )}
               </div>
@@ -8226,6 +8401,7 @@ function App() {
                     onDeleteSupply={deleteSupply}
                     onArchiveSupply={archiveSupply}
                     onStatusChange={updateSupplyStatus}
+                    onUpdateDates={updateSupplyDates}
                     onReplaceReserve={replaceReserveItem}
                     userRole={user?.role}
                   />
@@ -8243,6 +8419,7 @@ function App() {
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
+                  onUpdateDates={updateSupplyDates}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
                 />
@@ -8261,6 +8438,7 @@ function App() {
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
+                  onUpdateDates={updateSupplyDates}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
                   archiveMode
@@ -9919,6 +10097,14 @@ function getTaskNotificationStorageKey(
 
 function getSupplyNotificationStorageKey(userId: string) {
   return `lshop:${userId}:seen-supplies`
+}
+
+function getSupplyAnalyticsNotificationStorageKey(userId: string) {
+  return `lshop:${userId}:seen-supply-analytics`
+}
+
+function getSupplyAnalyticsRowKey(item: SupplyAnalyticsItem) {
+  return item.id
 }
 
 function renderTabBadge(count: number) {
@@ -12118,7 +12304,7 @@ function matchesKzProductionMarketplace(
   if (isNovinkaTask(task)) {
     const resolved = resolveNovinkaMarketplaceForTask(task, productionFiles)
     if (resolved === null) {
-      return true
+      return false
     }
 
     return resolved === marketplace
@@ -13419,6 +13605,81 @@ function SupplyItemsModal({
   )
 }
 
+function SupplyDatesEditor({
+  supply,
+  onUpdateDates,
+}: {
+  supply: Supply
+  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string) => Promise<boolean>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [sentAt, setSentAt] = useState(() => toDatetimeLocalValue(supply.sentAt))
+  const [acceptedAt, setAcceptedAt] = useState(() => toDatetimeLocalValue(supply.acceptedAt))
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setSentAt(toDatetimeLocalValue(supply.sentAt))
+    setAcceptedAt(toDatetimeLocalValue(supply.acceptedAt))
+    setEditing(false)
+  }, [supply.id, supply.sentAt, supply.acceptedAt])
+
+  async function saveDates() {
+    setSaving(true)
+    const saved = await onUpdateDates(
+      supply.id,
+      fromDatetimeLocalValue(sentAt),
+      fromDatetimeLocalValue(acceptedAt),
+    )
+    setSaving(false)
+    if (saved) {
+      setEditing(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <small className="supply-dates-line">
+        Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
+        {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+        <button type="button" className="link-button" onClick={() => setEditing(true)}>
+          Изменить даты
+        </button>
+      </small>
+    )
+  }
+
+  return (
+    <small className="supply-dates-editor">
+      <label>
+        Отгрузка
+        <input type="datetime-local" value={sentAt} onChange={(event) => setSentAt(event.target.value)} />
+      </label>
+      <label>
+        Приемка
+        <input
+          type="datetime-local"
+          value={acceptedAt}
+          onChange={(event) => setAcceptedAt(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={saving} onClick={() => void saveDates()}>
+        {saving ? 'Сохранение...' : 'Сохранить'}
+      </button>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => {
+          setSentAt(toDatetimeLocalValue(supply.sentAt))
+          setAcceptedAt(toDatetimeLocalValue(supply.acceptedAt))
+          setEditing(false)
+        }}
+      >
+        Отмена
+      </button>
+    </small>
+  )
+}
+
 function SupplyTable({
   supplies,
   ozonProducts,
@@ -13429,6 +13690,7 @@ function SupplyTable({
   onDeleteSupply,
   onArchiveSupply,
   onStatusChange,
+  onUpdateDates,
   onReplaceReserve,
   userRole,
   archiveMode = false,
@@ -13442,6 +13704,7 @@ function SupplyTable({
   onDeleteSupply: (id: string) => void
   onArchiveSupply: (id: string) => void
   onStatusChange: (id: string, status: SupplyStatus) => void
+  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string) => Promise<boolean>
   onReplaceReserve: (itemId: string) => void
   userRole?: string
   archiveMode?: boolean
@@ -13478,10 +13741,14 @@ function SupplyTable({
             <div className="supply-card-head">
               <span>
                 <strong>Поставка от {formatDateTime(supply.createdAt)}</strong>
-                <small>
-                  Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-                  {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
-                </small>
+                {userRole === 'Admin' ? (
+                  <SupplyDatesEditor supply={supply} onUpdateDates={onUpdateDates} />
+                ) : (
+                  <small>
+                    Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
+                    {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                  </small>
+                )}
               </span>
               <span className="status-pill">{formatSupplyDisplayStatus(supply)}</span>
               {(canEdit || archiveMode) && (

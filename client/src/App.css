@@ -2577,6 +2577,52 @@ small .offer-id-cell {
   color: #677083;
 }
 
+.supply-dates-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.supply-dates-line .link-button,
+.supply-dates-editor button {
+  margin-left: 0;
+}
+
+.supply-dates-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  margin-top: 4px;
+}
+
+.supply-dates-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #677083;
+  font-size: 12px;
+}
+
+.supply-dates-editor input[type='datetime-local'] {
+  min-width: 180px;
+  padding: 6px 8px;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #2563eb;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
 .supply-history {
   border-bottom: 1px solid #edf0f5;
   padding: 10px 16px;

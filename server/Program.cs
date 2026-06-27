@@ -3875,6 +3875,44 @@ app.MapPut("/api/supplies/{id:guid}/status", async (
     return Results.NoContent();
 }).RequireAuthorization();
 
+app.MapPatch("/api/supplies/{id:guid}/dates", async (
+    Guid id,
+    UpdateSupplyDatesRequest request,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    IHubContext<AppHub> hub) =>
+{
+    if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    var supply = await db.Supplies.FindAsync(id);
+    if (supply is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (supply.IsArchived)
+    {
+        return Results.BadRequest("Архивную поставку нельзя менять.");
+    }
+
+    supply.SentAt = request.SentAt;
+    supply.AcceptedAt = request.AcceptedAt;
+    AuditLogWriter.Add(
+        db,
+        principal,
+        "Изменение дат поставки",
+        "Supply",
+        supply.Id.ToString(),
+        $"Отправка: {request.SentAt?.ToString("O") ?? "-"}, приемка: {request.AcceptedAt?.ToString("O") ?? "-"}");
+    await db.SaveChangesAsync();
+    await hub.Clients.All.SendAsync("SuppliesChanged");
+
+    return Results.NoContent();
+}).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
 app.MapPut("/api/supplies/{id:guid}", async (
     Guid id,
     UpdateSupplyRequest request,
@@ -4301,6 +4339,7 @@ record CreateSupplyRequest(List<CreateSupplyItemRequest> Items);
 record CreateSupplyItemRequest(long? OzonProductId, string OfferId, string ProductName, int Quantity, bool IsReserve);
 record UpdateSupplyRequest(List<CreateSupplyItemRequest> Items);
 record ChangeSupplyStatusRequest(string Status);
+record UpdateSupplyDatesRequest(DateTimeOffset? SentAt, DateTimeOffset? AcceptedAt);
 record ReplaceReserveSupplyItemRequest(long OzonProductId, string OfferId, string ProductName);
 record SupplyListItem(
     Guid Id,
