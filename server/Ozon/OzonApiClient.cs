@@ -348,6 +348,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 .MergeSupplemental(supplementalArrivalDates);
         }
 
+        var unsoldMetricsEnd = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
         var unsoldProducts = unsoldCandidates
             .Select(product =>
             {
@@ -355,7 +356,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 var (sellingSince, daysWithoutSales) = ResolveUnsoldProductMetrics(
                     product,
                     sku,
-                    dateTo,
+                    unsoldMetricsEnd,
                     analyticsDaysBySku,
                     supplyArrivalIndex);
 
@@ -634,6 +635,12 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             return (null, null);
         }
 
+        if (sku > 0 && analyticsDaysBySku.TryGetValue(sku, out var ozonDays))
+        {
+            var sellingSince = periodEnd.AddDays(-ozonDays).ToString("yyyy-MM-dd");
+            return (sellingSince, Math.Max(0, ozonDays));
+        }
+
         if (supplyArrivalIndex is not null)
         {
             DateOnly? supplyDate = null;
@@ -656,12 +663,6 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 var sellingSince = supplyDate.Value.ToString("yyyy-MM-dd");
                 return (sellingSince, CalculateDaysWithoutSales(sellingSince, periodEnd));
             }
-        }
-
-        if (sku > 0 && analyticsDaysBySku.TryGetValue(sku, out var ozonDays))
-        {
-            var sellingSince = periodEnd.AddDays(-ozonDays).ToString("yyyy-MM-dd");
-            return (sellingSince, Math.Max(0, ozonDays));
         }
 
         if (TryParseOzonDate(product.CreatedAt, out var createdDate))

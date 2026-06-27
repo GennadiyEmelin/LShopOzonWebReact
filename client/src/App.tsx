@@ -9803,8 +9803,8 @@ function App() {
                 </div>
               </div>
 
-              <details className="role-profiles-panel">
-                <summary className="role-profiles-head">
+              <details className="settings-details-panel role-profiles-panel">
+                <summary className="settings-details-head role-profiles-head">
                   <div>
                     <h3>Роли и главная страница</h3>
                     <p>
@@ -9815,15 +9815,17 @@ function App() {
                     </p>
                   </div>
                 </summary>
-                <div className="role-profiles-list">
+                <div className="settings-details-body role-profiles-list">
                   {roleProfiles.map((profile) => {
                     const edit = roleProfileEdits[profile.role] ?? profile
                     const editFeatures = edit.allowedFeatures ?? []
                     return (
-                      <details className="role-profile-card" key={profile.role}>
-                        <summary className="role-profile-summary">
-                          <strong>{getRoleLabel(profile.role)}</strong>
-                          <small>{edit.displayName || profile.displayName}</small>
+                      <details className="settings-nested-panel role-profile-card" key={profile.role}>
+                        <summary className="settings-nested-head role-profile-summary">
+                          <span className="settings-nested-head-text">
+                            <strong>{getRoleLabel(profile.role)}</strong>
+                            <small>{edit.displayName || profile.displayName}</small>
+                          </span>
                         </summary>
                         <div className="role-profile-body">
                         <div className="role-profile-head">
@@ -9889,13 +9891,14 @@ function App() {
                 </div>
               </details>
 
-              <details className="backup-panel">
-                <summary className="backup-panel-head">
+              <details className="settings-details-panel backup-panel">
+                <summary className="settings-details-head backup-panel-head">
                   <div>
                     <h3>Бэкапы базы данных</h3>
                     <p>{backupStatus || 'Последние сохраненные копии PostgreSQL'}</p>
                   </div>
                 </summary>
+                <div className="settings-details-body">
                 <button type="button" className="header-action backup-refresh" onClick={loadBackups}>
                   Обновить
                 </button>
@@ -9917,15 +9920,17 @@ function App() {
                     <div className="empty-state">Бэкапы появятся после первого запуска backup-контейнера.</div>
                   )}
                 </div>
+                </div>
               </details>
 
-              <details className="audit-panel">
-                <summary className="backup-panel-head">
+              <details className="settings-details-panel audit-panel">
+                <summary className="settings-details-head backup-panel-head">
                   <div>
                     <h3>Журнал действий</h3>
                     <p>{auditStatus || 'Последние действия пользователей и системы'}</p>
                   </div>
                 </summary>
+                <div className="settings-details-body">
                 <form
                   className="audit-filter"
                   onSubmit={(event) => {
@@ -10014,6 +10019,7 @@ function App() {
                       <strong>В журнале пока нет записей.</strong>
                     </div>
                   )}
+                </div>
                 </div>
               </details>
             </section>
