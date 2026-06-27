@@ -10792,7 +10792,9 @@ function ProductSearchInput({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => selectProduct(product)}
                 >
-                  <ProductThumb imageUrl={product.imageUrl} name={product.name} />
+                  <ProductImageHoverPreview imageUrl={product.imageUrl} name={product.name}>
+                    <ProductThumb imageUrl={product.imageUrl} name={product.name} />
+                  </ProductImageHoverPreview>
                   <span>
                     <OfferIdCell offerId={product.offerId} />
                     <small>{product.name}</small>
@@ -11202,12 +11204,16 @@ function ProductCatalogFilesEditor({
 
         {selectedCatalogItem ? (
           <div className="product-catalog-files-current">
-            <NovinkaProductPreview
-              item={selectedCatalogItem}
-              token={token}
-              files={itemFiles}
-              paths={itemPaths}
-            />
+            {targetMode === 'ozon' && selectedOzon ? (
+              <TaskProductPreview product={selectedOzon} />
+            ) : (
+              <NovinkaProductPreview
+                item={selectedCatalogItem}
+                token={token}
+                files={itemFiles}
+                paths={itemPaths}
+              />
+            )}
 
             {itemPaths.length > 0 && (
               <div className="product-catalog-files-list">
