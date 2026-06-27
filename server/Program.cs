@@ -3121,8 +3121,8 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
         return Results.BadRequest("Редактировать можно только задачу, которая ещё не взята в работу.");
     }
 
-    var taskType = ProductionTaskResponses.NormalizeTaskType(task.TaskType);
-    if (taskType == ProductionTaskTypes.Novinka)
+    var isNovinka = ProductionTaskResponses.IsNovinkaTaskUpdate(task, requestItems);
+    if (isNovinka)
     {
         if (requestItems.Any(item => string.IsNullOrWhiteSpace(item.ProductName) || string.IsNullOrWhiteSpace(item.ProductLink)))
         {
@@ -3135,11 +3135,10 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
     }
 
     List<ProductionTaskItem> builtItems;
-    if (ProductionTaskResponses.NormalizeTaskType(taskType) == ProductionTaskTypes.Novinka)
+    if (isNovinka)
     {
-        db.ProductionTaskItems.RemoveRange(task.Items);
-        builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
-        task.Items = builtItems;
+        task.TaskType = ProductionTaskTypes.Novinka;
+        builtItems = ProductionTaskResponses.ReconcileNovinkaTaskItems(task, requestItems);
     }
     else
     {
@@ -3151,16 +3150,23 @@ app.MapPut("/api/production/tasks/{id:guid}", async (
     task.OfferId = (firstItem.OfferId ?? string.Empty).Trim();
     task.ProductName = builtItems.Count == 1
         ? (firstItem.ProductName ?? string.Empty).Trim()
-        : taskType == ProductionTaskTypes.Novinka
+        : isNovinka
             ? $"Новинки · {builtItems.Count} товаров"
             : $"Задача на {builtItems.Count} товаров";
-    task.RequiredQuantity = taskType == ProductionTaskTypes.Novinka
+    task.RequiredQuantity = isNovinka
         ? 0
         : builtItems.Sum(item => item.RequiredQuantity);
     task.IsUrgent = request.IsUrgent;
 
     AuditLogWriter.Add(db, principal, "Редактирование задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
-    await db.SaveChangesAsync();
+    try
+    {
+        await db.SaveChangesAsync();
+    }
+    catch (DbUpdateException)
+    {
+        return Results.BadRequest("Не удалось сохранить задачу. Проверьте длину названия и ссылки.");
+    }
     await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
     await IntegrationNotificationPublisher.PublishAsync(
@@ -5013,6 +5019,94 @@ static class ProductionTaskResponses
         }).ToList();
     }
 
+    public static bool IsNovinkaTaskUpdate(
+        ProductionTask task,
+        IReadOnlyCollection<CreateProductionTaskItemRequest> requestItems)
+    {
+        if (NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka)
+        {
+            return true;
+        }
+
+        if (requestItems.Count > 0 &&
+            requestItems.All(item =>
+                item.OzonProductId <= 0 &&
+                item.RequiredQuantity <= 0 &&
+                !string.IsNullOrWhiteSpace(item.ProductName) &&
+                !string.IsNullOrWhiteSpace(item.ProductLink)))
+        {
+            return true;
+        }
+
+        return task.Items.Count > 0 &&
+               task.Items.All(item =>
+                   item.OzonProductId <= 0 &&
+                   (!string.IsNullOrWhiteSpace(item.ProductLink) ||
+                    item.OfferId.StartsWith("NV-", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    public static List<ProductionTaskItem> ReconcileNovinkaTaskItems(
+        ProductionTask task,
+        IReadOnlyCollection<CreateProductionTaskItemRequest> requestItems)
+    {
+        var matchedExisting = new HashSet<Guid>();
+        var result = new List<ProductionTaskItem>();
+
+        foreach (var requestItem in requestItems)
+        {
+            var normalized = NormalizeTaskItemRequest(requestItem);
+            var normalizedLink = NormalizeNovinkaLink(normalized.ProductLink);
+            var existing = task.Items.FirstOrDefault(item =>
+                !matchedExisting.Contains(item.Id) &&
+                string.Equals(item.ProductName.Trim(), normalized.ProductName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(NormalizeNovinkaLink(item.ProductLink), normalizedLink, StringComparison.OrdinalIgnoreCase));
+
+            if (existing is null && !string.IsNullOrWhiteSpace(normalized.OfferId))
+            {
+                existing = task.Items.FirstOrDefault(item =>
+                    !matchedExisting.Contains(item.Id) &&
+                    string.Equals(item.OfferId.Trim(), normalized.OfferId, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (existing is not null)
+            {
+                matchedExisting.Add(existing.Id);
+                existing.OzonProductId = 0;
+                existing.OfferId = string.IsNullOrWhiteSpace(existing.OfferId)
+                    ? BuildNovinkaOfferId(existing.Id)
+                    : existing.OfferId;
+                existing.ProductName = normalized.ProductName;
+                existing.ProductLink = normalized.ProductLink;
+                existing.RequiredQuantity = 0;
+                existing.EnforceMinimumQuantity = false;
+                result.Add(existing);
+                continue;
+            }
+
+            var itemId = Guid.NewGuid();
+            result.Add(new ProductionTaskItem
+            {
+                Id = itemId,
+                OzonProductId = 0,
+                OfferId = BuildNovinkaOfferId(itemId),
+                ProductName = normalized.ProductName,
+                ProductLink = normalized.ProductLink,
+                RequiredQuantity = 0,
+                EnforceMinimumQuantity = false,
+            });
+        }
+
+        foreach (var removed in task.Items.Where(item => !matchedExisting.Contains(item.Id)).ToList())
+        {
+            task.Items.Remove(removed);
+        }
+
+        task.Items.Clear();
+        task.Items.AddRange(result);
+
+        return result;
+    }
+
     public static List<ProductionTaskItem> ReconcileTaskItems(
         ProductionTask task,
         IReadOnlyCollection<CreateProductionTaskItemRequest> requestItems)
@@ -5082,6 +5176,15 @@ static class ProductionTaskResponses
             (itemRequest.ProductLink ?? string.Empty).Trim(),
             itemRequest.RequiredQuantity,
             itemRequest.EnforceMinimumQuantity);
+
+    private static string NormalizeNovinkaLink(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : System.Text.RegularExpressions.Regex.Replace(
+                value.Trim(),
+                @"\s*;?\s*marketplace:(ozon|kaspi|satu|halyk)\b",
+                string.Empty,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
 
     public static bool IsValidOzonTaskItemRequest(CreateProductionTaskItemRequest item)
     {

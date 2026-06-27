@@ -486,6 +486,7 @@ type DraftNovinkaItem = {
   tempId: string
   productName: string
   productLink: string
+  offerId?: string
 }
 
 function createTempId() {
@@ -5115,6 +5116,7 @@ function App() {
           tempId: createTempId(),
           productName: item.productName,
           productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
+          offerId: item.offerId ?? '',
         })),
       )
       setShowCreateNovinkaTaskModal(true)
@@ -5205,18 +5207,18 @@ function App() {
     setTaskFormSaving(true)
     setTaskFormStatus('')
 
-    const payload = {
-      taskType: 'Novinka',
-      isUrgent: taskIsUrgent,
-      items: novinkaItems.map((item) => ({
-        ozonProductId: 0,
-        offerId: '',
-        productName: item.productName,
-        productLink: appendNovinkaMarketplaceNote(item.productLink, novinkaTaskMarketplace),
-        requiredQuantity: 0,
-        enforceMinimumQuantity: false,
-      })),
-    }
+    const itemPayload = novinkaItems.map((item) => ({
+      ozonProductId: 0,
+      offerId: item.offerId ?? '',
+      productName: item.productName,
+      productLink: appendNovinkaMarketplaceNote(item.productLink, novinkaTaskMarketplace),
+      requiredQuantity: 0,
+      enforceMinimumQuantity: false,
+    }))
+
+    const payload = taskIdBeingEdited
+      ? { isUrgent: taskIsUrgent, items: itemPayload }
+      : { taskType: 'Novinka', isUrgent: taskIsUrgent, items: itemPayload }
 
     try {
       const response = await fetch(
@@ -5231,9 +5233,11 @@ function App() {
         },
       )
 
+      const responseText = await response.text()
+
       if (!response.ok) {
         const message = getApiErrorMessage(
-          await response.text(),
+          responseText,
           taskIdBeingEdited ? 'Не удалось сохранить задачу' : 'Не удалось создать задачу',
         )
         setTaskFormStatus(message)
@@ -5242,7 +5246,10 @@ function App() {
       }
 
       const wasEdit = Boolean(taskIdBeingEdited)
-      const savedTask: ProductionTask | null = response.status === 204 ? null : await response.json()
+      let savedTask: ProductionTask | null = null
+      if (response.status !== 204 && responseText.trim()) {
+        savedTask = JSON.parse(responseText) as ProductionTask
+      }
       if (!wasEdit && savedTask?.id && user?.id) {
         markTaskNotificationsSeen('new', [savedTask.id])
       }
@@ -7106,7 +7113,16 @@ function App() {
                           {draftNovinkaItems.map((item) => (
                             <div className="table-row task-draft-row novinka-draft-row" key={item.tempId}>
                               <span className="product-mini task-draft-product-mini">
-                                <span>
+                                {item.productLink ? (
+                                  <LinkHoverPreview
+                                    url={item.productLink}
+                                    name={item.productName}
+                                    token={token}
+                                  />
+                                ) : (
+                                  <ProductThumb name={item.productName} large />
+                                )}
+                                <span className="task-draft-product-name">
                                   <strong>{item.productName}</strong>
                                 </span>
                               </span>

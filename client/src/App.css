@@ -883,6 +883,26 @@
   height: 72px;
 }
 
+.task-draft-product-name {
+  min-width: 0;
+}
+
+.task-draft-product-name strong {
+  display: block;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.novinka-draft-row .product-mini {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.task-draft-product-mini .product-image-hover-trigger .product-thumb,
+.task-draft-product-mini .product-image-hover-trigger .product-thumb-large {
+  width: 72px;
+  height: 72px;
+}
+
 .task-minimum-badge {
   font-size: 12px;
   color: #b42318;
@@ -1694,7 +1714,8 @@ small .offer-id-cell {
 }
 
 .novinka-draft-row {
-  grid-template-columns: minmax(280px, 2fr) minmax(110px, 0.7fr) max-content;
+  grid-template-columns: minmax(280px, 2fr) minmax(120px, 0.8fr) max-content !important;
+  min-width: 640px;
 }
 
 .novinka-external-link-btn {
