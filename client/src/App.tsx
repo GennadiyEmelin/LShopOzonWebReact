@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import * as signalR from '@microsoft/signalr'
 import { KzIntegrationCard, KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
@@ -761,7 +761,7 @@ function getRoleProfileHomeBlocks(role: string, roleProfiles: RoleProfile[]): Ho
   return roleProfiles.find((entry) => entry.role === role)?.homeBlocks ?? []
 }
 
-function UserHomeBlocksEditor({
+const UserHomeBlocksEditor = memo(function UserHomeBlocksEditor({
   homeBlocks,
   onChange,
   disabled = false,
@@ -783,7 +783,7 @@ function UserHomeBlocksEditor({
           ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
 
         return (
-          <details key={block.id} className="home-block-card" open={blockEdit.enabled}>
+          <details key={block.id} className="home-block-card">
             <summary className="home-block-card-summary">
               <label
                 className="home-block-card-title"
@@ -877,9 +877,9 @@ function UserHomeBlocksEditor({
       })}
     </div>
   )
-}
+})
 
-function UserPermissionsEditor({
+const UserPermissionsEditor = memo(function UserPermissionsEditor({
   role,
   allowedFeatures,
   onFeaturesChange,
@@ -909,7 +909,7 @@ function UserPermissionsEditor({
         ).length
 
         return (
-        <details key={group.title} className="permission-card" open={group.title === 'Главная'}>
+        <details key={group.title} className="permission-card">
           <summary className="permission-card-summary">
             <span className="permission-card-title">{group.title}</span>
             <span className="permission-card-count">
@@ -954,6 +954,25 @@ function UserPermissionsEditor({
         )
       })}
     </div>
+  )
+})
+
+function LazyUserSettingsDetails({
+  summary,
+  className,
+  children,
+}: {
+  summary: ReactNode
+  className?: string
+  children: ReactNode
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <details className={className} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
+      <summary>{summary}</summary>
+      {isOpen ? children : null}
+    </details>
   )
 }
 
@@ -1039,6 +1058,479 @@ type ProductionAnalyticsAssignee = {
   userName: string
   role: string
   avatarUrl: string
+}
+
+function UsersAdminPanel({
+  token,
+  users,
+  usersLoadError,
+  roleProfiles,
+  currentUser,
+  canCreateUsers,
+  canEditUsers,
+  canChangeOtherPasswords,
+  onUsersChange,
+  onCurrentUserChange,
+  onOpenUserProfile,
+}: {
+  token: string
+  users: User[]
+  usersLoadError: string
+  roleProfiles: RoleProfile[]
+  currentUser: User | null
+  canCreateUsers: boolean
+  canEditUsers: boolean
+  canChangeOtherPasswords: boolean
+  onUsersChange: Dispatch<SetStateAction<User[]>>
+  onCurrentUserChange: (user: User) => void
+  onOpenUserProfile: (user: User) => void
+}) {
+  const [newUser, setNewUser] = useState({
+    userName: '',
+    displayName: '',
+    position: '',
+    password: '',
+    role: 'Production',
+    allowedFeatures: defaultUserFeatures,
+    homeBlocks: [] as HomeBlockConfig[],
+  })
+  const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
+  const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
+  const [savedUserSettingsIds, setSavedUserSettingsIds] = useState<Record<string, true>>({})
+  const savedUserSettingsTimeoutsRef = useRef<Record<string, number>>({})
+
+  useEffect(() => {
+    return () => {
+      Object.values(savedUserSettingsTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId)
+      })
+    }
+  }, [])
+
+  function markUserSettingsSaved(userId: string) {
+    setSavedUserSettingsIds((current) => ({ ...current, [userId]: true }))
+
+    const existingTimeout = savedUserSettingsTimeoutsRef.current[userId]
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout)
+    }
+
+    savedUserSettingsTimeoutsRef.current[userId] = window.setTimeout(() => {
+      setSavedUserSettingsIds((current) => {
+        const next = { ...current }
+        delete next[userId]
+        return next
+      })
+      delete savedUserSettingsTimeoutsRef.current[userId]
+    }, 3000)
+  }
+
+  async function createUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    const response = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userName: newUser.userName,
+        displayName: newUser.displayName,
+        position: newUser.position,
+        password: newUser.password,
+        role: newUser.role,
+        allowedFeatures: newUser.allowedFeatures,
+        homeBlocks:
+          newUser.homeBlocks.length > 0
+            ? newUser.homeBlocks
+            : getRoleProfileHomeBlocks(newUser.role, roleProfiles),
+      }),
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const createdUser = await response.json()
+    onUsersChange((current) => [...current, createdUser])
+    setNewUser({
+      userName: '',
+      displayName: '',
+      position: '',
+      password: '',
+      role: 'Production',
+      allowedFeatures: defaultUserFeatures,
+      homeBlocks: getRoleProfileHomeBlocks('Production', roleProfiles),
+    })
+  }
+
+  async function saveUserSettings(id: string) {
+    const edit = userSettingsEdits[id]
+    if (!edit) {
+      return
+    }
+
+    const response = await fetch(`/api/admin/users/${id}/settings`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        displayName: edit.displayName,
+        position: edit.position,
+        role: edit.role,
+        allowedFeatures: edit.allowedFeatures,
+        homeBlocks: edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles),
+      }),
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const updatedUser: User = await response.json()
+    onUsersChange((current) => current.map((item) => (item.id === id ? updatedUser : item)))
+    if (currentUser?.id === id) {
+      onCurrentUserChange(updatedUser)
+    }
+    setUserSettingsEdits((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    markUserSettingsSaved(id)
+  }
+
+  async function deleteUser(id: string) {
+    const response = await fetch(`/api/admin/users/${id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    onUsersChange((current) => current.filter((item) => item.id !== id))
+  }
+
+  async function changeUserPassword(id: string) {
+    const password = passwordEdits[id]
+    if (!password) {
+      return
+    }
+
+    const response = await fetch(`/api/admin/users/${id}/password`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ password }),
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    setPasswordEdits((current) => ({ ...current, [id]: '' }))
+  }
+
+  return (
+    <section className="admin-panel">
+      <div className="section-title">
+        <h2>Пользователи</h2>
+        <p>
+          {canEditUsers
+            ? 'Создание и редактирование учётных записей'
+            : canCreateUsers
+              ? 'Добавление учётных записей'
+              : 'Просмотр учётных записей'}
+        </p>
+      </div>
+
+      {canCreateUsers && (
+        <form className="user-form" onSubmit={createUser}>
+          <label>
+            <span>Логин</span>
+            <input
+              placeholder="Логин"
+              value={newUser.userName}
+              onChange={(event) => setNewUser((current) => ({ ...current, userName: event.target.value }))}
+              required
+            />
+          </label>
+          <label>
+            <span>Имя</span>
+            <input
+              placeholder="Имя"
+              value={newUser.displayName}
+              onChange={(event) => setNewUser((current) => ({ ...current, displayName: event.target.value }))}
+              required
+            />
+          </label>
+          <label>
+            <span>Должность</span>
+            <input
+              placeholder="Должность"
+              value={newUser.position}
+              onChange={(event) => setNewUser((current) => ({ ...current, position: event.target.value }))}
+            />
+          </label>
+          <label>
+            <span>Пароль</span>
+            <input
+              placeholder="Пароль"
+              type="password"
+              value={newUser.password}
+              onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))}
+              required
+            />
+          </label>
+          <label>
+            <span>Роль</span>
+            <select
+              value={newUser.role}
+              onChange={(event) => {
+                const role = event.target.value
+                const profile = roleProfiles.find((item) => item.role === role)
+                setNewUser((current) => ({
+                  ...current,
+                  role,
+                  allowedFeatures:
+                    role === 'Admin' ? current.allowedFeatures : profile?.allowedFeatures ?? defaultUserFeatures,
+                  homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
+                }))
+              }}
+            >
+              {appRoles
+                .filter((role) => canEditUsers || role.value !== 'Admin')
+                .map((role) => (
+                  <option key={role.value} value={role.value}>
+                    {role.label}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <button type="submit" className="user-form-submit">
+            Добавить
+          </button>
+          <div className="user-form-features">
+            <UserPermissionsEditor
+              role={newUser.role}
+              allowedFeatures={newUser.allowedFeatures}
+              onFeaturesChange={(allowedFeatures) =>
+                setNewUser((current) => ({ ...current, allowedFeatures }))
+              }
+              homeBlocks={newUser.homeBlocks}
+              onHomeBlocksChange={(homeBlocks) => setNewUser((current) => ({ ...current, homeBlocks }))}
+              featuresDisabled={newUser.role === 'Admin'}
+            />
+          </div>
+        </form>
+      )}
+
+      {usersLoadError && (
+        <div className="empty-state users-load-error">
+          <strong>Не удалось загрузить список пользователей</strong>
+          <p>{usersLoadError}</p>
+        </div>
+      )}
+
+      <ul className="users-list">
+        {users.map((item) => {
+          if (item.id === SYSTEM_USER_ID) {
+            return (
+              <li key={item.id} className="user-list-item user-list-item-system">
+                <div className="user-list-row user-list-row-system">
+                  <span className="user-card-head">
+                    <UserAvatarPreview
+                      avatarUrl={item.avatarUrl}
+                      displayName={item.displayName || item.userName}
+                    />
+                    <span className="user-card-info">
+                      <strong>{item.displayName || item.userName}</strong>
+                      <small>Системный аккаунт · не настраивается</small>
+                    </span>
+                  </span>
+                  <span className="user-badge user-badge-role">Система</span>
+                </div>
+              </li>
+            )
+          }
+
+          const edit = userSettingsEdits[item.id] ?? {
+            ...item,
+            homeBlocks: resolveUserHomeBlocks(item, roleProfiles),
+          }
+          const editFeatures = edit.allowedFeatures ?? []
+          const editHomeBlocks = edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles)
+          const showPasswordControls =
+            canChangeOtherPasswords && item.id !== currentUser?.id && canEditUsers
+          const showDelete = item.id !== SYSTEM_USER_ID && canEditUsers
+
+          return (
+            <li key={item.id} className="user-list-item">
+              <div className="user-list-row">
+                <button type="button" className="user-card-open" onClick={() => onOpenUserProfile(item)}>
+                  <span className="user-card-head">
+                    <UserAvatarPreview
+                      avatarUrl={item.avatarUrl}
+                      displayName={item.displayName || item.userName}
+                    />
+                    <span className="user-card-info">
+                      <strong>{item.displayName || item.userName}</strong>
+                      <small>Логин: {item.userName}</small>
+                      <small>{item.position || 'Должность не указана'}</small>
+                    </span>
+                  </span>
+                </button>
+                <div className="user-list-badges">
+                  <span className="user-badge user-badge-role">{getRoleLabel(item.role)}</span>
+                  <span className={`user-badge user-badge-telegram ${item.telegramConnected ? 'is-online' : 'is-offline'}`}>
+                    Telegram: {item.telegramConnected ? 'подключён' : 'не подключён'}
+                  </span>
+                  <span className={`user-badge user-badge-online ${item.isOnline ? 'is-online' : 'is-offline'}`}>
+                    {item.isOnline ? 'В сети' : 'Не в сети'}
+                    {!item.isOnline && item.lastSeenAt && (
+                      <small>Был: {formatDateTime(item.lastSeenAt)}</small>
+                    )}
+                  </span>
+                </div>
+                <div className="user-list-actions">
+                  <input
+                    className={`user-password-input ${showPasswordControls ? '' : 'is-slot-hidden'}`}
+                    placeholder="Новый пароль"
+                    type="password"
+                    autoComplete="new-password"
+                    tabIndex={showPasswordControls ? 0 : -1}
+                    aria-hidden={!showPasswordControls}
+                    disabled={!showPasswordControls}
+                    value={passwordEdits[item.id] ?? ''}
+                    onChange={(event) =>
+                      setPasswordEdits((current) => ({
+                        ...current,
+                        [item.id]: event.target.value,
+                      }))
+                    }
+                  />
+                  <button
+                    type="button"
+                    className={`user-action-btn ${showPasswordControls ? '' : 'is-slot-hidden'}`}
+                    tabIndex={showPasswordControls ? 0 : -1}
+                    aria-hidden={!showPasswordControls}
+                    disabled={!showPasswordControls}
+                    onClick={() => void changeUserPassword(item.id)}
+                  >
+                    Сменить пароль
+                  </button>
+                  <button
+                    type="button"
+                    className={`user-action-btn danger ${showDelete ? '' : 'is-slot-hidden'}`}
+                    tabIndex={showDelete ? 0 : -1}
+                    aria-hidden={!showDelete}
+                    disabled={!showDelete}
+                    onClick={() => void deleteUser(item.id)}
+                  >
+                    Удалить
+                  </button>
+                </div>
+              </div>
+              {canEditUsers && (
+                <LazyUserSettingsDetails className="user-settings-panel" summary="Настройки пользователя">
+                  <div className="user-settings-grid">
+                    <label>
+                      <span>Имя</span>
+                      <input
+                        placeholder="Имя"
+                        value={edit.displayName}
+                        onChange={(event) =>
+                          setUserSettingsEdits((current) => ({
+                            ...current,
+                            [item.id]: { ...edit, displayName: event.target.value },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Должность</span>
+                      <input
+                        placeholder="Должность"
+                        value={edit.position}
+                        onChange={(event) =>
+                          setUserSettingsEdits((current) => ({
+                            ...current,
+                            [item.id]: { ...edit, position: event.target.value },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Роль</span>
+                      <select
+                        value={edit.role}
+                        onChange={(event) => {
+                          const role = event.target.value
+                          const profile = roleProfiles.find((entry) => entry.role === role)
+                          setUserSettingsEdits((current) => ({
+                            ...current,
+                            [item.id]: {
+                              ...edit,
+                              role,
+                              allowedFeatures:
+                                role === 'Admin'
+                                  ? edit.allowedFeatures
+                                  : profile?.allowedFeatures ?? edit.allowedFeatures,
+                              homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
+                            },
+                          }))
+                        }}
+                      >
+                        {appRoles.map((role) => (
+                          <option key={role.value} value={role.value}>
+                            {role.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <UserPermissionsEditor
+                      role={edit.role}
+                      allowedFeatures={editFeatures}
+                      onFeaturesChange={(allowedFeatures) =>
+                        setUserSettingsEdits((current) => ({
+                          ...current,
+                          [item.id]: { ...edit, allowedFeatures },
+                        }))
+                      }
+                      homeBlocks={editHomeBlocks}
+                      onHomeBlocksChange={(homeBlocks) =>
+                        setUserSettingsEdits((current) => ({
+                          ...current,
+                          [item.id]: { ...edit, homeBlocks },
+                        }))
+                      }
+                      featuresDisabled={edit.role === 'Admin'}
+                    />
+                    <button
+                      type="button"
+                      className="user-action-btn user-settings-save"
+                      onClick={() => void saveUserSettings(item.id)}
+                    >
+                      {savedUserSettingsIds[item.id] ? 'Сохранено' : 'Сохранить настройки'}
+                    </button>
+                  </div>
+                </LazyUserSettingsDetails>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
 }
 
 function App() {
@@ -1219,16 +1711,6 @@ function App() {
   const [showSupplyHelp, setShowSupplyHelp] = useState(false)
   const [showCreateSupplyModal, setShowCreateSupplyModal] = useState(false)
   const [supplyImportFile, setSupplyImportFile] = useState<File | null>(null)
-  const [newUser, setNewUser] = useState({
-    userName: '',
-    displayName: '',
-    position: '',
-    password: '',
-    role: 'Production',
-    allowedFeatures: defaultUserFeatures,
-    homeBlocks: [] as HomeBlockConfig[],
-  })
-  const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
   const [roleProfiles, setRoleProfiles] = useState<RoleProfile[]>([])
   const [roleProfileEdits, setRoleProfileEdits] = useState<Record<string, RoleProfile>>({})
   const [roleProfilesStatus, setRoleProfilesStatus] = useState('')
@@ -1243,9 +1725,6 @@ function App() {
   const [integrationsSubTab, setIntegrationsSubTab] = useState<'connections' | 'telegram-notifications' | 'telegram-reports'>('connections')
   const [integrationAdminUserId, setIntegrationAdminUserId] = useState('')
   const [profilePasswordForm, setProfilePasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
-  const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
-  const [savedUserSettingsIds, setSavedUserSettingsIds] = useState<Record<string, true>>({})
-  const savedUserSettingsTimeoutsRef = useRef<Record<string, number>>({})
   const [profileModalUser, setProfileModalUser] = useState<User | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', position: '' })
   const [profileAvatar, setProfileAvatar] = useState<File | null>(null)
@@ -3827,148 +4306,6 @@ function App() {
     }
 
     setChatMessages((current) => current.filter((item) => item.id !== message.id))
-  }
-
-  async function createUser(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    const response = await fetch('/api/admin/users', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        userName: newUser.userName,
-        displayName: newUser.displayName,
-        position: newUser.position,
-        password: newUser.password,
-        role: newUser.role,
-        allowedFeatures: newUser.allowedFeatures,
-        homeBlocks:
-          newUser.homeBlocks.length > 0
-            ? newUser.homeBlocks
-            : getRoleProfileHomeBlocks(newUser.role, roleProfiles),
-      }),
-    })
-
-    if (!response.ok) {
-      return
-    }
-
-    const createdUser = await response.json()
-    setUsers((current) => [...current, createdUser])
-    setNewUser({
-      userName: '',
-      displayName: '',
-      position: '',
-      password: '',
-      role: 'Production',
-      allowedFeatures: defaultUserFeatures,
-      homeBlocks: getRoleProfileHomeBlocks('Production', roleProfiles),
-    })
-  }
-
-  useEffect(() => {
-    return () => {
-      Object.values(savedUserSettingsTimeoutsRef.current).forEach((timeoutId) => {
-        window.clearTimeout(timeoutId)
-      })
-    }
-  }, [])
-
-  function markUserSettingsSaved(userId: string) {
-    setSavedUserSettingsIds((current) => ({ ...current, [userId]: true }))
-
-    const existingTimeout = savedUserSettingsTimeoutsRef.current[userId]
-    if (existingTimeout) {
-      window.clearTimeout(existingTimeout)
-    }
-
-    savedUserSettingsTimeoutsRef.current[userId] = window.setTimeout(() => {
-      setSavedUserSettingsIds((current) => {
-        const next = { ...current }
-        delete next[userId]
-        return next
-      })
-      delete savedUserSettingsTimeoutsRef.current[userId]
-    }, 3000)
-  }
-
-  async function saveUserSettings(id: string) {
-    const edit = userSettingsEdits[id]
-    if (!edit) {
-      return
-    }
-
-    const response = await fetch(`/api/admin/users/${id}/settings`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        displayName: edit.displayName,
-        position: edit.position,
-        role: edit.role,
-        allowedFeatures: edit.allowedFeatures,
-        homeBlocks: edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles),
-      }),
-    })
-
-    if (!response.ok) {
-      return
-    }
-
-    const updatedUser: User = await response.json()
-    setUsers((current) => current.map((item) => (item.id === id ? updatedUser : item)))
-    if (user?.id === id) {
-      setUser(updatedUser)
-      localStorage.setItem('authUser', JSON.stringify(updatedUser))
-    }
-    setUserSettingsEdits((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    markUserSettingsSaved(id)
-  }
-
-  async function deleteUser(id: string) {
-    const response = await fetch(`/api/admin/users/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return
-    }
-
-    setUsers((current) => current.filter((item) => item.id !== id))
-  }
-
-  async function changeUserPassword(id: string) {
-    const password = passwordEdits[id]
-    if (!password) {
-      return
-    }
-
-    const response = await fetch(`/api/admin/users/${id}/password`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ password }),
-    })
-
-    if (!response.ok) {
-      return
-    }
-
-    setPasswordEdits((current) => ({ ...current, [id]: '' }))
   }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
@@ -8932,296 +9269,22 @@ function App() {
           )}
 
           {activeTab === 'users' && canViewUsers() && (
-            <section className="admin-panel">
-              <div className="section-title">
-                <h2>Пользователи</h2>
-                <p>
-                  {canEditUsers()
-                    ? 'Создание и редактирование учётных записей'
-                    : canCreateUsers()
-                      ? 'Добавление учётных записей'
-                      : 'Просмотр учётных записей'}
-                </p>
-              </div>
-
-              {canCreateUsers() && (
-              <form className="user-form" onSubmit={createUser}>
-                <label>
-                  <span>Логин</span>
-                  <input
-                    placeholder="Логин"
-                    value={newUser.userName}
-                    onChange={(event) => setNewUser({ ...newUser, userName: event.target.value })}
-                    required
-                  />
-                </label>
-                <label>
-                  <span>Имя</span>
-                  <input
-                    placeholder="Имя"
-                    value={newUser.displayName}
-                    onChange={(event) => setNewUser({ ...newUser, displayName: event.target.value })}
-                    required
-                  />
-                </label>
-                <label>
-                  <span>Должность</span>
-                  <input
-                    placeholder="Должность"
-                    value={newUser.position}
-                    onChange={(event) => setNewUser({ ...newUser, position: event.target.value })}
-                  />
-                </label>
-                <label>
-                  <span>Пароль</span>
-                  <input
-                    placeholder="Пароль"
-                    type="password"
-                    value={newUser.password}
-                    onChange={(event) => setNewUser({ ...newUser, password: event.target.value })}
-                    required
-                  />
-                </label>
-                <label>
-                  <span>Роль</span>
-                  <select
-                    value={newUser.role}
-                    onChange={(event) => {
-                      const role = event.target.value
-                      const profile = roleProfiles.find((item) => item.role === role)
-                      setNewUser((current) => ({
-                        ...current,
-                        role,
-                        allowedFeatures: role === 'Admin'
-                          ? current.allowedFeatures
-                          : profile?.allowedFeatures ?? defaultUserFeatures,
-                        homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
-                      }))
-                    }}
-                  >
-                    {appRoles
-                      .filter((role) => canEditUsers() || role.value !== 'Admin')
-                      .map((role) => (
-                      <option key={role.value} value={role.value}>
-                        {role.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="submit" className="user-form-submit">
-                  Добавить
-                </button>
-                <div className="user-form-features">
-                  <UserPermissionsEditor
-                    role={newUser.role}
-                    allowedFeatures={newUser.allowedFeatures}
-                    onFeaturesChange={(allowedFeatures) =>
-                      setNewUser((current) => ({ ...current, allowedFeatures }))
-                    }
-                    homeBlocks={newUser.homeBlocks}
-                    onHomeBlocksChange={(homeBlocks) => setNewUser((current) => ({ ...current, homeBlocks }))}
-                    featuresDisabled={newUser.role === 'Admin'}
-                  />
-                </div>
-              </form>
-              )}
-
-              {usersLoadError && (
-                <div className="empty-state users-load-error">
-                  <strong>Не удалось загрузить список пользователей</strong>
-                  <p>{usersLoadError}</p>
-                </div>
-              )}
-
-              <ul className="users-list">
-                {users.map((item) => {
-                  if (item.id === SYSTEM_USER_ID) {
-                    return (
-                      <li key={item.id} className="user-list-item user-list-item-system">
-                        <div className="user-list-row user-list-row-system">
-                          <span className="user-card-head">
-                            <UserAvatarPreview
-                              avatarUrl={item.avatarUrl}
-                              displayName={item.displayName || item.userName}
-                            />
-                            <span className="user-card-info">
-                              <strong>{item.displayName || item.userName}</strong>
-                              <small>Системный аккаунт · не настраивается</small>
-                            </span>
-                          </span>
-                          <span className="user-badge user-badge-role">Система</span>
-                        </div>
-                      </li>
-                    )
-                  }
-
-                  const edit = userSettingsEdits[item.id] ?? {
-                    ...item,
-                    homeBlocks: resolveUserHomeBlocks(item, roleProfiles),
-                  }
-                  const editFeatures = edit.allowedFeatures ?? []
-                  const editHomeBlocks = edit.homeBlocks ?? resolveUserHomeBlocks(edit, roleProfiles)
-                  return (
-                  <li key={item.id} className="user-list-item">
-                    <div className="user-list-row">
-                    <button type="button" className="user-card-open" onClick={() => openUserProfile(item)}>
-                      <span className="user-card-head">
-                        <UserAvatarPreview
-                          avatarUrl={item.avatarUrl}
-                          displayName={item.displayName || item.userName}
-                        />
-                        <span className="user-card-info">
-                          <strong>{item.displayName || item.userName}</strong>
-                          <small>Логин: {item.userName}</small>
-                          <small>{item.position || 'Должность не указана'}</small>
-                        </span>
-                      </span>
-                    </button>
-                    <div className="user-list-badges">
-                      <span className="user-badge user-badge-role">{getRoleLabel(item.role)}</span>
-                      <span className={`user-badge user-badge-telegram ${item.telegramConnected ? 'is-online' : 'is-offline'}`}>
-                        Telegram: {item.telegramConnected ? 'подключён' : 'не подключён'}
-                      </span>
-                      <span className={`user-badge user-badge-online ${item.isOnline ? 'is-online' : 'is-offline'}`}>
-                        {item.isOnline ? 'В сети' : 'Не в сети'}
-                        {!item.isOnline && item.lastSeenAt && (
-                          <small>Был: {formatDateTime(item.lastSeenAt)}</small>
-                        )}
-                      </span>
-                    </div>
-                    {(() => {
-                      const showPasswordControls =
-                        canChangeOtherPasswords && item.id !== user?.id && canEditUsers()
-                      const showDelete = item.id !== SYSTEM_USER_ID && canEditUsers()
-                      return (
-                    <div className="user-list-actions">
-                      <input
-                        className={`user-password-input ${showPasswordControls ? '' : 'is-slot-hidden'}`}
-                        placeholder="Новый пароль"
-                        type="password"
-                        autoComplete="new-password"
-                        tabIndex={showPasswordControls ? 0 : -1}
-                        aria-hidden={!showPasswordControls}
-                        disabled={!showPasswordControls}
-                        value={passwordEdits[item.id] ?? ''}
-                        onChange={(event) =>
-                          setPasswordEdits((current) => ({
-                            ...current,
-                            [item.id]: event.target.value,
-                          }))
-                        }
-                      />
-                      <button
-                        type="button"
-                        className={`user-action-btn ${showPasswordControls ? '' : 'is-slot-hidden'}`}
-                        tabIndex={showPasswordControls ? 0 : -1}
-                        aria-hidden={!showPasswordControls}
-                        disabled={!showPasswordControls}
-                        onClick={() => changeUserPassword(item.id)}
-                      >
-                        Сменить пароль
-                      </button>
-                      <button
-                        type="button"
-                        className={`user-action-btn danger ${showDelete ? '' : 'is-slot-hidden'}`}
-                        tabIndex={showDelete ? 0 : -1}
-                        aria-hidden={!showDelete}
-                        disabled={!showDelete}
-                        onClick={() => deleteUser(item.id)}
-                      >
-                        Удалить
-                      </button>
-                    </div>
-                      )
-                    })()}
-                    </div>
-                    {canEditUsers() && (
-                    <details className="user-settings-panel">
-                      <summary>Настройки пользователя</summary>
-                      <div className="user-settings-grid">
-                        <label>
-                          <span>Имя</span>
-                          <input
-                            placeholder="Имя"
-                            value={edit.displayName}
-                            onChange={(event) =>
-                              setUserSettingsEdits((current) => ({
-                                ...current,
-                                [item.id]: { ...edit, displayName: event.target.value },
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Должность</span>
-                          <input
-                            placeholder="Должность"
-                            value={edit.position}
-                            onChange={(event) =>
-                              setUserSettingsEdits((current) => ({
-                                ...current,
-                                [item.id]: { ...edit, position: event.target.value },
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Роль</span>
-                          <select
-                            value={edit.role}
-                            onChange={(event) => {
-                              const role = event.target.value
-                              const profile = roleProfiles.find((entry) => entry.role === role)
-                              setUserSettingsEdits((current) => ({
-                                ...current,
-                                [item.id]: {
-                                  ...edit,
-                                  role,
-                                  allowedFeatures:
-                                    role === 'Admin'
-                                      ? edit.allowedFeatures
-                                      : profile?.allowedFeatures ?? edit.allowedFeatures,
-                                  homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
-                                },
-                              }))
-                            }}
-                          >
-                            {appRoles.map((role) => (
-                              <option key={role.value} value={role.value}>
-                                {role.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <UserPermissionsEditor
-                          role={edit.role}
-                          allowedFeatures={editFeatures}
-                          onFeaturesChange={(allowedFeatures) =>
-                            setUserSettingsEdits((current) => ({
-                              ...current,
-                              [item.id]: { ...edit, allowedFeatures },
-                            }))
-                          }
-                          homeBlocks={editHomeBlocks}
-                          onHomeBlocksChange={(homeBlocks) =>
-                            setUserSettingsEdits((current) => ({
-                              ...current,
-                              [item.id]: { ...edit, homeBlocks },
-                            }))
-                          }
-                          featuresDisabled={edit.role === 'Admin'}
-                        />
-                        <button type="button" className="user-action-btn user-settings-save" onClick={() => void saveUserSettings(item.id)}>
-                          {savedUserSettingsIds[item.id] ? 'Сохранено' : 'Сохранить настройки'}
-                        </button>
-                      </div>
-                    </details>
-                    )}
-                  </li>
-                  )
-                })}
-              </ul>
-            </section>
+            <UsersAdminPanel
+              token={token}
+              users={users}
+              usersLoadError={usersLoadError}
+              roleProfiles={roleProfiles}
+              currentUser={user}
+              canCreateUsers={canCreateUsers()}
+              canEditUsers={canEditUsers()}
+              canChangeOtherPasswords={canChangeOtherPasswords}
+              onUsersChange={setUsers}
+              onCurrentUserChange={(updatedUser) => {
+                setUser(updatedUser)
+                localStorage.setItem('authUser', JSON.stringify(updatedUser))
+              }}
+              onOpenUserProfile={openUserProfile}
+            />
           )}
 
           {activeTab === 'integrations' && hasFeature('integrations') && (

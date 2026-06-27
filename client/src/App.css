@@ -5397,6 +5397,47 @@ small .offer-id-cell {
   gap: 16px;
 }
 
+@media (max-width: 960px) {
+  .workspace {
+    min-height: calc(100vh - 200px);
+  }
+
+  .tab-panel {
+    border-radius: 8px;
+  }
+
+  .section-title {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .section-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .analytics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .user-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .user-form-features,
+  .user-form-submit {
+    grid-column: 1 / -1;
+  }
+
+  .integration-event-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1100px) {
   .production-analytics-sections-grid {
     grid-template-columns: 1fr;
@@ -7106,5 +7147,119 @@ small .offer-id-cell {
 
   .section-actions .header-action {
     flex: 1 1 150px;
+  }
+
+  .admin-panel,
+  .integrations-panel,
+  .role-profiles-panel,
+  .settings-details-panel {
+    padding: 12px;
+  }
+
+  .user-form,
+  .user-settings-grid,
+  .user-form-features {
+    padding: 0;
+  }
+
+  .user-settings-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .user-list-item {
+    padding: 12px;
+  }
+
+  .user-card-open {
+    width: 100%;
+  }
+
+  .permission-card-summary,
+  .home-block-card-summary,
+  .settings-nested-head,
+  .settings-details-head {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .permission-options-grid {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .permission-option {
+    width: 100%;
+  }
+
+  .integration-subtabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+
+  .integration-subtabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .integration-admin-toolbar,
+  .integration-report-form-grid,
+  .integration-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-grid,
+  .analytics-grid-main,
+  .analytics-grid-losses {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-dashboard {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .analytics-status-filters,
+  .analytics-status-filters-bar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: thin;
+  }
+
+  .analytics-status-filters button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .production-tools,
+  .production-analytics-board-head,
+  .product-catalog-files-tabs {
+    flex-wrap: wrap;
+  }
+
+  .product-catalog-files-tabs button,
+  .production-task-source-tabs button,
+  .product-type-editor-tabs button {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .settings-grid-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .role-profile-head {
+    grid-template-columns: 1fr;
+  }
+
+  .role-profile-checkbox {
+    white-space: normal;
+  }
+
+  .unsold-products-row .unsold-product-name {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
