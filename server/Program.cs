@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
@@ -5101,8 +5102,13 @@ static class ProductionTaskResponses
             task.Items.Remove(removed);
         }
 
-        task.Items.Clear();
-        task.Items.AddRange(result);
+        foreach (var item in result)
+        {
+            if (task.Items.All(existing => existing.Id != item.Id))
+            {
+                task.Items.Add(item);
+            }
+        }
 
         return result;
     }
@@ -5161,8 +5167,13 @@ static class ProductionTaskResponses
             task.Items.Remove(removed);
         }
 
-        task.Items.Clear();
-        task.Items.AddRange(result);
+        foreach (var item in result)
+        {
+            if (task.Items.All(existing => existing.Id != item.Id))
+            {
+                task.Items.Add(item);
+            }
+        }
 
         return result;
     }
@@ -5569,7 +5580,7 @@ static class ExcelSupplyImport
             var quantityText = GetValue(values, 3);
             var reserveText = GetValue(values, 4);
 
-            if (!int.TryParse(quantityText, out var quantity) || quantity <= 0)
+            if (!TryParseQuantity(quantityText, out var quantity))
             {
                 throw new InvalidOperationException($"Строка {index + 2}: количество должно быть больше нуля.");
             }
@@ -5604,10 +5615,22 @@ static class ExcelSupplyImport
     private static List<string> ReadRow(XElement row, IReadOnlyList<string> sharedStrings)
     {
         var values = new List<string>();
+        var nextImplicitColumn = 0;
         foreach (var cell in row.Elements(Spreadsheet + "c"))
         {
-            var reference = cell.Attribute("r")?.Value ?? string.Empty;
-            var index = ColumnIndex(reference);
+            var reference = cell.Attribute("r")?.Value;
+            int index;
+            if (string.IsNullOrWhiteSpace(reference))
+            {
+                index = nextImplicitColumn;
+                nextImplicitColumn++;
+            }
+            else
+            {
+                index = ColumnIndex(reference);
+                nextImplicitColumn = index + 1;
+            }
+
             while (values.Count <= index)
             {
                 values.Add(string.Empty);
@@ -5632,10 +5655,47 @@ static class ExcelSupplyImport
 
         if (type == "inlineStr")
         {
-            return string.Concat(cell.Descendants(Spreadsheet + "t").Select(text => text.Value));
+            return ReadInlineString(cell);
         }
 
-        return cell.Element(Spreadsheet + "v")?.Value ?? string.Empty;
+        var valueElement = cell.Element(Spreadsheet + "v");
+        if (valueElement != null && !string.IsNullOrEmpty(valueElement.Value))
+        {
+            return valueElement.Value;
+        }
+
+        if (cell.Element(Spreadsheet + "is") is not null)
+        {
+            return ReadInlineString(cell);
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadInlineString(XElement cell) =>
+        string.Concat(cell.Descendants(Spreadsheet + "t").Select(text => text.Value));
+
+    private static bool TryParseQuantity(string text, out int quantity)
+    {
+        quantity = 0;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        text = text.Trim().Replace('\u00A0', ' ').Replace(" ", string.Empty);
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out quantity))
+        {
+            return quantity > 0;
+        }
+
+        if (double.TryParse(text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var numeric))
+        {
+            quantity = (int)Math.Round(numeric, MidpointRounding.AwayFromZero);
+            return quantity > 0;
+        }
+
+        return false;
     }
 
     private static string GetValue(IReadOnlyList<string> values, int index) =>
