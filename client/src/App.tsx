@@ -170,6 +170,7 @@ type SystemHealth = {
   uptime: string
   machineName: string
   dotnetVersion: string
+  adminerUrl?: string | null
 }
 
 type OzonIntegrationSettings = {
@@ -9860,9 +9861,20 @@ function App() {
                 <div>
                   <span>Просмотр БД</span>
                   <strong>Adminer</strong>
-                  <a href="http://localhost:8082" target="_blank" rel="noreferrer">
-                    Открыть Adminer
-                  </a>
+                  {systemHealth?.adminerUrl ? (
+                    <>
+                      <a href={systemHealth.adminerUrl} target="_blank" rel="noreferrer">
+                        Открыть Adminer
+                      </a>
+                      <small>
+                        {systemHealth.adminerUrl.includes('127.0.0.1')
+                          ? 'Сначала откройте SSH-туннель: ssh -p 2222 -L 8082:127.0.0.1:8082 root@217.114.4.89. Пароль БД — POSTGRES_PASSWORD в .env на сервере.'
+                          : 'Пароль вводится вручную — из POSTGRES_PASSWORD в .env'}
+                      </small>
+                    </>
+                  ) : (
+                    <small>Adminer не настроен. Добавьте ADMINER_PUBLIC_URL в .env (локально: http://127.0.0.1:18082).</small>
+                  )}
                 </div>
                 <div>
                   <span>Сервер</span>

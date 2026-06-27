@@ -40,6 +40,9 @@ services:
       Ozon__ClientId: ${OZON_CLIENT_ID}
       Ozon__ApiKey: ${OZON_API_KEY}
       Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
+      Admin__PublicAdminerUrl: ${ADMINER_PUBLIC_URL:-}
+      Admin__PostgresUser: ${POSTGRES_USER}
+      Admin__PostgresDatabase: ${POSTGRES_DB}
 
   adminer:
     image: adminer:latest

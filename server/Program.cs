@@ -935,7 +935,7 @@ app.MapGet("/api/admin/report-sections", () =>
     })))
     .RequireAuthorization();
 
-app.MapGet("/api/admin/system-health", async (AppDbContext db, ClaimsPrincipal principal) =>
+app.MapGet("/api/admin/system-health", async (AppDbContext db, ClaimsPrincipal principal, IConfiguration configuration) =>
 {
     if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Settings))
     {
@@ -945,12 +945,22 @@ app.MapGet("/api/admin/system-health", async (AppDbContext db, ClaimsPrincipal p
     var process = Process.GetCurrentProcess();
     var dbOk = await db.Database.CanConnectAsync();
 
+    var adminerBaseUrl = configuration["Admin:PublicAdminerUrl"]?.Trim();
+    string? adminerUrl = null;
+    if (!string.IsNullOrWhiteSpace(adminerBaseUrl))
+    {
+        var postgresUser = configuration["Admin:PostgresUser"] ?? "lshop";
+        var postgresDatabase = configuration["Admin:PostgresDatabase"] ?? "lshop_ozon";
+        adminerUrl = $"{adminerBaseUrl.TrimEnd('/')}/?pgsql=postgres&username={Uri.EscapeDataString(postgresUser)}&db={Uri.EscapeDataString(postgresDatabase)}";
+    }
+
     return Results.Ok(new SystemHealthResponse(
         dbOk,
         DateTimeOffset.UtcNow,
         (DateTimeOffset.UtcNow - process.StartTime.ToUniversalTime()).ToString(),
         Environment.MachineName,
-        Environment.Version.ToString()));
+        Environment.Version.ToString(),
+        adminerUrl));
 }).RequireAuthorization();
 
 app.MapGet("/api/admin/backups", async (IWebHostEnvironment environment, AppDbContext db, ClaimsPrincipal principal) =>
@@ -4501,7 +4511,8 @@ record SystemHealthResponse(
     DateTimeOffset ServerTime,
     string Uptime,
     string MachineName,
-    string DotnetVersion);
+    string DotnetVersion,
+    string? AdminerUrl);
 record BackupFileResponse(string FileName, long SizeBytes, DateTimeOffset CreatedAt);
 record OzonIntegrationStatusResponse(
     bool Configured,
