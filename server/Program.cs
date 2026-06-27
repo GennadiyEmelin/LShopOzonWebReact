@@ -541,7 +541,10 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, AppDbContext d
         Position = request.Position.Trim(),
         AllowedFeatures = FeatureAccess.NormalizeForRole(role, request.AllowedFeatures, profile?.AllowedFeatures),
         PasswordHash = PasswordHasher.Hash(request.Password),
-        Role = role
+        Role = role,
+        HomeBlocksJson = role == UserRoles.Admin
+            ? string.Empty
+            : HomeBlocksCatalog.Serialize(request.HomeBlocks ?? [])
     };
     FeatureAccess.SyncTelegramConnectAllowed(user);
 
@@ -4087,7 +4090,14 @@ record Product(int Id, string Name, string Status, decimal Price);
 record CreateInitialAdminRequest(string UserName, string DisplayName, string Password);
 record LoginRequest(string UserName, string Password);
 record AuthResponse(string Token, CurrentUserResponse User);
-record CreateUserRequest(string UserName, string DisplayName, string Position, string Password, string Role, List<string>? AllowedFeatures);
+record CreateUserRequest(
+    string UserName,
+    string DisplayName,
+    string Position,
+    string Password,
+    string Role,
+    List<string>? AllowedFeatures,
+    List<HomeBlockConfig>? HomeBlocks);
 record UpdateUserSettingsRequest(
     string DisplayName,
     string Position,
@@ -4404,12 +4414,21 @@ static class ProductionTaskRoleFilter
             return query;
         }
 
-        if (role == UserRoles.Designer)
+        var allowed = await FeatureAccess.GetAllowedFeaturesAsync(db, principal);
+        var seeNovinka = FeatureAccess.CanSeeNovinkaProductionTasks(role, allowed);
+        var seeOzon = FeatureAccess.CanSeeOzonProductionTasks(role, allowed);
+
+        if (seeNovinka && seeOzon)
+        {
+            return query;
+        }
+
+        if (seeNovinka)
         {
             return query.Where(task => task.TaskType == ProductionTaskTypes.Novinka);
         }
 
-        if (role == UserRoles.Production)
+        if (seeOzon)
         {
             return query.Where(task => task.TaskType != ProductionTaskTypes.Novinka);
         }

@@ -2881,7 +2881,7 @@ small .offer-id-cell {
 }
 
 .home-sales-chart {
-  overflow: hidden;
+  overflow: visible;
   padding-top: 8px;
 }
 
@@ -2894,6 +2894,22 @@ small .offer-id-cell {
   padding: 18px 0 0;
 }
 
+.home-sales-chart-bars.is-revenue {
+  padding-top: 8px;
+}
+
+.home-sales-chart-bars.is-revenue-rotated {
+  padding-top: 72px;
+}
+
+.home-sales-chart-bars.is-dense {
+  gap: 2px;
+}
+
+.home-sales-chart-bars.is-revenue-rotated.is-dense {
+  padding-top: 64px;
+}
+
 .home-sales-chart-bar-wrap {
   display: flex;
   flex: 1 1 0;
@@ -2901,6 +2917,7 @@ small .offer-id-cell {
   align-items: stretch;
   gap: 4px;
   min-width: 0;
+  overflow: visible;
 }
 
 .home-sales-chart-bar-track {
@@ -2909,6 +2926,7 @@ small .offer-id-cell {
   align-items: flex-end;
   width: 100%;
   height: 160px;
+  overflow: visible;
 }
 
 .home-sales-chart-bar {
@@ -2920,19 +2938,36 @@ small .offer-id-cell {
 }
 
 .home-sales-chart-bar-value {
-  position: absolute;
-  top: -16px;
-  left: 50%;
-  z-index: 1;
-  max-width: 120px;
   color: #475467;
-  font-size: 9px;
   font-weight: 700;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.home-sales-chart-bar-value--orders,
+.home-sales-chart-bar-value--revenue {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  font-size: 11px;
   line-height: 1;
   text-align: center;
   transform: translateX(-50%);
-  white-space: nowrap;
-  pointer-events: none;
+}
+
+.home-sales-chart-bars.is-dense .home-sales-chart-bar-value--orders,
+.home-sales-chart-bars.is-dense .home-sales-chart-bar-value--revenue {
+  font-size: 10px;
+}
+
+.home-sales-chart-bar-value--revenue-rotated {
+  font-size: 11px;
+  transform: translateX(-50%) rotate(-90deg);
+  transform-origin: center center;
+}
+
+.home-sales-chart-bars.is-dense .home-sales-chart-bar-value--revenue-rotated {
+  font-size: 9px;
 }
 
 .home-sales-chart-label {

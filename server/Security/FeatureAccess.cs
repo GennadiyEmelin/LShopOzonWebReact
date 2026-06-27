@@ -31,12 +31,16 @@ public static class FeatureAccess
     public const string Settings = "settings";
     public const string SettingsEdit = "settings.edit";
 
+    public const string ProductionTasksDesigner = "production.tasks.designer";
+    public const string ProductionTasksProduction = "production.tasks.production";
+
     public static readonly string[] ProductionDefaults =
     [
         Home,
         Production,
         "production.products",
         "production.tasks",
+        ProductionTasksProduction,
         "production.inProgress",
         "production.cancelled",
         "production.completed",
@@ -57,6 +61,8 @@ public static class FeatureAccess
         Production,
         "production.products",
         "production.tasks",
+        ProductionTasksDesigner,
+        ProductionTasksProduction,
         "production.inProgress",
         "production.cancelled",
         "production.completed",
@@ -174,5 +180,70 @@ public static class FeatureAccess
 
         var allowed = Parse(allowedFeatures);
         return features.Any(feature => allowed.Contains(feature));
+    }
+
+    public static bool HasExplicitProductionTaskVisibility(IReadOnlyCollection<string> allowed) =>
+        allowed.Contains(ProductionTasksDesigner) || allowed.Contains(ProductionTasksProduction);
+
+    public static bool CanSeeNovinkaProductionTasks(string role, IReadOnlyCollection<string> allowed)
+    {
+        if (role == UserRoles.Admin)
+        {
+            return true;
+        }
+
+        if (allowed.Contains(ProductionTasksDesigner))
+        {
+            return true;
+        }
+
+        if (HasExplicitProductionTaskVisibility(allowed))
+        {
+            return false;
+        }
+
+        return role is UserRoles.Designer or UserRoles.Leadership;
+    }
+
+    public static bool CanSeeOzonProductionTasks(string role, IReadOnlyCollection<string> allowed)
+    {
+        if (role == UserRoles.Admin)
+        {
+            return true;
+        }
+
+        if (allowed.Contains(ProductionTasksProduction))
+        {
+            return true;
+        }
+
+        if (HasExplicitProductionTaskVisibility(allowed))
+        {
+            return false;
+        }
+
+        return role is UserRoles.Production or UserRoles.Leadership;
+    }
+
+    public static async Task<List<string>> GetAllowedFeaturesAsync(AppDbContext db, ClaimsPrincipal principal)
+    {
+        if (UserRoleResolver.IsInRole(principal, UserRoles.Admin))
+        {
+            return All.ToList();
+        }
+
+        var userId = UserRoleResolver.GetUserId(principal);
+        if (userId is null)
+        {
+            return [];
+        }
+
+        var allowedFeatures = await db.Users
+            .AsNoTracking()
+            .Where(user => user.Id == userId.Value && user.IsActive)
+            .Select(user => user.AllowedFeatures)
+            .FirstOrDefaultAsync();
+
+        return allowedFeatures is null ? [] : Parse(allowedFeatures);
     }
 }

@@ -499,6 +499,16 @@ function createDefaultMonthChartConfig(): HomeSalesChartConfig {
   }
 }
 
+function getChartFilterDayCount(dateFrom: string, dateTo: string) {
+  const from = new Date(`${dateFrom}T00:00:00`)
+  const to = new Date(`${dateTo}T00:00:00`)
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) {
+    return 0
+  }
+
+  return Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1
+}
+
 const reportTimezoneOptions = [
   { value: 'Europe/Moscow', label: 'Москва' },
   { value: 'Asia/Almaty', label: 'Алматы' },
@@ -541,6 +551,8 @@ const featureGroups = [
       { id: 'production', label: 'Раздел' },
       { id: 'production.products', label: 'Список товаров' },
       { id: 'production.tasks', label: 'Задачи' },
+      { id: 'production.tasks.designer', label: 'Видимость задач для дизайнеров' },
+      { id: 'production.tasks.production', label: 'Видимость задач для производства' },
       { id: 'production.inProgress', label: 'В работе' },
       { id: 'production.cancelled', label: 'Отменённые' },
       { id: 'production.completed', label: 'Выполненные' },
@@ -693,8 +705,118 @@ function getRoleProfileHomeBlocks(role: string, roleProfiles: RoleProfile[]): Ho
   return roleProfiles.find((entry) => entry.role === role)?.homeBlocks ?? []
 }
 
+function UserHomeBlocksEditor({
+  homeBlocks,
+  onChange,
+}: {
+  homeBlocks: HomeBlockConfig[]
+  onChange: (nextBlocks: HomeBlockConfig[]) => void
+}) {
+  return (
+    <div className="home-blocks-settings home-blocks-inline">
+      <p className="home-blocks-settings-hint">Какие блоки показывать на главной</p>
+      {homeBlockDefinitions.map((block) => {
+        const blockEdit =
+          homeBlocks.find((entry) => entry.id === block.id) ??
+          ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
+
+        return (
+          <fieldset key={block.id} className="home-block-settings">
+            <legend>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={blockEdit.enabled}
+                  onChange={(event) => {
+                    const nextBlocks = [...homeBlocks.filter((entry) => entry.id !== block.id)]
+                    nextBlocks.push({
+                      ...blockEdit,
+                      enabled: event.target.checked,
+                      actions: event.target.checked ? block.actions.map((action) => action.id) : [],
+                    })
+                    onChange(nextBlocks)
+                  }}
+                />
+                {block.label}
+              </label>
+            </legend>
+            {blockEdit.enabled &&
+              block.actions.map((action) => (
+                <label key={action.id}>
+                  <input
+                    type="checkbox"
+                    checked={blockEdit.actions.includes(action.id)}
+                    onChange={(event) => {
+                      const nextActions = event.target.checked
+                        ? [...blockEdit.actions, action.id]
+                        : blockEdit.actions.filter((value) => value !== action.id)
+                      onChange([
+                        ...homeBlocks.filter((entry) => entry.id !== block.id),
+                        { ...blockEdit, actions: nextActions },
+                      ])
+                    }}
+                  />
+                  {action.label}
+                </label>
+              ))}
+          </fieldset>
+        )
+      })}
+    </div>
+  )
+}
+
 function getRoleLabel(role: string) {
   return appRoles.find((item) => item.value === role)?.label ?? role
+}
+
+function hasExplicitProductionTaskVisibility(features: string[] | undefined) {
+  return Boolean(
+    features?.includes('production.tasks.designer') || features?.includes('production.tasks.production'),
+  )
+}
+
+function canSeeNovinkaProductionTasks(role: string | undefined, features: string[] | undefined) {
+  if (!role || role === 'Admin') {
+    return true
+  }
+
+  if (features?.includes('production.tasks.designer')) {
+    return true
+  }
+
+  if (hasExplicitProductionTaskVisibility(features)) {
+    return false
+  }
+
+  return role === 'Designer' || role === 'Leadership'
+}
+
+function canSeeOzonProductionTasks(role: string | undefined, features: string[] | undefined) {
+  if (!role || role === 'Admin') {
+    return true
+  }
+
+  if (features?.includes('production.tasks.production')) {
+    return true
+  }
+
+  if (hasExplicitProductionTaskVisibility(features)) {
+    return false
+  }
+
+  return role === 'Production' || role === 'Leadership'
+}
+
+function isProductionTaskVisibleForUser(
+  task: ProductionTask,
+  role: string | undefined,
+  features: string[] | undefined,
+) {
+  return (
+    (isNovinkaTask(task) && canSeeNovinkaProductionTasks(role, features)) ||
+    (!isNovinkaTask(task) && canSeeOzonProductionTasks(role, features))
+  )
 }
 
 const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'chats.edit', 'integrations', 'integrations.telegram', 'integrations.telegram.connect']
@@ -853,6 +975,7 @@ function App() {
     password: '',
     role: 'Production',
     allowedFeatures: defaultUserFeatures,
+    homeBlocks: [] as HomeBlockConfig[],
   })
   const [passwordEdits, setPasswordEdits] = useState<Record<string, string>>({})
   const [roleProfiles, setRoleProfiles] = useState<RoleProfile[]>([])
@@ -870,6 +993,8 @@ function App() {
   const [integrationAdminUserId, setIntegrationAdminUserId] = useState('')
   const [profilePasswordForm, setProfilePasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [userSettingsEdits, setUserSettingsEdits] = useState<Record<string, User>>({})
+  const [savedUserSettingsIds, setSavedUserSettingsIds] = useState<Record<string, true>>({})
+  const savedUserSettingsTimeoutsRef = useRef<Record<string, number>>({})
   const [profileModalUser, setProfileModalUser] = useState<User | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', position: '' })
   const [profileAvatar, setProfileAvatar] = useState<File | null>(null)
@@ -968,24 +1093,21 @@ function App() {
   const normalizedTaskSearch = taskSearch.trim().toLowerCase()
   const visibleProductionTasks = useMemo(
     () =>
-      productionTasks.filter((task) => {
-        if (!user?.role || user.role === 'Admin') {
-          return true
-        }
-
-        if (user.role === 'Designer') {
-          return isNovinkaTask(task)
-        }
-
-        if (user.role === 'Production') {
-          return !isNovinkaTask(task)
-        }
-
-        return true
-      }),
-    [productionTasks, user?.role],
+      productionTasks.filter((task) =>
+        isProductionTaskVisibleForUser(task, user?.role, user?.allowedFeatures),
+      ),
+    [productionTasks, user?.role, user?.allowedFeatures],
   )
-  const roleTaskTableContext = user?.role === 'Designer' ? 'novinka' : user?.role === 'Production' ? 'ozon' : 'mixed'
+  const canSeeDesignerProductionTasks = canSeeNovinkaProductionTasks(user?.role, user?.allowedFeatures)
+  const canSeeOzonProductionTasksFlag = canSeeOzonProductionTasks(user?.role, user?.allowedFeatures)
+  const roleTaskTableContext =
+    canSeeDesignerProductionTasks && canSeeOzonProductionTasksFlag
+      ? 'mixed'
+      : canSeeDesignerProductionTasks
+        ? 'novinka'
+        : canSeeOzonProductionTasksFlag
+          ? 'ozon'
+          : 'mixed'
   const filteredProductionTasks = normalizedTaskSearch
     ? visibleProductionTasks.filter((task) => matchesProductionTask(task, normalizedTaskSearch))
     : visibleProductionTasks
@@ -1891,6 +2013,13 @@ function App() {
     setRoleProfileEdits(
       Object.fromEntries(data.map((profile) => [profile.role, profile])),
     )
+    setNewUser((current) => ({
+      ...current,
+      homeBlocks:
+        current.homeBlocks.length > 0
+          ? current.homeBlocks
+          : getRoleProfileHomeBlocks(current.role, data),
+    }))
   }
 
   async function saveRoleProfile(role: string) {
@@ -3079,7 +3208,18 @@ function App() {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(newUser),
+      body: JSON.stringify({
+        userName: newUser.userName,
+        displayName: newUser.displayName,
+        position: newUser.position,
+        password: newUser.password,
+        role: newUser.role,
+        allowedFeatures: newUser.allowedFeatures,
+        homeBlocks:
+          newUser.homeBlocks.length > 0
+            ? newUser.homeBlocks
+            : getRoleProfileHomeBlocks(newUser.role, roleProfiles),
+      }),
     })
 
     if (!response.ok) {
@@ -3095,7 +3235,34 @@ function App() {
       password: '',
       role: 'Production',
       allowedFeatures: defaultUserFeatures,
+      homeBlocks: getRoleProfileHomeBlocks('Production', roleProfiles),
     })
+  }
+
+  useEffect(() => {
+    return () => {
+      Object.values(savedUserSettingsTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId)
+      })
+    }
+  }, [])
+
+  function markUserSettingsSaved(userId: string) {
+    setSavedUserSettingsIds((current) => ({ ...current, [userId]: true }))
+
+    const existingTimeout = savedUserSettingsTimeoutsRef.current[userId]
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout)
+    }
+
+    savedUserSettingsTimeoutsRef.current[userId] = window.setTimeout(() => {
+      setSavedUserSettingsIds((current) => {
+        const next = { ...current }
+        delete next[userId]
+        return next
+      })
+      delete savedUserSettingsTimeoutsRef.current[userId]
+    }, 3000)
   }
 
   async function saveUserSettings(id: string) {
@@ -3134,6 +3301,7 @@ function App() {
       delete next[id]
       return next
     })
+    markUserSettingsSaved(id)
   }
 
   async function deleteUser(id: string) {
@@ -7717,6 +7885,7 @@ function App() {
                         allowedFeatures: role === 'Admin'
                           ? current.allowedFeatures
                           : profile?.allowedFeatures ?? defaultUserFeatures,
+                        homeBlocks: getRoleProfileHomeBlocks(role, roleProfiles),
                       }))
                     }}
                   >
@@ -7734,7 +7903,10 @@ function App() {
                 </button>
                 <div className="feature-checks feature-checks-compact user-form-features">
                   {featureGroups.map((group) => (
-                    <fieldset key={group.title}>
+                    <fieldset
+                      key={group.title}
+                      className={'homeBlocks' in group && group.homeBlocks ? 'home-feature-fieldset' : undefined}
+                    >
                       <legend>{group.title}</legend>
                       {group.items.map((feature) => (
                         <label key={feature.id}>
@@ -7754,6 +7926,12 @@ function App() {
                           {feature.label}
                         </label>
                       ))}
+                      {'homeBlocks' in group && group.homeBlocks && newUser.role !== 'Admin' && (
+                        <UserHomeBlocksEditor
+                          homeBlocks={newUser.homeBlocks}
+                          onChange={(homeBlocks) => setNewUser((current) => ({ ...current, homeBlocks }))}
+                        />
+                      )}
                     </fieldset>
                   ))}
                 </div>
@@ -7953,74 +8131,21 @@ function App() {
                                 </label>
                               ))}
                               {'homeBlocks' in group && group.homeBlocks && edit.role !== 'Admin' && (
-                                <div className="home-blocks-settings home-blocks-inline">
-                                  <p className="home-blocks-settings-hint">Какие блоки показывать на главной</p>
-                                  {homeBlockDefinitions.map((block) => {
-                                    const blockEdit =
-                                      editHomeBlocks.find((entry) => entry.id === block.id) ??
-                                      ({ id: block.id, enabled: false, actions: [] } satisfies HomeBlockConfig)
-                                    return (
-                                      <fieldset key={block.id} className="home-block-settings">
-                                        <legend>
-                                          <label>
-                                            <input
-                                              type="checkbox"
-                                              checked={blockEdit.enabled}
-                                              onChange={(event) =>
-                                                setUserSettingsEdits((current) => {
-                                                  const nextBlocks = [...editHomeBlocks.filter((entry) => entry.id !== block.id)]
-                                                  nextBlocks.push({
-                                                    ...blockEdit,
-                                                    enabled: event.target.checked,
-                                                    actions: event.target.checked
-                                                      ? block.actions.map((action) => action.id)
-                                                      : [],
-                                                  })
-                                                  return {
-                                                    ...current,
-                                                    [item.id]: { ...edit, homeBlocks: nextBlocks },
-                                                  }
-                                                })
-                                              }
-                                            />
-                                            {block.label}
-                                          </label>
-                                        </legend>
-                                        {blockEdit.enabled &&
-                                          block.actions.map((action) => (
-                                            <label key={action.id}>
-                                              <input
-                                                type="checkbox"
-                                                checked={blockEdit.actions.includes(action.id)}
-                                                onChange={(event) =>
-                                                  setUserSettingsEdits((current) => {
-                                                    const nextActions = event.target.checked
-                                                      ? [...blockEdit.actions, action.id]
-                                                      : blockEdit.actions.filter((value) => value !== action.id)
-                                                    const nextBlocks = [
-                                                      ...editHomeBlocks.filter((entry) => entry.id !== block.id),
-                                                      { ...blockEdit, actions: nextActions },
-                                                    ]
-                                                    return {
-                                                      ...current,
-                                                      [item.id]: { ...edit, homeBlocks: nextBlocks },
-                                                    }
-                                                  })
-                                                }
-                                              />
-                                              {action.label}
-                                            </label>
-                                          ))}
-                                      </fieldset>
-                                    )
-                                  })}
-                                </div>
+                                <UserHomeBlocksEditor
+                                  homeBlocks={editHomeBlocks}
+                                  onChange={(homeBlocks) =>
+                                    setUserSettingsEdits((current) => ({
+                                      ...current,
+                                      [item.id]: { ...edit, homeBlocks },
+                                    }))
+                                  }
+                                />
                               )}
                             </fieldset>
                           ))}
                         </div>
-                        <button type="button" className="user-action-btn user-settings-save" onClick={() => saveUserSettings(item.id)}>
-                          Сохранить настройки
+                        <button type="button" className="user-action-btn user-settings-save" onClick={() => void saveUserSettings(item.id)}>
+                          {savedUserSettingsIds[item.id] ? 'Сохранено' : 'Сохранить настройки'}
                         </button>
                       </div>
                     </details>
@@ -13085,7 +13210,9 @@ function HomeSalesChartBlock({
   const metricValue = (point: HomeSalesChartPoint) =>
     config.metric === 'orders' ? point.orders : point.revenue
   const maxValue = Math.max(...points.map(metricValue), config.metric === 'orders' ? 1 : 0)
-  const showBarValues = config.metric === 'orders' || points.length <= 12
+  const denseChart = points.length > 12
+  const chartDayCount = getChartFilterDayCount(config.dateFrom, config.dateTo)
+  const rotateRevenueLabels = config.metric === 'revenue' && chartDayCount >= 10
   const totalLabel =
     config.metric === 'orders'
       ? `${data?.totalOrders ?? 0} заказов`
@@ -13172,30 +13299,44 @@ function HomeSalesChartBlock({
         <div className="home-sales-chart-empty">Нет данных за выбранный период.</div>
       ) : (
         <div className="home-sales-chart">
-          <div className="home-sales-chart-bars">
+          <div
+            className={`home-sales-chart-bars${denseChart ? ' is-dense' : ''}${config.metric === 'revenue' ? ' is-revenue' : ''}${rotateRevenueLabels ? ' is-revenue-rotated' : ''}`}
+          >
             {points.map((point) => {
               const value = metricValue(point)
               const height = maxValue > 0 ? `${Math.max((value / maxValue) * 100, value > 0 ? 4 : 0)}%` : '0%'
+
+              const orderValue = point.orders > 0 ? String(point.orders) : ''
+              const revenueValue =
+                point.revenue > 0 ? formatMoney(point.revenue, data?.currencyCode ?? 'KZT') : ''
               const tooltip =
                 config.metric === 'orders'
                   ? `${point.label}: ${point.orders} заказов`
                   : `${point.label}: ${formatMoney(point.revenue, data?.currencyCode ?? 'KZT')}`
 
-              const displayValue =
-                config.metric === 'orders'
-                  ? point.orders > 0
-                    ? String(point.orders)
-                    : ''
-                  : point.revenue > 0
-                    ? formatMoney(point.revenue, data?.currencyCode ?? 'KZT')
-                    : ''
-
               return (
                 <div className="home-sales-chart-bar-wrap" key={point.periodKey} title={tooltip}>
                   <div className="home-sales-chart-bar-track">
+                    {config.metric === 'revenue' && revenueValue && (
+                      <span
+                        className={`home-sales-chart-bar-value home-sales-chart-bar-value--revenue${rotateRevenueLabels ? ' home-sales-chart-bar-value--revenue-rotated' : ''}`}
+                        style={{
+                          bottom: rotateRevenueLabels
+                            ? `calc(${height} + 28px)`
+                            : `calc(${height} + 6px)`,
+                        }}
+                      >
+                        {revenueValue}
+                      </span>
+                    )}
                     <div className="home-sales-chart-bar" style={{ height }}>
-                      {showBarValues && displayValue && (
-                        <span className="home-sales-chart-bar-value">{displayValue}</span>
+                      {config.metric === 'orders' && orderValue && (
+                        <span
+                          className="home-sales-chart-bar-value home-sales-chart-bar-value--orders"
+                          style={{ bottom: `calc(100% + 6px)` }}
+                        >
+                          {orderValue}
+                        </span>
                       )}
                     </div>
                   </div>

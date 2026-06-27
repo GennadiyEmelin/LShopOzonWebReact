@@ -124,6 +124,7 @@ public static class RoleProfileDefaults
                 FeatureAccess.Production,
                 "production.products",
                 "production.tasks",
+                FeatureAccess.ProductionTasksDesigner,
                 "production.inProgress",
                 "production.completed",
                 "production.createTask",
