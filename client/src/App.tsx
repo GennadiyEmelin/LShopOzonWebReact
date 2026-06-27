@@ -12357,9 +12357,7 @@ function ProductionTaskTable({
             {novinka
               ? taskItems.length === 1
                 ? renderNovinkaItemLink(taskItems[0])
-                : taskItems.map((item) => (
-                    <span key={item.id}>{renderNovinkaItemLink(item)}</span>
-                  ))
+                : '—'
               : taskItems.length === 1
                 ? taskItems[0].offerId || '-'
                 : taskItems.map((item) => item.offerId || '-').join(', ')}
@@ -13682,9 +13680,7 @@ function ProductionTaskArchiveTable({
             {novinka
               ? taskItems.length === 1
                 ? renderNovinkaItemLink(taskItems[0])
-                : taskItems.map((item) => (
-                    <span key={item.id}>{renderNovinkaItemLink(item)}</span>
-                  ))
+                : '—'
               : taskItems.length === 1
                 ? taskItems[0].offerId || '-'
                 : taskItems.map((item) => item.offerId || '-').join(', ')}
