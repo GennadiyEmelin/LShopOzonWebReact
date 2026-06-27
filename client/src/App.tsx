@@ -3122,13 +3122,6 @@ function App() {
     setRoleProfileEdits(
       Object.fromEntries(data.map((profile) => [profile.role, profile])),
     )
-    setNewUser((current) => ({
-      ...current,
-      homeBlocks:
-        current.homeBlocks.length > 0
-          ? current.homeBlocks
-          : getRoleProfileHomeBlocks(current.role, data),
-    }))
   }
 
   async function saveRoleProfile(role: string) {
