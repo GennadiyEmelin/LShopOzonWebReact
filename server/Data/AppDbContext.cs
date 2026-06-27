@@ -47,6 +47,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(settings => settings.OzonClientId).HasMaxLength(120);
             entity.Property(settings => settings.OzonApiKey).HasMaxLength(240);
             entity.Property(settings => settings.OzonBaseUrl).HasMaxLength(240);
+            entity.Property(settings => settings.KaspiMerchantId).HasMaxLength(120);
+            entity.Property(settings => settings.KaspiApiKey).HasMaxLength(240);
+            entity.Property(settings => settings.SatuMerchantId).HasMaxLength(120);
+            entity.Property(settings => settings.SatuApiKey).HasMaxLength(240);
+            entity.Property(settings => settings.HalykMerchantId).HasMaxLength(120);
+            entity.Property(settings => settings.HalykApiKey).HasMaxLength(240);
         });
 
         modelBuilder.Entity<ProductionFile>(entity =>

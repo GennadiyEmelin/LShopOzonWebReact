@@ -27,6 +27,26 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Property<int>("Id")
                         .HasColumnType("integer");
 
+                    b.Property<string>("HalykApiKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<string>("HalykMerchantId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("KaspiApiKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<string>("KaspiMerchantId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
                     b.Property<string>("OzonApiKey")
                         .IsRequired()
                         .HasMaxLength(240)
@@ -38,6 +58,16 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasColumnType("character varying(240)");
 
                     b.Property<string>("OzonClientId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("SatuApiKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<string>("SatuMerchantId")
                         .IsRequired()
                         .HasMaxLength(120)
                         .HasColumnType("character varying(120)");

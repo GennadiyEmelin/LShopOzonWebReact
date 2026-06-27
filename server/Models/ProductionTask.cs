@@ -45,6 +45,12 @@ public static class ProductionTaskTypes
 {
     public const string Ozon = "Ozon";
     public const string Novinka = "Novinka";
+    public const string Kaspi = "Kaspi";
+    public const string Satu = "Satu";
+    public const string Halyk = "Halyk";
+
+    public static readonly IReadOnlyList<string> MarketplaceTypes =
+        [Ozon, Kaspi, Satu, Halyk];
 }
 
 public static class ProductionTaskStatuses

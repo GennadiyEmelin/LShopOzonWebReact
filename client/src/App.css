@@ -119,6 +119,36 @@
   font-size: 18px;
 }
 
+.region-switcher {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.region-switcher button {
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  background: transparent;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.region-switcher button.active {
+  background: #2563eb;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+
+.kz-marketplace-tabs {
+  margin-bottom: 12px;
+}
+
 .status {
   flex: 0 0 auto;
   border: 1px solid #c7d2fe;

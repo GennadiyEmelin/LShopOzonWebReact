@@ -10,6 +10,7 @@ using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Hubs;
 using LShopOzonWebReact.Api.Integrations;
 using LShopOzonWebReact.Api.Models;
+using LShopOzonWebReact.Api.Marketplaces;
 using LShopOzonWebReact.Api.Ozon;
 using LShopOzonWebReact.Api.Production;
 using LShopOzonWebReact.Api.Security;
@@ -29,6 +30,11 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.Configure<OzonOptions>(builder.Configuration.GetSection("Ozon"));
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection("Telegram"));
 builder.Services.AddSingleton<OzonRuntimeCredentials>();
+builder.Services.AddSingleton<KzMarketplaceCredentials>();
+builder.Services.AddHttpClient<KzMarketplaceApiClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(3);
+});
 builder.Services.AddHttpClient(nameof(TelegramNotificationService));
 builder.Services.AddHttpClient(nameof(TelegramBotHostedService));
 builder.Services.AddSingleton<TelegramNotificationService>();
@@ -178,6 +184,7 @@ app.UseAuthorization();
 
 app.MapHub<AppHub>("/hubs/live").RequireAuthorization();
 app.MapIntegrationRoutes();
+app.MapKzMarketplaceRoutes();
 
 app.MapPost("/api/setup/admin", async (CreateInitialAdminRequest request, AppDbContext db) =>
 {
@@ -4460,10 +4467,29 @@ static class ProductionAnalyticsQueries
 
 static class ProductionTaskResponses
 {
-    public static string NormalizeTaskType(string? value) =>
-        string.Equals(value, ProductionTaskTypes.Novinka, StringComparison.OrdinalIgnoreCase)
-            ? ProductionTaskTypes.Novinka
-            : ProductionTaskTypes.Ozon;
+    public static string NormalizeTaskType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return ProductionTaskTypes.Ozon;
+        }
+
+        var normalized = value.Trim();
+        if (string.Equals(normalized, ProductionTaskTypes.Novinka, StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionTaskTypes.Novinka;
+        }
+
+        foreach (var taskType in ProductionTaskTypes.MarketplaceTypes)
+        {
+            if (string.Equals(normalized, taskType, StringComparison.OrdinalIgnoreCase))
+            {
+                return taskType;
+            }
+        }
+
+        return ProductionTaskTypes.Ozon;
+    }
 
     public static string BuildNovinkaOfferId(Guid itemId) => $"NV-{itemId:N}";
 

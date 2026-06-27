@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import * as signalR from '@microsoft/signalr'
+import { KzIntegrationCard, KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
+import type { KzIntegrationSettings } from './KzRegionUi'
+import {
+  getKzMarketplaceLabel,
+  getKzTaskType,
+  matchesShopRegionTaskType,
+  readKzMarketplace,
+  readShopRegion,
+  SHOP_REGION_STORAGE_KEY,
+  KZ_MARKETPLACE_STORAGE_KEY,
+  type KzMarketplace,
+  type ShopRegion,
+} from './shopRegion'
 import './App.css'
 
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000001'
@@ -333,7 +346,7 @@ type ProductionTask = {
   requiredQuantity: number
   actualQuantity?: number
   status: 'New' | 'InProgress' | 'Cancelled' | 'Completed'
-  taskType?: 'Ozon' | 'Novinka'
+  taskType?: 'Ozon' | 'Novinka' | 'Kaspi' | 'Satu' | 'Halyk'
   isUrgent: boolean
   assignedUserName?: string
   createdByUserId?: string
@@ -823,7 +836,8 @@ const defaultUserFeatures = ['home', 'production', 'production.products', 'produ
 
 type TabId = (typeof tabs)[number]['id']
 type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
-type ProductionCatalogTab = 'ozon' | 'novinka' | 'editor'
+type ProductionCatalogTab = 'ozon' | 'kaspi' | 'satu' | 'halyk' | 'novinka' | 'editor'
+type TaskFormMode = 'ozon' | 'kaspi' | 'satu' | 'halyk' | 'novinka'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
 type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales' | 'production'
 
@@ -875,6 +889,9 @@ function App() {
   const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
   const [backupStatus, setBackupStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabId>('home')
+  const [shopRegion, setShopRegion] = useState<ShopRegion>(() => readShopRegion())
+  const [kzMarketplace, setKzMarketplace] = useState<KzMarketplace>(() => readKzMarketplace())
+  const [kzTaskMarketplace, setKzTaskMarketplace] = useState<KzMarketplace>(() => readKzMarketplace())
   const [isLoading, setIsLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
   const [ozonStatus, setOzonStatus] = useState('')
@@ -911,8 +928,48 @@ function App() {
   const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
   const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
-  const [taskFormMode, setTaskFormMode] = useState<'ozon' | 'novinka'>('ozon')
+  const [taskFormMode, setTaskFormMode] = useState<TaskFormMode>('ozon')
   const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>('ozon')
+  const [kzProducts, setKzProducts] = useState<Record<KzMarketplace, OzonProduct[]>>({
+    kaspi: [],
+    satu: [],
+    halyk: [],
+  })
+  const [kzStocks, setKzStocks] = useState<Record<KzMarketplace, OzonStock[]>>({
+    kaspi: [],
+    satu: [],
+    halyk: [],
+  })
+  const [kzProductsStatus, setKzProductsStatus] = useState<Record<KzMarketplace, string>>({
+    kaspi: '',
+    satu: '',
+    halyk: '',
+  })
+  const [kzStocksStatus, setKzStocksStatus] = useState<Record<KzMarketplace, string>>({
+    kaspi: '',
+    satu: '',
+    halyk: '',
+  })
+  const [kzIntegrationSettings, setKzIntegrationSettings] = useState<Record<KzMarketplace, KzIntegrationSettings | null>>({
+    kaspi: null,
+    satu: null,
+    halyk: null,
+  })
+  const [kzIntegrationForms, setKzIntegrationForms] = useState<Record<KzMarketplace, { merchantId: string; apiKey: string }>>({
+    kaspi: { merchantId: '', apiKey: '' },
+    satu: { merchantId: '', apiKey: '' },
+    halyk: { merchantId: '', apiKey: '' },
+  })
+  const [kzIntegrationStatus, setKzIntegrationStatus] = useState<Record<KzMarketplace, string>>({
+    kaspi: '',
+    satu: '',
+    halyk: '',
+  })
+  const [kzIntegrationSaving, setKzIntegrationSaving] = useState<Record<KzMarketplace, boolean>>({
+    kaspi: false,
+    satu: false,
+    halyk: false,
+  })
   const [editorNovinkaOfferId, setEditorNovinkaOfferId] = useState('')
   const [editorOzonProductId, setEditorOzonProductId] = useState('')
   const [productEditorStatus, setProductEditorStatus] = useState('')
@@ -1046,15 +1103,25 @@ function App() {
   const selectedChatKeyRef = useRef('')
   const creatingGroupRef = useRef(false)
   const normalizedProductSearch = productSearch.trim().toLowerCase()
+  const activeKzProducts = kzProducts[kzMarketplace]
+  const activeKzStocks = kzStocks[kzMarketplace]
+  const catalogProductsSource = shopRegion === 'rf' ? ozonProducts : activeKzProducts
+  const catalogStocksSource = shopRegion === 'rf' ? ozonStocks : activeKzStocks
+  const catalogProductsStatus = shopRegion === 'rf' ? ozonStatus : kzProductsStatus[kzMarketplace]
+  const catalogStocksStatus = shopRegion === 'rf' ? stockStatus : kzStocksStatus[kzMarketplace]
+  const productionLookupProducts =
+    shopRegion === 'rf'
+      ? ozonProducts
+      : [...kzProducts.kaspi, ...kzProducts.satu, ...kzProducts.halyk]
   const productStatusCounts = useMemo(() => {
     const counts = {
-      all: ozonProducts.length,
+      all: catalogProductsSource.length,
       selling: 0,
       ready: 0,
       archived: 0,
     }
 
-    for (const product of ozonProducts) {
+    for (const product of catalogProductsSource) {
       const group = getProductStatusGroup(product.status)
 
       if (group === 'selling') {
@@ -1067,11 +1134,11 @@ function App() {
     }
 
     return counts
-  }, [ozonProducts])
+  }, [catalogProductsSource])
   const filteredCatalogProducts = [...((
     productStatusFilter !== 'all'
-      ? ozonProducts.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
-      : ozonProducts
+      ? catalogProductsSource.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
+      : catalogProductsSource
   ).filter((item) =>
     normalizedProductSearch
       ? [
@@ -1093,10 +1160,15 @@ function App() {
   const normalizedTaskSearch = taskSearch.trim().toLowerCase()
   const visibleProductionTasks = useMemo(
     () =>
-      productionTasks.filter((task) =>
-        isProductionTaskVisibleForUser(task, user?.role, user?.allowedFeatures),
+      productionTasks.filter(
+        (task) =>
+          isProductionTaskVisibleForUser(task, user?.role, user?.allowedFeatures) &&
+          matchesShopRegionTaskType(shopRegion, task.taskType ?? 'Ozon') &&
+          (shopRegion === 'rf' ||
+            task.taskType === 'Novinka' ||
+            task.taskType === getKzTaskType(kzTaskMarketplace)),
       ),
-    [productionTasks, user?.role, user?.allowedFeatures],
+    [productionTasks, user?.role, user?.allowedFeatures, shopRegion, kzTaskMarketplace],
   )
   const canSeeDesignerProductionTasks = canSeeNovinkaProductionTasks(user?.role, user?.allowedFeatures)
   const canSeeOzonProductionTasksFlag = canSeeOzonProductionTasks(user?.role, user?.allowedFeatures)
@@ -1153,12 +1225,39 @@ function App() {
       ).length,
     }))
   }, [ozonProducts, productionFiles])
+  const buildMarketplaceCatalogItems = (products: OzonProduct[]) =>
+    products.map((product) => ({
+      offerId: product.offerId,
+      ozonProductId: product.productId,
+      productName: product.name,
+      productLink: product.productUrl ?? '',
+      fileCount: productionFiles.filter(
+        (file) => file.offerId === product.offerId || file.ozonProductId === product.productId,
+      ).length,
+    }))
+  const kzProductionCatalogItems = useMemo(
+    () => ({
+      kaspi: buildMarketplaceCatalogItems(kzProducts.kaspi),
+      satu: buildMarketplaceCatalogItems(kzProducts.satu),
+      halyk: buildMarketplaceCatalogItems(kzProducts.halyk),
+    }),
+    [kzProducts, productionFiles],
+  )
   const novinkaProductionCatalogItems = useMemo(
     (): ProductionCatalogItem[] => buildNovinkaCatalogFromFiles(productionFiles),
     [productionFiles],
   )
   const activeProductionCatalog =
-    productionCatalogTab === 'ozon' ? ozonProductionCatalogItems : novinkaProductionCatalogItems
+    productionCatalogTab === 'novinka'
+      ? novinkaProductionCatalogItems
+      : productionCatalogTab === 'ozon'
+        ? ozonProductionCatalogItems
+        : kzProductionCatalogItems[productionCatalogTab as KzMarketplace] ?? []
+  const isMarketplaceProductionCatalogTab =
+    productionCatalogTab === 'ozon' ||
+    productionCatalogTab === 'kaspi' ||
+    productionCatalogTab === 'satu' ||
+    productionCatalogTab === 'halyk'
   const editorSelectedNovinka = novinkaProductionCatalogItems.find(
     (item) => item.offerId === editorNovinkaOfferId,
   )
@@ -1192,12 +1291,12 @@ function App() {
   )
   const normalizedStockSearch = stockSearch.trim().toLowerCase()
   const filteredOzonStocks = normalizedStockSearch
-    ? ozonStocks.filter((stock) =>
+    ? catalogStocksSource.filter((stock) =>
         [stock.name, stock.offerId, stock.sku, stock.productId, stock.price, stock.currencyCode]
           .filter((value) => value !== undefined && value !== null)
           .some((value) => String(value).toLowerCase().includes(normalizedStockSearch)),
       )
-    : ozonStocks
+    : catalogStocksSource
   const sortedOzonStocks = [...filteredOzonStocks].sort((left, right) => {
     if (stockSortDirection) {
       const leftTotal = left.fboPresent + left.fbsPresent
@@ -1454,14 +1553,18 @@ function App() {
     return `${from.toLocaleDateString('ru-RU')} — ${to.toLocaleDateString('ru-RU')}`
   }, [])
   const homeProductStats = useMemo(() => {
+    const productsSource =
+      shopRegion === 'rf'
+        ? ozonProducts
+        : [...kzProducts.kaspi, ...kzProducts.satu, ...kzProducts.halyk]
     const stats = {
-      total: ozonProducts.length,
+      total: productsSource.length,
       selling: 0,
       ready: 0,
       archived: 0,
     }
 
-    for (const product of ozonProducts) {
+    for (const product of productsSource) {
       const group = getProductStatusGroup(product.status)
 
       if (group === 'selling') {
@@ -1474,7 +1577,7 @@ function App() {
     }
 
     return stats
-  }, [ozonProducts])
+  }, [ozonProducts, shopRegion, kzProducts])
 
   useEffect(() => {
     if (!token) {
@@ -1563,14 +1666,26 @@ function App() {
       return
     }
 
-    if (productionCatalogTab === 'ozon' && ozonProducts.length === 0) {
+    if (shopRegion === 'rf' && productionCatalogTab === 'ozon' && ozonProducts.length === 0) {
       void loadOzonProducts()
     }
 
-    if (productionCatalogTab === 'editor' && ozonProducts.length === 0) {
-      void loadOzonProducts()
+    if (
+      shopRegion === 'kz' &&
+      (productionCatalogTab === 'kaspi' || productionCatalogTab === 'satu' || productionCatalogTab === 'halyk') &&
+      kzProducts[productionCatalogTab as KzMarketplace].length === 0
+    ) {
+      void loadKzProducts(productionCatalogTab as KzMarketplace)
     }
-  }, [token, activeTab, productionSubTab, productionCatalogTab, ozonProducts.length])
+
+    if (productionCatalogTab === 'editor') {
+      if (shopRegion === 'rf' && ozonProducts.length === 0) {
+        void loadOzonProducts()
+      } else if (shopRegion === 'kz' && activeKzProducts.length === 0) {
+        void loadKzProducts()
+      }
+    }
+  }, [token, activeTab, productionSubTab, productionCatalogTab, ozonProducts.length, shopRegion, kzProducts, activeKzProducts.length])
 
   useEffect(() => {
     if (!token) {
@@ -1787,14 +1902,19 @@ function App() {
     if (canViewIntegrationsTelegram()) {
       void loadIntegrationsTelegram()
     }
-    if (canViewIntegrationsOzon()) {
+    if (canViewIntegrationsOzon() && shopRegion === 'rf') {
       void loadIntegrationsOzon()
+    }
+    if (canViewIntegrationsOzon() && shopRegion === 'kz') {
+      void loadKzIntegration('kaspi')
+      void loadKzIntegration('satu')
+      void loadKzIntegration('halyk')
     }
     if (canManageIntegrationUsers) {
       void loadUsers()
       void loadReportSections()
     }
-  }, [activeTab, token, user?.role, user?.allowedFeatures])
+  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
     if (!canManageIntegrationUsers || activeTab !== 'integrations') {
@@ -3492,6 +3612,184 @@ function App() {
     setOzonStatus(`Загружено товаров Ozon: ${data.length}`)
   }
 
+  async function loadKzProducts(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setKzProductsStatus((current) => ({ ...current, [marketplace]: `Загружаем товары ${label}...` }))
+
+    const response = await fetch(`/api/kz/${marketplace}/products`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      setKzProductsStatus((current) => ({
+        ...current,
+        [marketplace]: getApiErrorMessage(errorText, `Не удалось получить данные ${label}`),
+      }))
+      return
+    }
+
+    const data: OzonProduct[] = await response.json()
+    setKzProducts((current) => ({ ...current, [marketplace]: data }))
+    setKzProductsStatus((current) => ({
+      ...current,
+      [marketplace]: `Загружено товаров ${label}: ${data.length}`,
+    }))
+  }
+
+  async function loadKzStocks(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setKzStocksStatus((current) => ({ ...current, [marketplace]: `Загружаем остатки ${label}...` }))
+
+    const response = await fetch(`/api/kz/${marketplace}/stocks`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      setKzStocksStatus((current) => ({
+        ...current,
+        [marketplace]: getApiErrorMessage(errorText, `Не удалось получить остатки ${label}`),
+      }))
+      return
+    }
+
+    const data: OzonStock[] = await response.json()
+    setKzStocks((current) => ({ ...current, [marketplace]: data }))
+    setKzStocksStatus((current) => ({
+      ...current,
+      [marketplace]: `Получено товаров с остатками ${label}: ${data.length}`,
+    }))
+    setEditingPrices(
+      data.reduce<Record<number, string>>((acc, item) => {
+        acc[item.productId] = String(item.price)
+        return acc
+      }, {}),
+    )
+  }
+
+  async function loadKzIntegration(marketplace: KzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setKzIntegrationStatus((current) => ({ ...current, [marketplace]: `Загрузка настроек ${label}...` }))
+
+    const response = await fetch(`/api/kz/${marketplace}/integrations`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      setKzIntegrationStatus((current) => ({
+        ...current,
+        [marketplace]: `Не удалось загрузить настройки ${label}`,
+      }))
+      return
+    }
+
+    const data: KzIntegrationSettings = await response.json()
+    setKzIntegrationSettings((current) => ({ ...current, [marketplace]: data }))
+    setKzIntegrationStatus((current) => ({
+      ...current,
+      [marketplace]: data.configured
+        ? `${label} API настроен. Обновлено: ${data.updatedAt ? formatDateTime(data.updatedAt) : '—'}`
+        : `Укажите ID и API Key ${label}`,
+    }))
+  }
+
+  async function saveKzIntegration(marketplace: KzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    const form = kzIntegrationForms[marketplace]
+    setKzIntegrationSaving((current) => ({ ...current, [marketplace]: true }))
+    setKzIntegrationStatus((current) => ({ ...current, [marketplace]: 'Сохранение...' }))
+
+    const response = await fetch(`/api/kz/${marketplace}/integrations`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        merchantId: form.merchantId.trim(),
+        apiKey: form.apiKey.trim(),
+      }),
+    })
+
+    setKzIntegrationSaving((current) => ({ ...current, [marketplace]: false }))
+    if (!response.ok) {
+      const message = await response.text()
+      setKzIntegrationStatus((current) => ({
+        ...current,
+        [marketplace]: message || `Не удалось сохранить настройки ${label}`,
+      }))
+      return
+    }
+
+    const data: KzIntegrationSettings = await response.json()
+    setKzIntegrationSettings((current) => ({ ...current, [marketplace]: data }))
+    setKzIntegrationForms((current) => ({
+      ...current,
+      [marketplace]: { merchantId: '', apiKey: '' },
+    }))
+    setKzIntegrationStatus((current) => ({
+      ...current,
+      [marketplace]: `Настройки ${label} сохранены`,
+    }))
+  }
+
+  async function testKzIntegration(marketplace: KzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setKzIntegrationStatus((current) => ({ ...current, [marketplace]: `Проверка ${label}...` }))
+
+    const response = await fetch(`/api/kz/${marketplace}/integrations/test`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!response.ok) {
+      setKzIntegrationStatus((current) => ({
+        ...current,
+        [marketplace]: `Не удалось проверить ${label}`,
+      }))
+      return
+    }
+
+    const data: { success: boolean; message: string } = await response.json()
+    setKzIntegrationStatus((current) => ({
+      ...current,
+      [marketplace]: data.message || (data.success ? `${label} подключён` : `Ошибка ${label}`),
+    }))
+  }
+
+  function handleShopRegionChange(region: ShopRegion) {
+    setShopRegion(region)
+    localStorage.setItem(SHOP_REGION_STORAGE_KEY, region)
+    if (region === 'kz') {
+      setProductionCatalogTab(kzMarketplace)
+      setTaskFormMode(kzTaskMarketplace)
+    } else {
+      setProductionCatalogTab('ozon')
+      setTaskFormMode('ozon')
+    }
+  }
+
+  function handleKzMarketplaceChange(marketplace: KzMarketplace) {
+    setKzMarketplace(marketplace)
+    localStorage.setItem(KZ_MARKETPLACE_STORAGE_KEY, marketplace)
+    if (productionCatalogTab === 'kaspi' || productionCatalogTab === 'satu' || productionCatalogTab === 'halyk') {
+      setProductionCatalogTab(marketplace)
+    }
+  }
+
+  function handleKzTaskMarketplaceChange(marketplace: KzMarketplace) {
+    setKzTaskMarketplace(marketplace)
+    localStorage.setItem(KZ_MARKETPLACE_STORAGE_KEY, marketplace)
+    if (taskFormMode !== 'novinka') {
+      setTaskFormMode(marketplace)
+    }
+  }
+
   async function loadOzonStocks() {
     setStockStatus('Загружаем остатки со склада Ozon...')
 
@@ -4393,7 +4691,13 @@ function App() {
   }
 
   function addDraftTaskItem() {
-    const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
+    const productsSource =
+      shopRegion === 'rf'
+        ? ozonProducts
+        : taskFormMode === 'novinka' || taskFormMode === 'ozon'
+          ? activeKzProducts
+          : kzProducts[taskFormMode as KzMarketplace]
+    const product = productsSource.find((item) => String(item.productId) === selectedTaskProductId)
     const quantity = Number(taskQuantity)
 
     if (!product || !Number.isFinite(quantity) || quantity <= 0) {
@@ -4485,7 +4789,7 @@ function App() {
       setTaskFormStatus(
         isNovinka
           ? 'Добавьте новинку или заполните наименование и ссылку'
-          : 'Добавьте товар Ozon или новинку из списка и укажите количество',
+          : 'Добавьте товар или новинку из списка и укажите количество',
       )
       return
     }
@@ -4507,7 +4811,7 @@ function App() {
           })),
         }
       : {
-          taskType: 'Ozon',
+          taskType: shopRegion === 'rf' ? 'Ozon' : getKzTaskType(taskFormMode as KzMarketplace),
           isUrgent: taskIsUrgent,
           items: ozonItems.map((item) => ({
             ozonProductId: item.ozonProductId,
@@ -5211,8 +5515,8 @@ function App() {
     <main className="app-layout">
       <header className="app-header">
         <div className="brand">
-          <span>LShop Ozon</span>
-          <strong>Панель магазина</strong>
+          <span>LShop</span>
+          <RegionSwitcher shopRegion={shopRegion} onChange={handleShopRegionChange} />
         </div>
 
         <nav className="main-tabs" aria-label="Основные разделы">
@@ -5419,7 +5723,7 @@ function App() {
                   </article>
                 )}
 
-                {isHomeBlockEnabled('analytics') && (
+                {isHomeBlockEnabled('analytics') && shopRegion === 'rf' && (
                   <article className="home-block">
                     <div className="home-block-head">
                       <div>
@@ -5571,8 +5875,12 @@ function App() {
                     <div className="home-block-head">
                       <div>
                         <h3>Товары</h3>
-                        <p>{homeProductStats.total} товаров на Ozon</p>
-                        {ozonStatus && <small className="home-block-status">{ozonStatus}</small>}
+                        <p>
+                          {shopRegion === 'rf'
+                            ? `${homeProductStats.total} товаров на Ozon`
+                            : `${homeProductStats.total} товаров Kaspi / Satu / Halyk`}
+                        </p>
+                        {catalogProductsStatus && <small className="home-block-status">{catalogProductsStatus}</small>}
                       </div>
                       <button type="button" className="home-block-link" onClick={() => openTab('products')}>
                         Открыть
@@ -5600,7 +5908,11 @@ function App() {
                       <button type="button" onClick={() => openTab('products')}>
                         Каталог товаров
                       </button>
-                      <button type="button" className="home-block-refresh" onClick={loadOzonProducts}>
+                      <button
+                        type="button"
+                        className="home-block-refresh"
+                        onClick={() => (shopRegion === 'rf' ? void loadOzonProducts() : void loadKzProducts())}
+                      >
                         Обновить
                       </button>
                     </div>
@@ -5617,7 +5929,7 @@ function App() {
                 </div>
               )}
 
-              {user?.role === 'Admin' && (
+              {user?.role === 'Admin' && shopRegion === 'rf' && (
                 <div className="home-charts-grid">
                   <HomeSalesChartBlock
                     preset="year"
@@ -5775,20 +6087,44 @@ function App() {
                 </div>
               )}
 
+              {productionSubTab !== 'products' && shopRegion === 'kz' && (
+                <KzMarketplaceTabs
+                  activeMarketplace={kzTaskMarketplace}
+                  onChange={handleKzTaskMarketplaceChange}
+                />
+              )}
+
               {productionSubTab === 'products' && (
                 <>
                   <div className="production-tools">
                     <div className="inner-tabs production-catalog-tabs">
-                      <button
-                        type="button"
-                        className={productionCatalogTab === 'ozon' ? 'active' : ''}
-                        onClick={() => {
-                          setProductionCatalogTab('ozon')
-                          setProductEditorStatus('')
-                        }}
-                      >
-                        Товары на Ozon
-                      </button>
+                      {shopRegion === 'rf' ? (
+                        <button
+                          type="button"
+                          className={productionCatalogTab === 'ozon' ? 'active' : ''}
+                          onClick={() => {
+                            setProductionCatalogTab('ozon')
+                            setProductEditorStatus('')
+                          }}
+                        >
+                          Товары на Ozon
+                        </button>
+                      ) : (
+                        (['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
+                          <button
+                            key={marketplace}
+                            type="button"
+                            className={productionCatalogTab === marketplace ? 'active' : ''}
+                            onClick={() => {
+                              setProductionCatalogTab(marketplace)
+                              setProductEditorStatus('')
+                              handleKzMarketplaceChange(marketplace)
+                            }}
+                          >
+                            Товары {getKzMarketplaceLabel(marketplace)}
+                          </button>
+                        ))
+                      )}
                       <button
                         type="button"
                         className={productionCatalogTab === 'novinka' ? 'active' : ''}
@@ -5806,8 +6142,12 @@ function App() {
                           onClick={() => {
                             setProductionCatalogTab('editor')
                             setProductEditorStatus('')
-                            if (ozonProducts.length === 0) {
-                              void loadOzonProducts()
+                            if (shopRegion === 'rf') {
+                              if (ozonProducts.length === 0) {
+                                void loadOzonProducts()
+                              }
+                            } else if (activeKzProducts.length === 0) {
+                              void loadKzProducts()
                             }
                           }}
                         >
@@ -5822,8 +6162,10 @@ function App() {
                           event.preventDefault()
                           if (productionCatalogTab === 'novinka') {
                             void loadProductionFiles(productionSearch)
-                          } else {
+                          } else if (shopRegion === 'rf') {
                             void loadOzonProducts()
+                          } else {
+                            void loadKzProducts(productionCatalogTab as KzMarketplace)
                           }
                         }}
                       >
@@ -5841,7 +6183,7 @@ function App() {
                     <ProductTypeEditorPanel
                       token={token}
                       novinkaProducts={novinkaProductionCatalogItems}
-                      ozonProducts={ozonProducts}
+                      ozonProducts={productionLookupProducts}
                       selectedNovinkaOfferId={editorNovinkaOfferId}
                       selectedOzonProductId={editorOzonProductId}
                       onNovinkaOfferIdChange={setEditorNovinkaOfferId}
@@ -5856,18 +6198,26 @@ function App() {
                   ) : (
                     <>
                   <div className="section-title soft-title">
-                    <h2>{productionCatalogTab === 'ozon' ? 'Товары на Ozon' : 'Новинки'}</h2>
+                    <h2>
+                      {productionCatalogTab === 'novinka'
+                        ? 'Новинки'
+                        : shopRegion === 'rf'
+                          ? 'Товары на Ozon'
+                          : `Товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)}`}
+                    </h2>
                     <p>
-                      {productionCatalogTab === 'ozon'
-                        ? `Все товары Ozon · ${filteredProductionCatalog.length}`
-                        : `Новинки с файлами · ${filteredProductionCatalog.length}`}
+                      {productionCatalogTab === 'novinka'
+                        ? `Новинки с файлами · ${filteredProductionCatalog.length}`
+                        : shopRegion === 'rf'
+                          ? `Все товары Ozon · ${filteredProductionCatalog.length}`
+                          : `Все товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} · ${filteredProductionCatalog.length}`}
                     </p>
                   </div>
 
                   <div className="data-table">
                     <div className="table-row production-product-row table-head">
                       <span>Товар</span>
-                      <span>{productionCatalogTab === 'ozon' ? 'Артикул' : 'Ссылка'}</span>
+                      <span>{isMarketplaceProductionCatalogTab ? 'Артикул' : 'Ссылка'}</span>
                       <span>Файлы</span>
                       <span>Пути к файлу</span>
                       <span>Действия</span>
@@ -5895,11 +6245,17 @@ function App() {
                               )}
                               <span>
                                 <strong>{item.productName}</strong>
-                                <small>{productionCatalogTab === 'ozon' ? 'Ozon' : 'Новинка'}</small>
+                                <small>
+                                  {isMarketplaceProductionCatalogTab
+                                    ? shopRegion === 'rf'
+                                      ? 'Ozon'
+                                      : getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)
+                                    : 'Новинка'}
+                                </small>
                               </span>
                             </span>
                             <span>
-                              {productionCatalogTab === 'ozon' ? (
+                              {isMarketplaceProductionCatalogTab ? (
                                 <OfferIdCell offerId={item.offerId} />
                               ) : item.productLink ? (
                                 <a href={item.productLink} target="_blank" rel="noreferrer">
@@ -5926,9 +6282,9 @@ function App() {
                               <ProductionPathsPanel paths={itemPaths} showCopy />
                             </span>
                             <span>
-                              {productionCatalogTab === 'ozon' && ozonProduct?.productUrl ? (
+                              {isMarketplaceProductionCatalogTab && ozonProduct?.productUrl ? (
                                 <a href={ozonProduct.productUrl} target="_blank" rel="noreferrer">
-                                  Ozon
+                                  {shopRegion === 'rf' ? 'Ozon' : getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)}
                                 </a>
                               ) : productionCatalogTab === 'novinka' && item.productLink ? (
                                 <a href={item.productLink} target="_blank" rel="noreferrer">
@@ -5945,8 +6301,10 @@ function App() {
                     {filteredProductionCatalog.length === 0 && (
                       <div className="empty-state">
                         <strong>
-                          {productionCatalogTab === 'ozon'
-                            ? 'Товары Ozon пока не загружены.'
+                          {isMarketplaceProductionCatalogTab
+                            ? shopRegion === 'rf'
+                              ? 'Товары Ozon пока не загружены.'
+                              : `Товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} пока не загружены.`
                             : 'Пока нет новинок с файлами для производства.'}
                         </strong>
                       </div>
@@ -5987,31 +6345,62 @@ function App() {
 
                         {!editingTaskId && (
                           <div className="task-form-mode-tabs">
-                            <button
-                              type="button"
-                              className={`task-form-mode-tab ${taskFormMode === 'ozon' ? 'active' : ''}`}
-                              onClick={() => setTaskFormMode('ozon')}
-                            >
-                              Производство / Ozon
-                            </button>
-                            <button
-                              type="button"
-                              className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
-                              onClick={() => setTaskFormMode('novinka')}
-                            >
-                              Новинка
-                            </button>
+                            {shopRegion === 'rf' ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className={`task-form-mode-tab ${taskFormMode === 'ozon' ? 'active' : ''}`}
+                                  onClick={() => setTaskFormMode('ozon')}
+                                >
+                                  Производство / Ozon
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
+                                  onClick={() => setTaskFormMode('novinka')}
+                                >
+                                  Новинка
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                {(['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
+                                  <button
+                                    key={marketplace}
+                                    type="button"
+                                    className={`task-form-mode-tab ${taskFormMode === marketplace ? 'active' : ''}`}
+                                    onClick={() => {
+                                      setTaskFormMode(marketplace)
+                                      handleKzTaskMarketplaceChange(marketplace)
+                                    }}
+                                  >
+                                    {getKzMarketplaceLabel(marketplace)}
+                                  </button>
+                                ))}
+                                <button
+                                  type="button"
+                                  className={`task-form-mode-tab ${taskFormMode === 'novinka' ? 'active' : ''}`}
+                                  onClick={() => setTaskFormMode('novinka')}
+                                >
+                                  Новинка
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
 
                         <div className="task-form task-form-modal">
-                          {taskFormMode === 'ozon' ? (
+                          {taskFormMode !== 'novinka' ? (
                             <div className="supply-forms">
                               <div className="supply-form-block supply-form-block-ozon">
-                                <strong>Товар из Ozon</strong>
+                                <strong>
+                                  {shopRegion === 'rf'
+                                    ? 'Товар из Ozon'
+                                    : `Товар из ${getKzMarketplaceLabel(taskFormMode as KzMarketplace)}`}
+                                </strong>
                                 <ProductSearchInput
                                   listId="task-products"
-                                  products={ozonProducts}
+                                  products={shopRegion === 'rf' ? ozonProducts : kzProducts[taskFormMode as KzMarketplace]}
                                   selectedProductId={selectedTaskProductId}
                                   onProductIdChange={setSelectedTaskProductId}
                                   placeholder="Начните писать название или артикул"
@@ -6381,7 +6770,7 @@ function App() {
                   <ProductionTaskTable
                     tasks={filteredNewProductionTasks}
                     tableContext={roleTaskTableContext}
-                    products={ozonProducts}
+                    products={productionLookupProducts}
                     productionFiles={productionFiles}
                     productionFilePaths={productionFilePaths}
                     token={token}
@@ -6405,7 +6794,7 @@ function App() {
                 <ProductionTaskTable
                   tasks={inProgressProductionTasks}
                   tableContext={roleTaskTableContext}
-                  products={ozonProducts}
+                  products={productionLookupProducts}
                   productionFiles={productionFiles}
                   productionFilePaths={productionFilePaths}
                   token={token}
@@ -6427,7 +6816,7 @@ function App() {
                 <ProductionTaskTable
                   tasks={cancelledProductionTasks}
                   tableContext={roleTaskTableContext}
-                  products={ozonProducts}
+                  products={productionLookupProducts}
                   productionFiles={productionFiles}
                   productionFilePaths={productionFilePaths}
                   token={token}
@@ -6452,7 +6841,7 @@ function App() {
                 <ProductionTaskArchiveTable
                   tasks={completedProductionTasks}
                   tableContext={roleTaskTableContext}
-                  products={ozonProducts}
+                  products={productionLookupProducts}
                   productionFiles={productionFiles}
                   productionFilePaths={productionFilePaths}
                   token={token}
@@ -6483,7 +6872,7 @@ function App() {
                   <ProductionTaskArchiveTable
                     tasks={filteredArchivedProductionTasks}
                     tableContext="mixed"
-                    products={ozonProducts}
+                    products={productionLookupProducts}
                     productionFiles={productionFiles}
                     productionFilePaths={productionFilePaths}
                     token={token}
@@ -6502,13 +6891,28 @@ function App() {
             <section className="products">
               <div className="section-title">
                 <h2>Товары</h2>
-                <p>{isLoading ? 'Загрузка...' : 'Ответ получен от ASP.NET Core'}</p>
+                <p>
+                  {isLoading
+                    ? 'Загрузка...'
+                    : shopRegion === 'rf'
+                      ? 'Каталог Ozon'
+                      : `Каталог ${getKzMarketplaceLabel(kzMarketplace)}`}
+                </p>
               </div>
+
+              {shopRegion === 'kz' && (
+                <KzMarketplaceTabs activeMarketplace={kzMarketplace} onChange={handleKzMarketplaceChange} />
+              )}
 
               <div className="subtabs-placeholder products-toolbar">
                 {user?.role === 'Admin' && (
-                  <button type="button" onClick={loadOzonProducts}>
-                    Обновить товары Ozon
+                  <button
+                    type="button"
+                    onClick={() => (shopRegion === 'rf' ? void loadOzonProducts() : void loadKzProducts())}
+                  >
+                    {shopRegion === 'rf'
+                      ? 'Обновить товары Ozon'
+                      : `Обновить товары ${getKzMarketplaceLabel(kzMarketplace)}`}
                   </button>
                 )}
                 <input
@@ -6542,13 +6946,13 @@ function App() {
                 </div>
               </div>
 
-              {ozonStatus && (
+              {catalogProductsStatus && (
                 <div className="ozon-status">
-                  <strong>{ozonStatus}</strong>
+                  <strong>{catalogProductsStatus}</strong>
                   <span>
                     Показано: {filteredCatalogProducts.length}
                     {productStatusFilter !== 'all' || productSearch.trim()
-                      ? ` из ${ozonProducts.length}`
+                      ? ` из ${catalogProductsSource.length}`
                       : ''}
                   </span>
                 </div>
@@ -6600,8 +7004,15 @@ function App() {
             <section className="tab-panel">
               <div className="section-title">
                 <h2>Аналитика</h2>
-                <p>{analyticsStatus || 'Продажи и выручка из Ozon API'}</p>
+                <p>
+                  {shopRegion === 'rf'
+                    ? analyticsStatus || 'Продажи и выручка из Ozon API'
+                    : analyticsStatus || `Аналитика ${getKzMarketplaceLabel(kzMarketplace)}`}
+                </p>
               </div>
+              {shopRegion === 'kz' && (
+                <KzMarketplaceTabs activeMarketplace={kzMarketplace} onChange={handleKzMarketplaceChange} />
+              )}
               <div className="inner-tabs">
                 {hasFeature('analytics.summary') && (
                 <button
@@ -7084,11 +7495,25 @@ function App() {
             <section className="tab-panel">
               <div className="section-title">
                 <h2>Склад</h2>
-                <p>{priceStatus || stockStatus || 'Остатки товаров на складе Ozon'}</p>
+                <p>
+                  {priceStatus ||
+                    catalogStocksStatus ||
+                    (shopRegion === 'rf'
+                      ? 'Остатки товаров на складе Ozon'
+                      : `Остатки товаров ${getKzMarketplaceLabel(kzMarketplace)}`)}
+                </p>
               </div>
+              {shopRegion === 'kz' && (
+                <KzMarketplaceTabs activeMarketplace={kzMarketplace} onChange={handleKzMarketplaceChange} />
+              )}
               <div className="subtabs-placeholder">
-                <button type="button" onClick={loadOzonStocks}>
-                  Обновить остатки Ozon
+                <button
+                  type="button"
+                  onClick={() => (shopRegion === 'rf' ? void loadOzonStocks() : void loadKzStocks())}
+                >
+                  {shopRegion === 'rf'
+                    ? 'Обновить остатки Ozon'
+                    : `Обновить остатки ${getKzMarketplaceLabel(kzMarketplace)}`}
                 </button>
                 <input
                   className="toolbar-search"
@@ -7276,7 +7701,7 @@ function App() {
                       title="Создать поставку"
                       listIdPrefix="supply-products"
                       token={token}
-                      ozonProducts={ozonProducts}
+                      ozonProducts={productionLookupProducts}
                       novinkaProducts={novinkaProductionCatalogItems}
                       items={draftSupplyItems}
                       setItems={setDraftSupplyItems}
@@ -7297,7 +7722,7 @@ function App() {
 
                   <SupplyTable
                     supplies={createdSupplies}
-                    ozonProducts={ozonProducts}
+                    ozonProducts={productionLookupProducts}
                     replaceProducts={replaceProducts}
                     setReplaceProducts={setReplaceProducts}
                     editingSupplyId={editingSupplyId}
@@ -8162,7 +8587,11 @@ function App() {
               <div className="section-title">
                 <div>
                   <h2>Интеграции</h2>
-                  <p>Подключение Ozon API, Telegram и настройки оповещений</p>
+                  <p>
+                    {shopRegion === 'rf'
+                      ? 'Подключение Ozon API, Telegram и настройки оповещений'
+                      : 'Подключение Kaspi, Satu, Halyk, Telegram и настройки оповещений'}
+                  </p>
                 </div>
                 <span className="section-actions">
                   {canViewIntegrationsTelegram() && (
@@ -8170,9 +8599,22 @@ function App() {
                       Обновить Telegram
                     </button>
                   )}
-                  {canViewIntegrationsOzon() && (
+                  {canViewIntegrationsOzon() && shopRegion === 'rf' && (
                     <button type="button" className="header-action" onClick={() => void loadIntegrationsOzon()}>
                       Обновить Ozon
+                    </button>
+                  )}
+                  {canViewIntegrationsOzon() && shopRegion === 'kz' && (
+                    <button
+                      type="button"
+                      className="header-action"
+                      onClick={() => {
+                        void loadKzIntegration('kaspi')
+                        void loadKzIntegration('satu')
+                        void loadKzIntegration('halyk')
+                      }}
+                    >
+                      Обновить маркетплейсы
                     </button>
                   )}
                 </span>
@@ -8212,7 +8654,7 @@ function App() {
 
               {integrationsSubTab === 'connections' && (canViewIntegrationsOzon() || canViewIntegrationsTelegram()) && (
                 <>
-              {canViewIntegrationsOzon() && (
+              {canViewIntegrationsOzon() && shopRegion === 'rf' && (
                 <article className="integration-card">
                   <div className="integration-card-head">
                     <div>
@@ -8291,6 +8733,34 @@ function App() {
                   )}
                 </article>
               )}
+
+              {canViewIntegrationsOzon() && shopRegion === 'kz' &&
+                (['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
+                  <KzIntegrationCard
+                    key={marketplace}
+                    marketplace={marketplace}
+                    settings={kzIntegrationSettings[marketplace]}
+                    merchantId={kzIntegrationForms[marketplace].merchantId}
+                    apiKey={kzIntegrationForms[marketplace].apiKey}
+                    status={kzIntegrationStatus[marketplace]}
+                    saving={kzIntegrationSaving[marketplace]}
+                    canEdit={canEditIntegrationsOzon()}
+                    onMerchantIdChange={(value) =>
+                      setKzIntegrationForms((current) => ({
+                        ...current,
+                        [marketplace]: { ...current[marketplace], merchantId: value },
+                      }))
+                    }
+                    onApiKeyChange={(value) =>
+                      setKzIntegrationForms((current) => ({
+                        ...current,
+                        [marketplace]: { ...current[marketplace], apiKey: value },
+                      }))
+                    }
+                    onSave={() => void saveKzIntegration(marketplace)}
+                    onTest={() => void testKzIntegration(marketplace)}
+                  />
+                ))}
 
               {canViewIntegrationsTelegram() && (
               <article className="integration-card">
