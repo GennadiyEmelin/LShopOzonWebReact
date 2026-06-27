@@ -2557,6 +2557,40 @@ small .offer-id-cell {
   background: #ffffff;
 }
 
+.supply-card-collapsible .supply-card-head {
+  grid-template-columns: minmax(260px, 1fr) auto minmax(220px, auto);
+}
+
+.supply-card-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.supply-card-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #2563eb;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.supply-card-toggle:hover {
+  background: #eff6ff;
+}
+
+.supply-card-collapsible:not(.supply-card-expanded) .supply-dates-editor,
+.supply-card-collapsible:not(.supply-card-expanded) .supply-dates-line .link-button {
+  display: none;
+}
+
 .supply-card-head {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto auto;

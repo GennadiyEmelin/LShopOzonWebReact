@@ -8422,6 +8422,7 @@ function App() {
                   onUpdateDates={updateSupplyDates}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
+                  collapsible
                 />
               )}
 
@@ -13694,6 +13695,7 @@ function SupplyTable({
   onReplaceReserve,
   userRole,
   archiveMode = false,
+  collapsible = false,
 }: {
   supplies: Supply[]
   ozonProducts: OzonProduct[]
@@ -13708,8 +13710,18 @@ function SupplyTable({
   onReplaceReserve: (itemId: string) => void
   userRole?: string
   archiveMode?: boolean
+  collapsible?: boolean
 }) {
   const [expandedArchiveSupplyIds, setExpandedArchiveSupplyIds] = useState<Record<string, boolean>>({})
+  const [expandedSupplyIds, setExpandedSupplyIds] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    if (!collapsible || !editingSupplyId) {
+      return
+    }
+
+    setExpandedSupplyIds((current) => ({ ...current, [editingSupplyId]: true }))
+  }, [collapsible, editingSupplyId])
 
   return (
     <div className="supply-list">
@@ -13717,7 +13729,11 @@ function SupplyTable({
         const isEditing = editingSupplyId === supply.id
         const canEdit = !archiveMode && (userRole === 'Admin' || supply.status === 'Created')
         const isArchiveExpanded = expandedArchiveSupplyIds[supply.id] ?? false
-        const showItems = !archiveMode || isArchiveExpanded
+        const isSupplyExpanded = expandedSupplyIds[supply.id] ?? false
+        const showItems =
+          collapsible && !archiveMode
+            ? isSupplyExpanded || isEditing
+            : !archiveMode || isArchiveExpanded
         const rows: DraftSupplyItem[] = supply.items.map((item) => ({
           tempId: item.id,
           id: item.id,
@@ -13735,24 +13751,65 @@ function SupplyTable({
           quantity: item.quantity,
           isReserve: item.isReserve,
         }))
+        const totalQuantity = rows.reduce((sum, item) => sum + item.quantity, 0)
 
         return (
-          <section className="supply-card" key={supply.id}>
+          <section
+            className={`supply-card${collapsible && !archiveMode ? ' supply-card-collapsible' : ''}${showItems ? ' supply-card-expanded' : ''}`}
+            key={supply.id}
+          >
             <div className="supply-card-head">
-              <span>
-                <strong>Поставка от {formatDateTime(supply.createdAt)}</strong>
-                {userRole === 'Admin' ? (
-                  <SupplyDatesEditor supply={supply} onUpdateDates={onUpdateDates} />
-                ) : (
-                  <small>
-                    Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-                    {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
-                  </small>
+              <span className="supply-card-title">
+                {collapsible && !archiveMode && (
+                  <button
+                    type="button"
+                    className="supply-card-toggle"
+                    aria-expanded={showItems}
+                    aria-label={showItems ? 'Свернуть поставку' : 'Развернуть поставку'}
+                    onClick={() =>
+                      setExpandedSupplyIds((current) => ({
+                        ...current,
+                        [supply.id]: !isSupplyExpanded,
+                      }))
+                    }
+                  >
+                    {showItems ? '▾' : '▸'}
+                  </button>
                 )}
+                <span>
+                  <strong>Поставка от {formatDateTime(supply.createdAt)}</strong>
+                  {collapsible && !archiveMode && !showItems ? (
+                    <small>
+                      {rows.length} поз. · {totalQuantity} шт. | Отгрузка:{' '}
+                      {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
+                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                    </small>
+                  ) : userRole === 'Admin' ? (
+                    <SupplyDatesEditor supply={supply} onUpdateDates={onUpdateDates} />
+                  ) : (
+                    <small>
+                      Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
+                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                    </small>
+                  )}
+                </span>
               </span>
               <span className="status-pill">{formatSupplyDisplayStatus(supply)}</span>
-              {(canEdit || archiveMode) && (
+              {(canEdit || archiveMode || collapsible) && (
                 <span className="supply-status-actions">
+                  {collapsible && !archiveMode && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedSupplyIds((current) => ({
+                          ...current,
+                          [supply.id]: !isSupplyExpanded,
+                        }))
+                      }
+                    >
+                      {showItems ? 'Свернуть' : 'Развернуть'}
+                    </button>
+                  )}
                   {!archiveMode && supply.status === 'Created' && (
                     <button type="button" onClick={() => onStatusChange(supply.id, 'Sent')}>
                       Отправлено
