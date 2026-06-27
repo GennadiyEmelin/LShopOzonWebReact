@@ -10893,8 +10893,10 @@ function ProductTypeEditorPanel({
   return (
     <>
       <div className="section-title soft-title">
-        <h2>Редактор товаров</h2>
-        <p>Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.</p>
+        <div>
+          <h2>Редактор товаров</h2>
+          <p>Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.</p>
+        </div>
       </div>
 
       <div className="product-type-editor-layout">
@@ -11141,31 +11143,42 @@ function ProductCatalogFilesEditor({
   return (
     <section className="product-catalog-files-editor">
       <div className="section-title soft-title">
-        <h2>Файлы и пути производства</h2>
-        <p>Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.</p>
+        <div>
+          <h2>Файлы и пути производства</h2>
+          <p>Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.</p>
+        </div>
       </div>
 
-      <div className="inner-tabs product-catalog-files-tabs">
-        <button
-          type="button"
-          className={targetMode === 'novinka' ? 'active' : ''}
-          onClick={() => setTargetMode('novinka')}
-        >
-          Новинка
-        </button>
-        <button
-          type="button"
-          className={targetMode === 'ozon' ? 'active' : ''}
-          onClick={() => setTargetMode('ozon')}
-        >
-          Товар Ozon
-        </button>
-      </div>
+      <div className="product-catalog-files-body">
+        <div className="product-catalog-files-tabs" role="tablist" aria-label="Тип товара">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={targetMode === 'novinka'}
+            className={targetMode === 'novinka' ? 'active' : ''}
+            onClick={() => setTargetMode('novinka')}
+          >
+            Новинка
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={targetMode === 'ozon'}
+            className={targetMode === 'ozon' ? 'active' : ''}
+            onClick={() => setTargetMode('ozon')}
+          >
+            Товар Ozon
+          </button>
+        </div>
 
-      <div className="product-catalog-files-picker">
-        {targetMode === 'novinka' ? (
-          <>
-            <span className="product-type-editor-hint">Выберите новинку из списка</span>
+        <div className="supply-form-block supply-form-block-novinka product-catalog-files-picker">
+          <strong>{targetMode === 'novinka' ? 'Новинка' : 'Товар Ozon'}</strong>
+          <span className="product-type-editor-hint">
+            {targetMode === 'novinka'
+              ? 'Выберите новинку из списка'
+              : 'Выберите товар из каталога Ozon'}
+          </span>
+          {targetMode === 'novinka' ? (
             <NovinkaSearchInput
               listId="product-editor-files-novinka-list"
               products={novinkaProducts}
@@ -11174,10 +11187,7 @@ function ProductCatalogFilesEditor({
               placeholder="Начните писать название или артикул"
               showClearButton
             />
-          </>
-        ) : (
-          <>
-            <span className="product-type-editor-hint">Выберите товар из каталога Ozon</span>
+          ) : (
             <ProductSearchInput
               listId="product-editor-files-ozon-list"
               products={ozonProducts}
@@ -11187,88 +11197,89 @@ function ProductCatalogFilesEditor({
               hideInlinePreview
               showClearButton
             />
-          </>
-        )}
-      </div>
-
-      {selectedCatalogItem ? (
-        <div className="product-catalog-files-current">
-          <NovinkaProductPreview
-            item={selectedCatalogItem}
-            token={token}
-            files={itemFiles}
-            paths={itemPaths}
-          />
-
-          {itemPaths.length > 0 && (
-            <div className="product-catalog-files-list">
-              <strong>Текущие пути</strong>
-              {itemPaths.map((entry) => (
-                <div className="product-catalog-files-row" key={entry.id}>
-                  <PathCopyBlock path={entry.path} />
-                  <button type="button" className="danger" onClick={() => void deleteCatalogPath(entry.id)}>
-                    Удалить
-                  </button>
-                </div>
-              ))}
-            </div>
           )}
+        </div>
 
-          {itemFiles.length > 0 && (
-            <div className="product-catalog-files-list">
-              <strong>Текущие файлы</strong>
-              {itemFiles.map((file) => (
-                <div className="product-catalog-files-row" key={file.id}>
-                  <span>
-                    <strong>{file.fileName}</strong>
-                    <small>{formatDateTime(file.createdAt)}</small>
-                  </span>
-                  <span className="product-catalog-files-actions">
-                    <button type="button" onClick={() => onDownloadFile(file.id)}>
-                      Скачать
+        {selectedCatalogItem ? (
+          <div className="product-catalog-files-current">
+            <NovinkaProductPreview
+              item={selectedCatalogItem}
+              token={token}
+              files={itemFiles}
+              paths={itemPaths}
+            />
+
+            {itemPaths.length > 0 && (
+              <div className="product-catalog-files-list">
+                <strong>Текущие пути</strong>
+                {itemPaths.map((entry) => (
+                  <div className="product-catalog-files-row" key={entry.id}>
+                    <PathCopyBlock path={entry.path} />
+                    <button type="button" className="danger" onClick={() => void deleteCatalogPath(entry.id)}>
+                      Удалить
                     </button>
-                    {onDeleteFile && (
-                      <button type="button" className="danger" onClick={() => void onDeleteFile(file.id)}>
-                        Удалить
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {itemFiles.length > 0 && (
+              <div className="product-catalog-files-list">
+                <strong>Текущие файлы</strong>
+                {itemFiles.map((file) => (
+                  <div className="product-catalog-files-row" key={file.id}>
+                    <span>
+                      <strong>{file.fileName}</strong>
+                      <small>{formatDateTime(file.createdAt)}</small>
+                    </span>
+                    <span className="product-catalog-files-actions">
+                      <button type="button" onClick={() => onDownloadFile(file.id)}>
+                        Скачать
                       </button>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="task-form-modal-preview task-form-modal-preview-empty product-catalog-files-empty">
-          <span>Выберите товар, чтобы добавить файлы и пути</span>
-        </div>
-      )}
+                      {onDeleteFile && (
+                        <button type="button" className="danger" onClick={() => void onDeleteFile(file.id)}>
+                          Удалить
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="task-form-modal-preview task-form-modal-preview-empty product-catalog-files-empty">
+            <span>Выберите товар, чтобы добавить файлы и пути</span>
+          </div>
+        )}
 
-      <div className="product-catalog-files-form">
-        <label className="product-catalog-files-field">
-          <span>Путь к файлу на диске</span>
-          <input
-            type="text"
-            value={pathDraft}
-            placeholder="Например: D:\Production\Товар\макет.psd"
-            onChange={(event) => setPathDraft(event.target.value)}
-          />
-        </label>
+        <div className="supply-form-block supply-form-block-novinka product-catalog-files-form">
+          <strong>Добавить путь и файлы</strong>
+          <label className="product-catalog-files-field">
+            <span className="product-type-editor-hint">Путь к файлу на диске</span>
+            <input
+              type="text"
+              value={pathDraft}
+              placeholder="Например: D:\Production\Товар\макет.psd"
+              onChange={(event) => setPathDraft(event.target.value)}
+            />
+          </label>
 
-        <label className="product-catalog-files-field">
-          <span>Файлы для загрузки</span>
-          <input
-            type="file"
-            multiple
-            onChange={(event) => setPendingFiles(Array.from(event.target.files ?? []))}
-          />
-          {pendingFiles.length > 0 && (
-            <small>Выбрано файлов: {pendingFiles.length}</small>
-          )}
-        </label>
+          <label className="product-catalog-files-field">
+            <span className="product-type-editor-hint">Файлы для загрузки</span>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => setPendingFiles(Array.from(event.target.files ?? []))}
+            />
+            {pendingFiles.length > 0 && (
+              <small className="product-catalog-files-pending">Выбрано файлов: {pendingFiles.length}</small>
+            )}
+          </label>
+        </div>
       </div>
 
-      <div className="supply-create-bar product-type-editor-footer">
+      <div className="supply-create-bar product-type-editor-footer product-catalog-files-footer">
         <button
           type="button"
           disabled={!selectedCatalogItem || filesSaving}
