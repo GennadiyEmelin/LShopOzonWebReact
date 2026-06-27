@@ -13777,7 +13777,7 @@ function SupplyTable({
                   </button>
                 )}
                 <span>
-                  <strong>Поставка от {formatDateTime(supply.createdAt)}</strong>
+                  <strong>{formatSupplyTitle(supply)}</strong>
                   {collapsible && !archiveMode && !showItems ? (
                     <small>
                       {rows.length} поз. · {totalQuantity} шт. | Отгрузка:{' '}
@@ -13973,7 +13973,7 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
           <details className="all-supply-card" key={supply.id}>
             <summary>
               <span>
-                <strong>Поставка от {formatDateTime(supply.createdAt)}</strong>
+                <strong>{formatSupplyTitle(supply)}</strong>
                 <small>
                   Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
                   {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
@@ -14696,6 +14696,14 @@ function formatSupplyDisplayStatus(item: { status: SupplyStatus; isArchived?: bo
   }
 
   return translateSupplyStatus(item.status)
+}
+
+function getSupplyDisplayDate(supply: { sentAt?: string; createdAt: string }) {
+  return supply.sentAt ?? supply.createdAt
+}
+
+function formatSupplyTitle(supply: { sentAt?: string; createdAt: string }) {
+  return `Поставка от ${formatDateTime(getSupplyDisplayDate(supply))}`
 }
 
 function formatOzonCreatedAt(value?: string) {
