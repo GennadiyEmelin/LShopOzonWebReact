@@ -1649,6 +1649,10 @@ small .offer-id-cell {
   margin: 0;
 }
 
+.product-type-editor-block .kz-marketplace-tabs {
+  margin-bottom: 4px;
+}
+
 .product-type-editor-hint {
   grid-column: 1 / -1;
   margin-top: -2px;

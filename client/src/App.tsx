@@ -26,6 +26,7 @@ import {
   readKzMarketplace,
   readShopRegion,
   SHOP_REGION_STORAGE_KEY,
+  KZ_MARKETPLACES,
   KZ_MARKETPLACE_STORAGE_KEY,
   type KzMarketplace,
   type NovinkaMarketplace,
@@ -1965,7 +1966,7 @@ function App() {
   const editorSelectedNovinka = editorNovinkaCatalogItems.find(
     (item) => item.offerId === editorNovinkaOfferId,
   )
-  const editorSelectedOzon = ozonProducts.find(
+  const editorSelectedOzon = productionLookupProducts.find(
     (product) => String(product.productId) === editorOzonProductId,
   )
   const normalizedCatalogSearch = productionSearch.trim().toLowerCase()
@@ -5462,7 +5463,11 @@ function App() {
     }
 
     if (!Number.isFinite(targetOzonProductId) || targetOzonProductId <= 0) {
-      setProductEditorStatus('Выберите товар Ozon из списка.')
+      setProductEditorStatus(
+        shopRegion === 'rf'
+          ? 'Выберите товар Ozon из списка.'
+          : `Выберите товар ${getKzMarketplaceLabel(kzMarketplace)} из списка.`,
+      )
       return
     }
 
@@ -5500,9 +5505,11 @@ function App() {
       await loadProductionFiles(productionSearch)
       setEditorNovinkaOfferId('')
       setEditorOzonProductId('')
-      setProductionCatalogTab('ozon')
+      setProductionCatalogTab(shopRegion === 'rf' ? 'ozon' : kzMarketplace)
       setProductEditorStatus(
-        `Тип изменён на Ozon: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`,
+        shopRegion === 'rf'
+          ? `Тип изменён на Ozon: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`
+          : `Тип изменён на ${getKzMarketplaceLabel(kzMarketplace)}: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`,
       )
     } finally {
       setProductEditorSaving(false)
@@ -7093,23 +7100,28 @@ function App() {
                     <ProductTypeEditorPanel
                       token={token}
                       novinkaProducts={editorNovinkaCatalogItems}
-                      ozonProducts={productionLookupProducts}
+                      catalogProducts={productionLookupProducts}
                       selectedNovinkaOfferId={editorNovinkaOfferId}
-                      selectedOzonProductId={editorOzonProductId}
+                      selectedCatalogProductId={editorOzonProductId}
                       onNovinkaOfferIdChange={setEditorNovinkaOfferId}
-                      onOzonProductIdChange={setEditorOzonProductId}
+                      onCatalogProductIdChange={setEditorOzonProductId}
                       selectedNovinka={editorSelectedNovinka}
-                      selectedOzon={editorSelectedOzon}
+                      selectedCatalogProduct={editorSelectedOzon}
                       status={productEditorStatus}
                       saving={productEditorSaving}
                       onConvert={() => void convertNovinkaToOzon()}
-                      onLoadOzonProducts={() => void loadOzonProducts()}
+                      onRefreshCatalogProducts={() =>
+                        shopRegion === 'rf' ? void loadOzonProducts() : void loadKzProducts(kzMarketplace)
+                      }
                       productionFiles={productionFiles}
                       productionFilePaths={productionFilePaths}
                       onRefreshProductionData={() => loadProductionFiles(productionSearch)}
                       onDownloadFile={downloadProductionFile}
                       onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                       shopRegion={shopRegion}
+                      kzMarketplace={kzMarketplace}
+                      kzProducts={kzProducts}
+                      onKzMarketplaceChange={handleKzMarketplaceChange}
                     />
                   ) : (
                     <>
@@ -10916,50 +10928,62 @@ function formatProductSelectedLabel(product: OzonProduct) {
 function ProductTypeEditorPanel({
   token,
   novinkaProducts,
-  ozonProducts,
+  catalogProducts,
   selectedNovinkaOfferId,
-  selectedOzonProductId,
+  selectedCatalogProductId,
   onNovinkaOfferIdChange,
-  onOzonProductIdChange,
+  onCatalogProductIdChange,
   selectedNovinka,
-  selectedOzon,
+  selectedCatalogProduct,
   status,
   saving,
   onConvert,
-  onLoadOzonProducts,
+  onRefreshCatalogProducts,
   productionFiles,
   productionFilePaths,
   onRefreshProductionData,
   onDownloadFile,
   onDeleteFile,
   shopRegion,
+  kzMarketplace,
+  kzProducts,
+  onKzMarketplaceChange,
 }: {
   token: string
   novinkaProducts: ProductionCatalogItem[]
-  ozonProducts: OzonProduct[]
+  catalogProducts: OzonProduct[]
   selectedNovinkaOfferId: string
-  selectedOzonProductId: string
+  selectedCatalogProductId: string
   onNovinkaOfferIdChange: (offerId: string) => void
-  onOzonProductIdChange: (productId: string) => void
+  onCatalogProductIdChange: (productId: string) => void
   selectedNovinka?: ProductionCatalogItem
-  selectedOzon?: OzonProduct
+  selectedCatalogProduct?: OzonProduct
   status: string
   saving: boolean
   onConvert: () => void
-  onLoadOzonProducts: () => void
+  onRefreshCatalogProducts: () => void
   productionFiles: ProductionFile[]
   productionFilePaths: ProductionFilePath[]
   onRefreshProductionData: () => Promise<void>
   onDownloadFile: (id: string) => void
   onDeleteFile?: (id: string) => void
   shopRegion: ShopRegion
+  kzMarketplace: KzMarketplace
+  kzProducts: Record<KzMarketplace, OzonProduct[]>
+  onKzMarketplaceChange: (marketplace: KzMarketplace) => void
 }) {
+  const catalogLabel = shopRegion === 'rf' ? 'Ozon' : getKzMarketplaceLabel(kzMarketplace)
+
   return (
     <>
       <div className="section-title soft-title">
         <div>
           <h2>Редактор товаров</h2>
-          <p>Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.</p>
+          <p>
+            {shopRegion === 'rf'
+              ? 'Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.'
+              : 'Измените тип «Новинка» на товар маркетплейса KZ. Файлы производства останутся на товаре.'}
+          </p>
         </div>
       </div>
 
@@ -10989,23 +11013,36 @@ function ProductTypeEditorPanel({
         <div className="product-type-editor-divider" aria-hidden="true" />
 
         <div className="supply-form-block supply-form-block-ozon product-type-editor-block">
-          <strong>Товар Ozon</strong>
-          <span className="product-type-editor-hint">Выберите соответствующий товар из каталога Ozon</span>
+          {shopRegion === 'kz' && (
+            <KzMarketplaceTabs
+              activeMarketplace={kzMarketplace}
+              onChange={(marketplace) => {
+                onKzMarketplaceChange(marketplace)
+                onCatalogProductIdChange('')
+              }}
+            />
+          )}
+          <strong>Товар {catalogLabel}</strong>
+          <span className="product-type-editor-hint">
+            {shopRegion === 'rf'
+              ? 'Выберите соответствующий товар из каталога Ozon'
+              : `Выберите товар из каталога ${getKzMarketplaceLabel(kzMarketplace)}`}
+          </span>
           <ProductSearchInput
-            listId="product-editor-ozon-list"
-            products={ozonProducts}
-            selectedProductId={selectedOzonProductId}
-            onProductIdChange={onOzonProductIdChange}
+            listId="product-editor-catalog-list"
+            products={catalogProducts}
+            selectedProductId={selectedCatalogProductId}
+            onProductIdChange={onCatalogProductIdChange}
             placeholder="Начните писать название или артикул"
             hideInlinePreview
             showClearButton
           />
           <div className="product-type-editor-preview">
-            {selectedOzon ? (
-              <TaskProductPreview product={selectedOzon} />
+            {selectedCatalogProduct ? (
+              <TaskProductPreview product={selectedCatalogProduct} />
             ) : (
               <div className="task-form-modal-preview task-form-modal-preview-empty">
-                <span>Выберите товар Ozon для превью</span>
+                <span>Выберите товар {catalogLabel} для превью</span>
               </div>
             )}
           </div>
@@ -11015,13 +11052,13 @@ function ProductTypeEditorPanel({
       <div className="supply-create-bar product-type-editor-footer">
         <button
           type="button"
-          disabled={!selectedNovinka || !selectedOzon || saving}
+          disabled={!selectedNovinka || !selectedCatalogProduct || saving}
           onClick={onConvert}
         >
-          {saving ? 'Сохранение...' : 'Изменить тип на Ozon'}
+          {saving ? 'Сохранение...' : `Изменить тип на ${catalogLabel}`}
         </button>
-        <button type="button" className="product-type-editor-secondary" onClick={onLoadOzonProducts}>
-          Обновить список Ozon
+        <button type="button" className="product-type-editor-secondary" onClick={onRefreshCatalogProducts}>
+          {shopRegion === 'rf' ? 'Обновить список Ozon' : `Обновить список ${getKzMarketplaceLabel(kzMarketplace)}`}
         </button>
         {status && <p className="modal-status">{status}</p>}
       </div>
@@ -11029,13 +11066,15 @@ function ProductTypeEditorPanel({
       <ProductCatalogFilesEditor
         token={token}
         novinkaProducts={novinkaProducts}
-        ozonProducts={ozonProducts}
+        catalogProducts={shopRegion === 'rf' ? catalogProducts : kzProducts[kzMarketplace]}
+        kzProducts={kzProducts}
         productionFiles={productionFiles}
         productionFilePaths={productionFilePaths}
         onRefreshProductionData={onRefreshProductionData}
         onDownloadFile={onDownloadFile}
         onDeleteFile={onDeleteFile}
         shopRegion={shopRegion}
+        kzMarketplace={kzMarketplace}
       />
     </>
   )
@@ -11044,43 +11083,58 @@ function ProductTypeEditorPanel({
 function ProductCatalogFilesEditor({
   token,
   novinkaProducts,
-  ozonProducts,
+  catalogProducts,
+  kzProducts,
   productionFiles,
   productionFilePaths,
   onRefreshProductionData,
   onDownloadFile,
   onDeleteFile,
   shopRegion,
+  kzMarketplace,
 }: {
   token: string
   novinkaProducts: ProductionCatalogItem[]
-  ozonProducts: OzonProduct[]
+  catalogProducts: OzonProduct[]
+  kzProducts: Record<KzMarketplace, OzonProduct[]>
   productionFiles: ProductionFile[]
   productionFilePaths: ProductionFilePath[]
   onRefreshProductionData: () => Promise<void>
   onDownloadFile: (id: string) => void
   onDeleteFile?: (id: string) => void
   shopRegion: ShopRegion
+  kzMarketplace: KzMarketplace
 }) {
-  const [targetMode, setTargetMode] = useState<'novinka' | 'ozon'>('novinka')
+  const [targetMode, setTargetMode] = useState<'novinka' | 'catalog'>('novinka')
+  const [filesCatalogMarketplace, setFilesCatalogMarketplace] = useState<KzMarketplace>(kzMarketplace)
   const [filesNovinkaOfferId, setFilesNovinkaOfferId] = useState('')
-  const [filesOzonProductId, setFilesOzonProductId] = useState('')
+  const [filesCatalogProductId, setFilesCatalogProductId] = useState('')
   const [pathDraft, setPathDraft] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [filesStatus, setFilesStatus] = useState('')
   const [filesSaving, setFilesSaving] = useState(false)
 
+  useEffect(() => {
+    setFilesCatalogMarketplace(kzMarketplace)
+  }, [kzMarketplace])
+
+  const activeCatalogProducts =
+    shopRegion === 'rf' ? catalogProducts : kzProducts[filesCatalogMarketplace]
+  const catalogLabel = shopRegion === 'rf' ? 'Ozon' : getKzMarketplaceLabel(filesCatalogMarketplace)
+
   const selectedNovinka = novinkaProducts.find((item) => item.offerId === filesNovinkaOfferId)
-  const selectedOzon = ozonProducts.find((product) => String(product.productId) === filesOzonProductId)
+  const selectedCatalogProduct = activeCatalogProducts.find(
+    (product) => String(product.productId) === filesCatalogProductId,
+  )
   const selectedCatalogItem: ProductionCatalogItem | undefined =
     targetMode === 'novinka' && selectedNovinka
       ? selectedNovinka
-      : selectedOzon
+      : selectedCatalogProduct
         ? {
-            offerId: selectedOzon.offerId,
-            ozonProductId: selectedOzon.productId,
-            productName: selectedOzon.name,
-            productLink: selectedOzon.productUrl ?? '',
+            offerId: selectedCatalogProduct.offerId,
+            ozonProductId: selectedCatalogProduct.productId,
+            productName: selectedCatalogProduct.name,
+            productLink: selectedCatalogProduct.productUrl ?? '',
             fileCount: 0,
           }
         : undefined
@@ -11115,7 +11169,9 @@ function ProductCatalogFilesEditor({
 
   async function saveCatalogAssets() {
     if (!selectedCatalogItem) {
-      setFilesStatus('Выберите новинку или товар Ozon')
+      setFilesStatus(
+        shopRegion === 'rf' ? 'Выберите новинку или товар Ozon' : 'Выберите новинку или товар маркетплейса',
+      )
       return
     }
 
@@ -11158,8 +11214,10 @@ function ProductCatalogFilesEditor({
 
       const marketplace =
         targetMode === 'novinka'
-          ? selectedNovinka?.marketplace ?? (shopRegion === 'rf' ? 'ozon' : 'kaspi')
-          : 'ozon'
+          ? selectedNovinka?.marketplace ?? (shopRegion === 'rf' ? 'ozon' : filesCatalogMarketplace)
+          : shopRegion === 'rf'
+            ? 'ozon'
+            : filesCatalogMarketplace
 
       const uploadedCount = pendingFiles.length
 
@@ -11209,7 +11267,11 @@ function ProductCatalogFilesEditor({
       <div className="section-title soft-title">
         <div>
           <h2>Файлы и пути производства</h2>
-          <p>Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.</p>
+          <p>
+            {shopRegion === 'rf'
+              ? 'Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.'
+              : 'Выберите новинку или товар маркетплейса KZ, укажите путь на диске и прикрепите файлы.'}
+          </p>
         </div>
       </div>
 
@@ -11224,23 +11286,44 @@ function ProductCatalogFilesEditor({
           >
             Новинка
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={targetMode === 'ozon'}
-            className={targetMode === 'ozon' ? 'active' : ''}
-            onClick={() => setTargetMode('ozon')}
-          >
-            Товар Ozon
-          </button>
+          {shopRegion === 'rf' ? (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={targetMode === 'catalog'}
+              className={targetMode === 'catalog' ? 'active' : ''}
+              onClick={() => setTargetMode('catalog')}
+            >
+              Товар Ozon
+            </button>
+          ) : (
+            KZ_MARKETPLACES.map((marketplace) => (
+              <button
+                type="button"
+                role="tab"
+                key={marketplace}
+                aria-selected={targetMode === 'catalog' && filesCatalogMarketplace === marketplace}
+                className={targetMode === 'catalog' && filesCatalogMarketplace === marketplace ? 'active' : ''}
+                onClick={() => {
+                  setTargetMode('catalog')
+                  setFilesCatalogMarketplace(marketplace)
+                  setFilesCatalogProductId('')
+                }}
+              >
+                {getKzMarketplaceLabel(marketplace)}
+              </button>
+            ))
+          )}
         </div>
 
         <div className="supply-form-block supply-form-block-novinka product-catalog-files-picker">
-          <strong>{targetMode === 'novinka' ? 'Новинка' : 'Товар Ozon'}</strong>
+          <strong>{targetMode === 'novinka' ? 'Новинка' : `Товар ${catalogLabel}`}</strong>
           <span className="product-type-editor-hint">
             {targetMode === 'novinka'
               ? 'Выберите новинку из списка'
-              : 'Выберите товар из каталога Ozon'}
+              : shopRegion === 'rf'
+                ? 'Выберите товар из каталога Ozon'
+                : `Выберите товар из каталога ${getKzMarketplaceLabel(filesCatalogMarketplace)}`}
           </span>
           {targetMode === 'novinka' ? (
             <NovinkaSearchInput
@@ -11253,10 +11336,10 @@ function ProductCatalogFilesEditor({
             />
           ) : (
             <ProductSearchInput
-              listId="product-editor-files-ozon-list"
-              products={ozonProducts}
-              selectedProductId={filesOzonProductId}
-              onProductIdChange={setFilesOzonProductId}
+              listId="product-editor-files-catalog-list"
+              products={activeCatalogProducts}
+              selectedProductId={filesCatalogProductId}
+              onProductIdChange={setFilesCatalogProductId}
               placeholder="Начните писать название или артикул"
               hideInlinePreview
               showClearButton
@@ -11266,8 +11349,8 @@ function ProductCatalogFilesEditor({
 
         {selectedCatalogItem ? (
           <div className="product-catalog-files-current">
-            {targetMode === 'ozon' && selectedOzon ? (
-              <TaskProductPreview product={selectedOzon} />
+            {targetMode === 'catalog' && selectedCatalogProduct ? (
+              <TaskProductPreview product={selectedCatalogProduct} />
             ) : (
               <NovinkaProductPreview
                 item={selectedCatalogItem}
