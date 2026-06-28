@@ -196,6 +196,56 @@ public static class KzMarketplaceRoutes
             }
         }).RequireAuthorization();
 
+        app.MapGet("/api/kz/{marketplace}/analytics/unsold", async (
+            string marketplace,
+            string? dateFrom,
+            string? dateTo,
+            int? skip,
+            int? take,
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var from = new DateOnly(today.Year, today.Month, 1);
+            var to = today;
+
+            if (!string.IsNullOrWhiteSpace(dateFrom) && !DateOnly.TryParse(dateFrom, out from))
+            {
+                return Results.BadRequest("Некорректная дата начала периода.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(dateTo) && !DateOnly.TryParse(dateTo, out to))
+            {
+                return Results.BadRequest("Некорректная дата окончания периода.");
+            }
+
+            try
+            {
+                var result = await marketplaceApi.GetUnsoldProductsPageAsync(
+                    marketplace,
+                    from,
+                    to,
+                    skip ?? 0,
+                    take ?? 200,
+                    cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
         app.MapGet("/api/kz/{marketplace}/analytics", async (
             string marketplace,
             string? dateFrom,

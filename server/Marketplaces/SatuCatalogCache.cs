@@ -87,10 +87,39 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
                 merchantId,
                 from,
                 to,
-                ct => GetProductsAsync(httpClient, apiKey, merchantId, ct),
+                ct => GetCatalogStatsAsync(httpClient, apiKey, merchantId, ct),
                 ct => GetOrdersAsync(httpClient, apiKey, from, to, ct),
                 cancellationToken),
             cancellationToken);
+
+    public async Task<(int Total, IReadOnlyList<OzonUnsoldProductRow> Items)> GetUnsoldProductsPageAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
+        DateOnly from,
+        DateOnly to,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        var allUnsold = await GetOrLoadAsync(
+            $"satu:unsold-all:{CacheKeySuffix(apiKey)}:{from:yyyy-MM-dd}:{to:yyyy-MM-dd}",
+            AnalyticsTtl,
+            async () =>
+            {
+                var products = await GetProductsAsync(httpClient, apiKey, merchantId, cancellationToken);
+                var orders = await GetOrdersAsync(httpClient, apiKey, from, to, cancellationToken);
+                return await SatuAnalyticsBuilder.BuildUnsoldPageAsync(products, orders, 0, int.MaxValue);
+            },
+            cancellationToken);
+
+        var page = allUnsold.Items
+            .Skip(Math.Max(0, skip))
+            .Take(Math.Clamp(take, 1, 500))
+            .ToList();
+
+        return (allUnsold.Total, page);
+    }
 
     private async Task<T> GetOrLoadAsync<T>(
         string key,

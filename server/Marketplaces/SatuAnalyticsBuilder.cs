@@ -42,7 +42,7 @@ internal static class SatuAnalyticsBuilder
         string merchantId,
         DateOnly from,
         DateOnly to,
-        Func<CancellationToken, Task<IReadOnlyList<OzonProductSummary>>> loadProducts,
+        Func<CancellationToken, Task<SatuCatalogStats>> loadCatalogStats,
         Func<CancellationToken, Task<IReadOnlyList<JsonElement>>> loadOrders,
         CancellationToken cancellationToken)
     {
@@ -50,8 +50,7 @@ internal static class SatuAnalyticsBuilder
         _ = apiKey;
         _ = merchantId;
 
-        var products = await loadProducts(cancellationToken);
-        var catalogStats = ComputeStatsFromProducts(products);
+        var catalogStats = await loadCatalogStats(cancellationToken);
         var orders = await loadOrders(cancellationToken);
 
         var orderRows = new List<OzonAnalyticsRow>();
@@ -216,21 +215,6 @@ internal static class SatuAnalyticsBuilder
             .ThenByDescending(row => row.Revenue)
             .ToList();
 
-        var unsoldProducts = products
-            .Where(product => !soldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
-            .Select(product => new OzonUnsoldProductRow(
-                product.Sku ?? 0,
-                product.OfferId,
-                product.Name,
-                product.Price,
-                product.CurrencyCode,
-                0,
-                product.Status,
-                product.ImageUrl))
-            .OrderBy(row => row.OfferId, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.ProductName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
         var salesTotalCount = salesOrderIds.Count;
         var cancelledLogisticsTotal = orderRows
             .Where(row => row.Status == "cancelled")
@@ -243,7 +227,7 @@ internal static class SatuAnalyticsBuilder
             orderRows,
             orderRows,
             topProducts,
-            unsoldProducts,
+            [],
             orderRows.Count(row => row.Revenue > 0 && row.Status != "cancelled"),
             revenueTotal,
             commissionTotal,
@@ -274,4 +258,50 @@ internal static class SatuAnalyticsBuilder
 
     private static string GetProductKey(long sku, string offerId) =>
         sku > 0 ? $"sku:{sku}" : $"offer:{offerId}";
+
+    internal static async Task<(int Total, IReadOnlyList<OzonUnsoldProductRow> Items)> BuildUnsoldPageAsync(
+        IReadOnlyList<OzonProductSummary> products,
+        IReadOnlyList<JsonElement> orders,
+        int skip,
+        int take)
+    {
+        var soldProductKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var order in orders)
+        {
+            if (SatuApiClient.NormalizeOrderStatus(SatuApiClient.ReadString(order, "status")) == "cancelled")
+            {
+                continue;
+            }
+
+            foreach (var product in SatuApiClient.EnumerateOrderProducts(order))
+            {
+                var offerId = SatuApiClient.ReadString(product, "sku", "external_id", "offer_id", "article") ?? string.Empty;
+                var sku = SatuApiClient.ReadLong(product, "sku", "id", "product_id") ?? 0;
+                soldProductKeys.Add(GetProductKey(sku, offerId));
+            }
+        }
+
+        var unsold = products
+            .Where(product => !soldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
+            .OrderBy(row => row.OfferId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var page = unsold
+            .Skip(Math.Max(0, skip))
+            .Take(Math.Clamp(take, 1, 500))
+            .Select(product => new OzonUnsoldProductRow(
+                product.Sku ?? 0,
+                product.OfferId,
+                product.Name,
+                product.Price,
+                product.CurrencyCode,
+                0,
+                product.Status,
+                product.ImageUrl))
+            .ToList();
+
+        return (unsold.Count, page);
+    }
 }

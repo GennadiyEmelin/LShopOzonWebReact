@@ -1505,6 +1505,8 @@ function App() {
   const [priceStatus, setPriceStatus] = useState('')
   const [editingPrices, setEditingPrices] = useState<Record<number, string>>({})
   const [analyticsStatus, setAnalyticsStatus] = useState('')
+  const [kzUnsoldProducts, setKzUnsoldProducts] = useState<OzonAnalytics['unsoldProducts']>([])
+  const [kzUnsoldTotal, setKzUnsoldTotal] = useState(0)
   const [analytics, setAnalytics] = useState<OzonAnalytics | null>(null)
   const [analyticsSnapshot, setAnalyticsSnapshot] = useState<OzonAnalyticsSnapshot | null>(null)
   const [homeAnalytics, setHomeAnalytics] = useState<OzonAnalytics | null>(null)
@@ -1975,14 +1977,18 @@ function App() {
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
     .sort((left, right) => right.quantity - left.quantity)
-  const unsoldAnalyticsProducts = (analytics?.unsoldProducts ?? [])
+  const unsoldAnalyticsProducts = (showKzFullAnalytics ? kzUnsoldProducts : (analytics?.unsoldProducts ?? []))
     .map((row) => ({
       ...row,
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
     .sort((left, right) => (right.daysWithoutSales ?? 0) - (left.daysWithoutSales ?? 0) || left.offerId.localeCompare(right.offerId, 'ru'))
   const unsoldProductStatusCounts = useMemo(() => {
-    const counts = { all: unsoldAnalyticsProducts.length, selling: 0, ready: 0 }
+    const counts = {
+      all: showKzFullAnalytics ? kzUnsoldTotal : unsoldAnalyticsProducts.length,
+      selling: 0,
+      ready: 0,
+    }
 
     for (const row of unsoldAnalyticsProducts) {
       const group = getProductStatusGroup(row.status)
@@ -1994,7 +2000,7 @@ function App() {
     }
 
     return counts
-  }, [unsoldAnalyticsProducts])
+  }, [unsoldAnalyticsProducts, showKzFullAnalytics, kzUnsoldTotal])
   const filteredUnsoldAnalyticsProducts = useMemo(() => {
     if (unsoldProductStatusFilter === 'all') {
       return unsoldAnalyticsProducts
@@ -2712,6 +2718,7 @@ function App() {
 
     setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
     setAnalyticsDateTo(getDefaultAnalyticsDateTo())
+    void loadKzAnalyticsBundle()
   }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion, kzMarketplace])
 
   useEffect(() => {
@@ -2732,6 +2739,29 @@ function App() {
     user?.role,
     user?.allowedFeatures,
     shopRegion,
+    kzMarketplace,
+  ])
+
+  useEffect(() => {
+    if (
+      !token ||
+      activeTab !== 'analytics' ||
+      analyticsSubTab !== 'noSales' ||
+      !showKzFullAnalytics ||
+      !analyticsDateFrom ||
+      !analyticsDateTo
+    ) {
+      return
+    }
+
+    void loadKzUnsoldProducts()
+  }, [
+    analyticsSubTab,
+    analyticsDateFrom,
+    analyticsDateTo,
+    activeTab,
+    token,
+    showKzFullAnalytics,
     kzMarketplace,
   ])
 
@@ -4749,9 +4779,67 @@ function App() {
     })
   }
 
+  async function loadKzAnalyticsSnapshot(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setAnalyticsStatus(`Загружаем сводку каталога ${label}...`)
+
+    const response = await fetch(`/api/kz/${marketplace}/analytics/snapshot`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), `Не удалось получить сводку ${label}`))
+      return
+    }
+
+    const data: OzonAnalyticsSnapshot = await response.json()
+    setAnalyticsSnapshot(data)
+    setAnalyticsStatus(`Каталог ${label}: ${data.totalProductsCount} позиций. Загружаем заказы...`)
+  }
+
+  async function loadKzAnalyticsBundle(marketplace: KzMarketplace = kzMarketplace) {
+    await loadKzAnalyticsSnapshot(marketplace)
+    await loadKzAnalytics(marketplace)
+  }
+
+  async function loadKzUnsoldProducts(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setAnalyticsStatus(`Загружаем товары без продаж ${label}...`)
+
+    const params = new URLSearchParams()
+    if (analyticsDateFrom) {
+      params.set('dateFrom', analyticsDateFrom)
+    }
+    if (analyticsDateTo) {
+      params.set('dateTo', analyticsDateTo)
+    }
+    params.set('skip', '0')
+    params.set('take', '200')
+
+    const response = await fetch(`/api/kz/${marketplace}/analytics/unsold?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), `Не удалось загрузить товары без продаж ${label}`))
+      setKzUnsoldProducts([])
+      setKzUnsoldTotal(0)
+      return
+    }
+
+    const data: { total: number; items: OzonAnalytics['unsoldProducts'] } = await response.json()
+    setKzUnsoldProducts(data.items)
+    setKzUnsoldTotal(data.total)
+    setAnalyticsStatus(`Без продаж ${label}: показано ${data.items.length} из ${data.total}`)
+  }
+
   async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
     const label = getKzMarketplaceLabel(marketplace)
-    setAnalyticsStatus(`Загружаем аналитику ${label}... Первый запуск ~30–60 сек, не обновляйте страницу.`)
+    setAnalyticsStatus(`Загружаем заказы ${label}...`)
 
     const params = new URLSearchParams()
     if (analyticsDateFrom) {
@@ -4828,7 +4916,7 @@ function App() {
       }
 
       if (showKzFullAnalytics) {
-        await loadKzAnalytics()
+        await loadKzAnalyticsBundle()
       }
 
       return
@@ -8051,8 +8139,10 @@ function App() {
                       {' · '}
                       найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'
-                        ? ` из ${unsoldAnalyticsProducts.length}`
-                        : ''}
+                        ? ` из ${showKzFullAnalytics ? kzUnsoldTotal : unsoldAnalyticsProducts.length}`
+                        : showKzFullAnalytics && kzUnsoldTotal > unsoldAnalyticsProducts.length
+                          ? ` (показано ${unsoldAnalyticsProducts.length} из ${kzUnsoldTotal})`
+                          : ''}
                     </span>
                   </div>
                   <div className="analytics-status-filters-bar unsold-status-filters-bar">

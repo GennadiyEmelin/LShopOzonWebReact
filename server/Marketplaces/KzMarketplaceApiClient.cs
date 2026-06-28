@@ -84,6 +84,35 @@ public sealed class KzMarketplaceApiClient(
         return CreateEmptyAnalytics();
     }
 
+    public async Task<KzUnsoldProductsPage> GetUnsoldProductsPageAsync(
+        string marketplace,
+        DateOnly from,
+        DateOnly to,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
+        var credentialSet = EnsureConfigured(marketplace);
+
+        if (normalized != MarketplaceTypes.Satu)
+        {
+            return new KzUnsoldProductsPage(0, []);
+        }
+
+        var (total, items) = await satuCatalogCache.GetUnsoldProductsPageAsync(
+            httpClient,
+            credentialSet.ApiKey,
+            credentialSet.MerchantId,
+            from,
+            to,
+            skip,
+            take,
+            cancellationToken);
+
+        return new KzUnsoldProductsPage(total, items);
+    }
+
     public async Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(
         string marketplace,
         CancellationToken cancellationToken)
@@ -445,3 +474,5 @@ public sealed class KzMarketplaceApiClient(
 public record KzMarketplaceTestResult(bool Success, string Message);
 
 public record KzCatalogSummary(int Total, int Selling, int Ready, int Archived);
+
+public record KzUnsoldProductsPage(int Total, IReadOnlyList<OzonUnsoldProductRow> Items);
