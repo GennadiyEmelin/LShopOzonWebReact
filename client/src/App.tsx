@@ -2310,56 +2310,6 @@ function App() {
     return `${from.toLocaleDateString('ru-RU')} — ${to.toLocaleDateString('ru-RU')}`
   }, [])
   const homeProductStats = useMemo(() => computeCatalogProductStats(ozonProducts), [ozonProducts])
-  const kzCatalogAnalyticsProducts = useMemo(() => {
-    if (shopRegion !== 'kz') {
-      return []
-    }
-
-    return kzProducts[kzMarketplace].map((product) => ({
-      key: product.sku ? `sku:${product.sku}` : `offer:${product.offerId}`,
-      productName: product.name,
-      offerId: product.offerId,
-      sku: product.sku,
-      status: product.status,
-      imageUrl: product.imageUrl,
-      price: product.price,
-      currencyCode: product.currencyCode,
-      stockTotal: 0,
-    }))
-  }, [shopRegion, kzMarketplace, kzProducts])
-  const filteredKzCatalogAnalyticsProducts = useMemo(() => {
-    const filtered =
-      unsoldProductStatusFilter === 'all'
-        ? kzCatalogAnalyticsProducts
-        : kzCatalogAnalyticsProducts.filter(
-            (row) => getProductStatusGroup(row.status) === unsoldProductStatusFilter,
-          )
-
-    const query = analyticsRowSearch.trim().toLowerCase()
-    if (!query) {
-      return filtered
-    }
-
-    return filtered.filter((row) =>
-      [row.productName, row.offerId, row.sku]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query)),
-    )
-  }, [kzCatalogAnalyticsProducts, unsoldProductStatusFilter, analyticsRowSearch])
-  const kzUnsoldProductStatusCounts = useMemo(() => {
-    const counts = { all: kzCatalogAnalyticsProducts.length, selling: 0, ready: 0 }
-
-    for (const row of kzCatalogAnalyticsProducts) {
-      const group = getProductStatusGroup(row.status)
-      if (group === 'selling') {
-        counts.selling += 1
-      } else if (group === 'ready') {
-        counts.ready += 1
-      }
-    }
-
-    return counts
-  }, [kzCatalogAnalyticsProducts])
   const visibleProductionAnalyticsReport = useMemo((): ProductionAnalyticsReport | null => {
     if (!productionAnalyticsReport || shopRegion === 'rf') {
       return productionAnalyticsReport
