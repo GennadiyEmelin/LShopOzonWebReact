@@ -22,6 +22,7 @@ public static class DependencyInjectionExtensions
         services.AddOpenApi();
         services.AddMemoryCache();
         services.AddSingleton<SatuCatalogCache>();
+        services.AddHostedService<SatuCatalogWarmupHostedService>();
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(configuration.GetConnectionString("Postgres")));
 
@@ -36,7 +37,7 @@ public static class DependencyInjectionExtensions
         services.AddSingleton<KzMarketplaceCredentials>();
         services.AddHttpClient<KzMarketplaceApiClient>(client =>
         {
-            client.Timeout = TimeSpan.FromMinutes(3);
+            client.Timeout = TimeSpan.FromMinutes(15);
         });
         services.AddHttpClient(nameof(TelegramNotificationService));
         services.AddHttpClient(nameof(TelegramBotHostedService));

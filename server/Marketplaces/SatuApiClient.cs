@@ -8,6 +8,7 @@ internal static class SatuApiClient
 {
     internal const string BaseUrl = "https://my.satu.kz/api/v1/";
     internal const int PageSize = 100;
+    internal const int ParallelPages = 10;
 
     internal static async Task<IReadOnlyList<OzonProductSummary>> GetProductsAsync(
         HttpClient httpClient,
@@ -27,20 +28,39 @@ internal static class SatuApiClient
 
         while (true)
         {
-            var page = await GetProductsPageAsync(httpClient, apiKey, offset, cancellationToken);
-            if (page.Count == 0)
+            var offsets = Enumerable.Range(0, ParallelPages)
+                .Select(index => offset + index * PageSize)
+                .ToArray();
+
+            var pages = await Task.WhenAll(
+                offsets.Select(pageOffset =>
+                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
+
+            var reachedEnd = false;
+            var addedInBatch = false;
+
+            foreach (var page in pages)
+            {
+                if (page.Count == 0)
+                {
+                    continue;
+                }
+
+                addedInBatch = true;
+                result.AddRange(page.Select(item => ToProductSummary(item, merchantId, result.Count + 1)));
+
+                if (page.Count < PageSize)
+                {
+                    reachedEnd = true;
+                }
+            }
+
+            if (reachedEnd || !addedInBatch)
             {
                 break;
             }
 
-            result.AddRange(page.Select(item => ToProductSummary(item, merchantId, result.Count + 1)));
-
-            if (page.Count < PageSize)
-            {
-                break;
-            }
-
-            offset += PageSize;
+            offset += ParallelPages * PageSize;
         }
 
         return result;

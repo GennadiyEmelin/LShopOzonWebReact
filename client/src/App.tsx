@@ -4751,7 +4751,7 @@ function App() {
 
   async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
     const label = getKzMarketplaceLabel(marketplace)
-    setAnalyticsStatus(`Загружаем аналитику ${label} за период...`)
+    setAnalyticsStatus(`Загружаем аналитику ${label}... Первый запуск ~30–60 сек, не обновляйте страницу.`)
 
     const params = new URLSearchParams()
     if (analyticsDateFrom) {
