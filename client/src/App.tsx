@@ -1498,6 +1498,8 @@ function App() {
   const [ozonProducts, setOzonProducts] = useState<OzonProduct[]>([])
   const [productSearch, setProductSearch] = useState('')
   const [productStatusFilter, setProductStatusFilter] = useState<'all' | 'selling' | 'ready' | 'archived'>('all')
+  const [kzProductsLoading, setKzProductsLoading] = useState(false)
+  const [kzProductsLoadingAll, setKzProductsLoadingAll] = useState(false)
   const [stockStatus, setStockStatus] = useState('')
   const [ozonStocks, setOzonStocks] = useState<OzonStock[]>([])
   const [stockSearch, setStockSearch] = useState('')
@@ -1724,6 +1726,31 @@ function App() {
   const catalogProductsSource = shopRegion === 'rf' ? ozonProducts : activeKzProducts
   const catalogStocksSource = shopRegion === 'rf' ? ozonStocks : activeKzStocks
   const catalogProductsStatus = shopRegion === 'rf' ? ozonStatus : kzProductsStatus[kzMarketplace]
+  const kzMatchedCatalogTotal = useMemo(() => {
+    if (shopRegion !== 'kz') {
+      return 0
+    }
+
+    const summary = kzCatalogSummary[kzMarketplace]
+    if (!summary) {
+      return 0
+    }
+
+    switch (productStatusFilter) {
+      case 'selling':
+        return summary.selling
+      case 'ready':
+        return summary.ready
+      case 'archived':
+        return summary.archived
+      default:
+        return summary.total
+    }
+  }, [shopRegion, kzCatalogSummary, kzMarketplace, productStatusFilter])
+  const kzHasMoreProducts =
+    shopRegion === 'kz' &&
+    kzMatchedCatalogTotal > 0 &&
+    catalogProductsSource.length < kzMatchedCatalogTotal
   const catalogStocksStatus = shopRegion === 'rf' ? stockStatus : kzStocksStatus[kzMarketplace]
   const productionLookupProducts =
     shopRegion === 'rf'
@@ -1766,9 +1793,11 @@ function App() {
     return counts
   }, [catalogProductsSource, shopRegion, kzCatalogSummary, kzMarketplace])
   const filteredCatalogProducts = [...((
-    productStatusFilter !== 'all'
-      ? catalogProductsSource.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
-      : catalogProductsSource
+    shopRegion === 'kz'
+      ? catalogProductsSource
+      : productStatusFilter !== 'all'
+        ? catalogProductsSource.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
+        : catalogProductsSource
   ).filter((item) =>
     normalizedProductSearch
       ? [
@@ -2696,13 +2725,6 @@ function App() {
         void loadKzProducts(marketplace)
       }
     }
-
-    if (activeTab === 'products' && kzProducts[kzMarketplace].length === 0) {
-      void loadKzProducts(kzMarketplace)
-      if (!kzCatalogSummary[kzMarketplace]) {
-        void loadKzCatalogSummary(kzMarketplace)
-      }
-    }
   }, [
     token,
     shopRegion,
@@ -2713,6 +2735,22 @@ function App() {
     kzProducts,
     kzCatalogSummary,
   ])
+
+  useEffect(() => {
+    if (!token || shopRegion !== 'kz' || activeTab !== 'products') {
+      return
+    }
+
+    void loadKzCatalogSummary(kzMarketplace)
+  }, [activeTab, kzMarketplace, token, shopRegion])
+
+  useEffect(() => {
+    if (!token || shopRegion !== 'kz' || activeTab !== 'products') {
+      return
+    }
+
+    void loadKzProducts(kzMarketplace, false)
+  }, [activeTab, kzMarketplace, productStatusFilter, token, shopRegion])
 
   useEffect(() => {
     if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics') || shopRegion !== 'rf') {
@@ -4461,9 +4499,14 @@ function App() {
     }))
   }
 
-  async function loadKzProducts(marketplace: KzMarketplace = kzMarketplace, append = false) {
+  async function loadKzProducts(
+    marketplace: KzMarketplace = kzMarketplace,
+    append = false,
+    statusFilter: 'all' | 'selling' | 'ready' | 'archived' = productStatusFilter,
+  ): Promise<{ loadedCount: number; matchedTotal: number; hasMore: boolean } | null> {
     const label = getKzMarketplaceLabel(marketplace)
     const skip = append ? (kzProducts[marketplace]?.length ?? 0) : 0
+    setKzProductsLoading(true)
     setKzProductsStatus((current) => ({
       ...current,
       [marketplace]: append
@@ -4475,51 +4518,89 @@ function App() {
       skip: String(skip),
       take: '200',
     })
-
-    const response = await fetch(`/api/kz/${marketplace}/products?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      setKzProductsStatus((current) => ({
-        ...current,
-        [marketplace]: getApiErrorMessage(errorText, `Не удалось получить данные ${label}`),
-      }))
-      return
+    if (statusFilter !== 'all') {
+      params.set('status', statusFilter)
     }
 
-    const data: {
-      total: number
-      selling: number
-      ready: number
-      archived: number
-      items: OzonProduct[]
-    } = await response.json()
+    try {
+      const response = await fetch(`/api/kz/${marketplace}/products?${params.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
 
-    setKzCatalogSummary((current) => ({
-      ...current,
-      [marketplace]: {
-        total: data.total,
-        selling: data.selling,
-        ready: data.ready,
-        archived: data.archived,
-      },
-    }))
-    setKzProducts((current) => ({
-      ...current,
-      [marketplace]: append ? [...(current[marketplace] ?? []), ...data.items] : data.items,
-    }))
-    const loadedCount = append ? skip + data.items.length : data.items.length
+      if (!response.ok) {
+        const errorText = await response.text()
+        setKzProductsStatus((current) => ({
+          ...current,
+          [marketplace]: getApiErrorMessage(errorText, `Не удалось получить данные ${label}`),
+        }))
+        return null
+      }
+
+      const data: {
+        total: number
+        selling: number
+        ready: number
+        archived: number
+        matchedTotal: number
+        items: OzonProduct[]
+      } = await response.json()
+
+      setKzCatalogSummary((current) => ({
+        ...current,
+        [marketplace]: {
+          total: data.total,
+          selling: data.selling,
+          ready: data.ready,
+          archived: data.archived,
+        },
+      }))
+      setKzProducts((current) => ({
+        ...current,
+        [marketplace]: append ? [...(current[marketplace] ?? []), ...data.items] : data.items,
+      }))
+      const loadedCount = append ? skip + data.items.length : data.items.length
+      const matchedTotal = data.matchedTotal ?? data.total
+      setKzProductsStatus((current) => ({
+        ...current,
+        [marketplace]:
+          matchedTotal > loadedCount
+            ? `Загружено ${loadedCount} из ${matchedTotal} товаров ${label}`
+            : `Загружено товаров ${label}: ${loadedCount}`,
+      }))
+
+      return {
+        loadedCount,
+        matchedTotal,
+        hasMore: loadedCount < matchedTotal,
+      }
+    } finally {
+      setKzProductsLoading(false)
+    }
+  }
+
+  async function loadAllKzProducts(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setKzProductsLoadingAll(true)
     setKzProductsStatus((current) => ({
       ...current,
-      [marketplace]:
-        data.total > loadedCount
-          ? `Загружено ${loadedCount} из ${data.total} товаров ${label}`
-          : `Загружено товаров ${label}: ${loadedCount}`,
+      [marketplace]: `Загружаем все товары ${label}...`,
     }))
+
+    try {
+      let append = false
+      while (true) {
+        const result = await loadKzProducts(marketplace, append)
+        if (!result?.hasMore) {
+          break
+        }
+
+        append = true
+      }
+    } finally {
+      setKzProductsLoadingAll(false)
+    }
   }
 
   async function loadKzStocks(marketplace: KzMarketplace = kzMarketplace) {
@@ -7881,6 +7962,24 @@ function App() {
                       : `Обновить товары ${getKzMarketplaceLabel(kzMarketplace)}`}
                   </button>
                 )}
+                {shopRegion === 'kz' && kzHasMoreProducts && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={kzProductsLoading || kzProductsLoadingAll}
+                      onClick={() => void loadKzProducts(kzMarketplace, true)}
+                    >
+                      {kzProductsLoading ? 'Загрузка...' : 'Загрузить ещё 200'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={kzProductsLoading || kzProductsLoadingAll}
+                      onClick={() => void loadAllKzProducts(kzMarketplace)}
+                    >
+                      {kzProductsLoadingAll ? 'Загружаем все...' : 'Загрузить все'}
+                    </button>
+                  </>
+                )}
                 <input
                   className="toolbar-search"
                   placeholder="Поиск по артикулу, названию или SKU"
@@ -7918,23 +8017,13 @@ function App() {
                   <span>
                     Показано: {filteredCatalogProducts.length}
                     {productStatusFilter !== 'all' || productSearch.trim()
-                      ? ` из ${shopRegion === 'kz' ? (kzCatalogSummary[kzMarketplace]?.total ?? catalogProductsSource.length) : catalogProductsSource.length}`
-                      : shopRegion === 'kz' &&
-                          (kzCatalogSummary[kzMarketplace]?.total ?? 0) > catalogProductsSource.length
-                        ? ` (загружено ${catalogProductsSource.length} из ${kzCatalogSummary[kzMarketplace]?.total})`
+                      ? ` из ${shopRegion === 'kz' ? kzMatchedCatalogTotal : catalogProductsSource.length}`
+                      : shopRegion === 'kz' && kzHasMoreProducts
+                        ? ` (загружено ${catalogProductsSource.length} из ${kzMatchedCatalogTotal})`
                         : ''}
                   </span>
                 </div>
               )}
-
-              {shopRegion === 'kz' &&
-                (kzCatalogSummary[kzMarketplace]?.total ?? 0) > catalogProductsSource.length && (
-                  <div className="subtabs-placeholder products-toolbar">
-                    <button type="button" onClick={() => void loadKzProducts(kzMarketplace, true)}>
-                      Загрузить ещё 200 товаров
-                    </button>
-                  </div>
-                )}
 
               <div className="data-table">
                 <div className="table-row ozon-product-row table-head">

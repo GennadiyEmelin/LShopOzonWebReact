@@ -38,6 +38,7 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
         HttpClient httpClient,
         string apiKey,
         string merchantId,
+        string? status,
         int skip,
         int take,
         CancellationToken cancellationToken)
@@ -45,16 +46,25 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
         var statsKey = $"satu:stats:{CacheKeySuffix(apiKey)}";
         cache.TryGetValue(statsKey, out SatuCatalogStats? stats);
 
+        if (stats is null)
+        {
+            _ = GetCatalogStatsAsync(httpClient, apiKey, merchantId, cancellationToken);
+        }
+
+        var matchedTotal = stats is not null ? ResolveMatchedTotal(stats, status) : 0;
         IReadOnlyList<OzonProductSummary> items;
+
         if (cache.TryGetValue(ProductsKey(apiKey), out IReadOnlyList<OzonProductSummary>? cachedProducts) &&
             cachedProducts is not null)
         {
-            items = cachedProducts
+            var filtered = FilterProducts(cachedProducts, status);
+            items = filtered
                 .Skip(Math.Max(0, skip))
                 .Take(Math.Clamp(take, 1, 500))
                 .ToList();
+            matchedTotal = filtered.Count;
         }
-        else
+        else if (string.IsNullOrWhiteSpace(status) || status.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
             items = await SatuApiClient.LoadProductsRangeAsync(
                 httpClient,
@@ -64,10 +74,16 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
                 take,
                 cancellationToken);
         }
-
-        if (stats is null)
+        else
         {
-            _ = GetCatalogStatsAsync(httpClient, apiKey, merchantId, cancellationToken);
+            items = await SatuApiClient.LoadProductsFilteredRangeAsync(
+                httpClient,
+                apiKey,
+                merchantId,
+                status,
+                skip,
+                take,
+                cancellationToken);
         }
 
         return new KzProductsPage(
@@ -75,7 +91,31 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
             stats?.Selling ?? 0,
             stats?.Ready ?? 0,
             stats?.Archived ?? 0,
+            matchedTotal > 0 ? matchedTotal : Math.Max(skip + items.Count, items.Count),
             items);
+    }
+
+    private static int ResolveMatchedTotal(SatuCatalogStats stats, string? status) =>
+        status?.ToLowerInvariant() switch
+        {
+            "selling" => stats.Selling,
+            "ready" => stats.Ready,
+            "archived" => stats.Archived,
+            _ => stats.Total
+        };
+
+    private static List<OzonProductSummary> FilterProducts(
+        IReadOnlyList<OzonProductSummary> products,
+        string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status) || status.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return products.ToList();
+        }
+
+        return products
+            .Where(product => SatuApiClient.MatchesStatusGroup(product.Status, status))
+            .ToList();
     }
 
     public Task<IReadOnlyList<System.Text.Json.JsonElement>> GetOrdersAsync(

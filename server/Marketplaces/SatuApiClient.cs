@@ -185,6 +185,97 @@ internal static class SatuApiClient
             .ToList();
     }
 
+    internal static bool MatchesStatusGroup(string status, string? group)
+    {
+        if (string.IsNullOrWhiteSpace(group) || group.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var normalized = status.Trim().ToLowerInvariant();
+        return group.ToLowerInvariant() switch
+        {
+            "selling" => normalized is "selling" or "active" or "visible" or "on_display" or "on" or "published",
+            "archived" => normalized is "archived" or "archive" or "deleted" or "off" or "removed",
+            "ready" => normalized is not ("selling" or "active" or "visible" or "on_display" or "on" or "published"
+                or "archived" or "archive" or "deleted" or "off" or "removed"),
+            _ => true
+        };
+    }
+
+    internal static async Task<IReadOnlyList<OzonProductSummary>> LoadProductsFilteredRangeAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
+        string? statusGroup,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        take = Math.Clamp(take, 1, 500);
+        skip = Math.Max(0, skip);
+
+        if (string.IsNullOrWhiteSpace(statusGroup) || statusGroup.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return await LoadProductsRangeAsync(httpClient, apiKey, merchantId, skip, take, cancellationToken);
+        }
+
+        var matched = new List<OzonProductSummary>();
+        var offset = 0;
+        var fallbackIndex = 1;
+        var targetCount = skip + take;
+
+        while (matched.Count < targetCount)
+        {
+            var batchOffsets = Enumerable.Range(0, ParallelPages)
+                .Select(index => offset + index * PageSize)
+                .ToArray();
+
+            var pages = await Task.WhenAll(
+                batchOffsets.Select(pageOffset =>
+                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
+
+            var reachedEnd = false;
+            var addedInBatch = false;
+
+            foreach (var page in pages)
+            {
+                if (page.Count == 0)
+                {
+                    continue;
+                }
+
+                addedInBatch = true;
+
+                foreach (var item in page)
+                {
+                    var summary = ToProductSummary(item, merchantId, fallbackIndex++);
+                    if (MatchesStatusGroup(summary.Status, statusGroup))
+                    {
+                        matched.Add(summary);
+                    }
+                }
+
+                if (page.Count < PageSize)
+                {
+                    reachedEnd = true;
+                }
+            }
+
+            if (reachedEnd || !addedInBatch)
+            {
+                break;
+            }
+
+            offset += ParallelPages * PageSize;
+        }
+
+        return matched
+            .Skip(skip)
+            .Take(take)
+            .ToList();
+    }
+
     internal static async Task<int> GetOrdersCountAsync(
         HttpClient httpClient,
         string apiKey,

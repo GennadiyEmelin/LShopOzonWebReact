@@ -120,6 +120,7 @@ public static class KzMarketplaceRoutes
 
         app.MapGet("/api/kz/{marketplace}/products", async (
             string marketplace,
+            string? status,
             int? skip,
             int? take,
             AppDbContext db,
@@ -139,6 +140,7 @@ public static class KzMarketplaceRoutes
             {
                 var result = await marketplaceApi.GetProductsPageAsync(
                     marketplace,
+                    status,
                     skip ?? 0,
                     take ?? 200,
                     cancellationToken);

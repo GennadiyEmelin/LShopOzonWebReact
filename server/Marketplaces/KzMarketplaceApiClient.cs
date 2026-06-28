@@ -26,11 +26,12 @@ public sealed class KzMarketplaceApiClient(
                 cancellationToken);
         }
 
-        return (await GetProductsPageAsync(marketplace, 0, int.MaxValue, cancellationToken)).Items;
+        return (await GetProductsPageAsync(marketplace, null, 0, int.MaxValue, cancellationToken)).Items;
     }
 
     public async Task<KzProductsPage> GetProductsPageAsync(
         string marketplace,
+        string? status,
         int skip,
         int take,
         CancellationToken cancellationToken)
@@ -44,6 +45,7 @@ public sealed class KzMarketplaceApiClient(
                 httpClient,
                 credentialSet.ApiKey,
                 credentialSet.MerchantId,
+                status,
                 skip,
                 take,
                 cancellationToken);
@@ -57,12 +59,19 @@ public sealed class KzMarketplaceApiClient(
         };
 
         var summary = BuildCatalogSummary(products);
-        var items = products
+        var filtered = FilterProductsByStatus(products, status);
+        var items = filtered
             .Skip(Math.Max(0, skip))
-            .Take(take <= 0 ? products.Count : Math.Clamp(take, 1, 500))
+            .Take(take <= 0 ? filtered.Count : Math.Clamp(take, 1, 500))
             .ToList();
 
-        return new KzProductsPage(summary.Total, summary.Selling, summary.Ready, summary.Archived, items);
+        return new KzProductsPage(
+            summary.Total,
+            summary.Selling,
+            summary.Ready,
+            summary.Archived,
+            filtered.Count,
+            items);
     }
 
     public async Task<IReadOnlyList<OzonStockSummary>> GetStocksAsync(string marketplace, CancellationToken cancellationToken)
@@ -432,6 +441,20 @@ public sealed class KzMarketplaceApiClient(
         return summary;
     }
 
+    private static List<OzonProductSummary> FilterProductsByStatus(
+        IReadOnlyList<OzonProductSummary> products,
+        string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status) || status.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return products.ToList();
+        }
+
+        return products
+            .Where(product => SatuApiClient.MatchesStatusGroup(product.Status, status))
+            .ToList();
+    }
+
     private static string BuildFallbackProductUrl(string marketplace, string merchantId, string offerId) =>
         marketplace switch
         {
@@ -522,4 +545,5 @@ public record KzProductsPage(
     int Selling,
     int Ready,
     int Archived,
+    int MatchedTotal,
     IReadOnlyList<OzonProductSummary> Items);
