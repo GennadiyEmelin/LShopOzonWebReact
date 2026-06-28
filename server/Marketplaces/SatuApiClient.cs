@@ -13,6 +13,13 @@ internal static class SatuApiClient
         HttpClient httpClient,
         string apiKey,
         string merchantId,
+        CancellationToken cancellationToken) =>
+        await LoadProductsAsync(httpClient, apiKey, merchantId, cancellationToken);
+
+    internal static async Task<IReadOnlyList<OzonProductSummary>> LoadProductsAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
         CancellationToken cancellationToken)
     {
         var result = new List<OzonProductSummary>();
@@ -97,6 +104,14 @@ internal static class SatuApiClient
         string apiKey,
         DateOnly? from,
         DateOnly? to,
+        CancellationToken cancellationToken) =>
+        await LoadOrdersAsync(httpClient, apiKey, from, to, cancellationToken);
+
+    internal static async Task<IReadOnlyList<JsonElement>> LoadOrdersAsync(
+        HttpClient httpClient,
+        string apiKey,
+        DateOnly? from,
+        DateOnly? to,
         CancellationToken cancellationToken)
     {
         var result = new List<JsonElement>();
@@ -104,7 +119,7 @@ internal static class SatuApiClient
 
         while (true)
         {
-            var page = await GetOrdersPageAsync(httpClient, apiKey, offset, cancellationToken);
+            var page = await GetOrdersPageAsync(httpClient, apiKey, offset, from, cancellationToken);
             if (page.Count == 0)
             {
                 break;
@@ -115,7 +130,7 @@ internal static class SatuApiClient
                 var orderDate = ReadOrderDate(order);
                 if (from is not null && orderDate is not null && orderDate.Value < from.Value)
                 {
-                    continue;
+                    return result;
                 }
 
                 if (to is not null && orderDate is not null && orderDate.Value > to.Value)
@@ -136,21 +151,6 @@ internal static class SatuApiClient
 
         return result;
     }
-
-    internal static Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(
-        HttpClient httpClient,
-        string apiKey,
-        CancellationToken cancellationToken) =>
-        SatuAnalyticsBuilder.GetAnalyticsSnapshotAsync(httpClient, apiKey, cancellationToken);
-
-    internal static Task<OzonAnalyticsResult> GetAnalyticsAsync(
-        HttpClient httpClient,
-        string apiKey,
-        string merchantId,
-        DateOnly from,
-        DateOnly to,
-        CancellationToken cancellationToken) =>
-        SatuAnalyticsBuilder.GetAnalyticsAsync(httpClient, apiKey, merchantId, from, to, cancellationToken);
 
     internal static string NormalizeOrderStatus(string? status)
     {
@@ -203,11 +203,20 @@ internal static class SatuApiClient
         HttpClient httpClient,
         string apiKey,
         int offset,
+        DateOnly? from,
         CancellationToken cancellationToken)
     {
-        var query = offset > 0
-            ? $"orders/list?limit={PageSize}&offset={offset}"
-            : $"orders/list?limit={PageSize}";
+        var query = $"orders/list?limit={PageSize}";
+        if (offset > 0)
+        {
+            query += $"&offset={offset}";
+        }
+
+        if (from is not null)
+        {
+            query += $"&date_from={from.Value:yyyy-MM-dd}T00:00:00Z";
+        }
+
         var content = await GetJsonAsync(httpClient, query, apiKey, cancellationToken);
         return ExtractOrderElements(content);
     }
@@ -452,7 +461,7 @@ internal static class SatuApiClient
     }
 }
 
-internal sealed record SatuCatalogStats
+public sealed class SatuCatalogStats
 {
     public int Total { get; set; }
     public int Selling { get; set; }

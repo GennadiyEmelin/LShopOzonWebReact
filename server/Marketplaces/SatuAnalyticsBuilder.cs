@@ -5,33 +5,54 @@ namespace LShopOzonWebReact.Api.Marketplaces;
 
 internal static class SatuAnalyticsBuilder
 {
-    internal static async Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(
-        HttpClient httpClient,
-        string apiKey,
-        CancellationToken cancellationToken)
+    internal static SatuCatalogStats ComputeStatsFromProducts(IReadOnlyList<OzonProductSummary> products)
     {
-        var stats = await SatuApiClient.GetCatalogStatsAsync(httpClient, apiKey, cancellationToken);
-        return new OzonAnalyticsSnapshot(
-            stats.Total,
-            stats.Selling,
-            stats.Ready,
-            stats.Archived,
-            null,
-            "KZT",
-            DateTimeOffset.UtcNow.ToString("O"));
+        var stats = new SatuCatalogStats { Total = products.Count };
+
+        foreach (var product in products)
+        {
+            switch (product.Status.Trim().ToLowerInvariant())
+            {
+                case "selling":
+                case "active":
+                case "visible":
+                case "on_display":
+                case "on":
+                case "published":
+                    stats.Selling++;
+                    break;
+                case "archived":
+                case "archive":
+                case "deleted":
+                case "off":
+                    stats.Archived++;
+                    break;
+                default:
+                    stats.Ready++;
+                    break;
+            }
+        }
+
+        return stats;
     }
 
-    internal static async Task<OzonAnalyticsResult> GetAnalyticsAsync(
+    internal static async Task<OzonAnalyticsResult> BuildAnalyticsAsync(
         HttpClient httpClient,
         string apiKey,
         string merchantId,
         DateOnly from,
         DateOnly to,
+        Func<CancellationToken, Task<IReadOnlyList<OzonProductSummary>>> loadProducts,
+        Func<CancellationToken, Task<IReadOnlyList<JsonElement>>> loadOrders,
         CancellationToken cancellationToken)
     {
-        var catalogStats = await SatuApiClient.GetCatalogStatsAsync(httpClient, apiKey, cancellationToken);
-        var products = await SatuApiClient.GetProductsAsync(httpClient, apiKey, merchantId, cancellationToken);
-        var orders = await SatuApiClient.GetOrdersAsync(httpClient, apiKey, from, to, cancellationToken);
+        _ = httpClient;
+        _ = apiKey;
+        _ = merchantId;
+
+        var products = await loadProducts(cancellationToken);
+        var catalogStats = ComputeStatsFromProducts(products);
+        var orders = await loadOrders(cancellationToken);
 
         var orderRows = new List<OzonAnalyticsRow>();
         var soldProductKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

@@ -2712,7 +2712,6 @@ function App() {
 
     setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
     setAnalyticsDateTo(getDefaultAnalyticsDateTo())
-    void loadKzAnalyticsSnapshot()
   }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion, kzMarketplace])
 
   useEffect(() => {
@@ -4753,6 +4752,20 @@ function App() {
     setAnalyticsSnapshot(data)
   }
 
+  function applyKzAnalytics(data: OzonAnalytics) {
+    setAnalytics(data)
+    setAnalyticsSnapshot({
+      totalProductsCount:
+        data.sellingProductsCount + data.readyForSaleProductsCount + data.archivedProductsCount,
+      sellingProductsCount: data.sellingProductsCount,
+      readyForSaleProductsCount: data.readyForSaleProductsCount,
+      archivedProductsCount: data.archivedProductsCount,
+      accountBalance: data.accountBalance ?? null,
+      accountBalanceCurrency: data.accountBalanceCurrency,
+      timestamp: data.timestamp,
+    })
+  }
+
   async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
     const label = getKzMarketplaceLabel(marketplace)
     setAnalyticsStatus(`Загружаем аналитику ${label} за период...`)
@@ -4777,7 +4790,7 @@ function App() {
     }
 
     const data: OzonAnalytics = await response.json()
-    setAnalytics(data)
+    applyKzAnalytics(data)
     setAnalyticsStatus(`Аналитика ${label} за период обновлена: ${data.timestamp}`)
   }
 
@@ -4832,7 +4845,7 @@ function App() {
       }
 
       if (showKzFullAnalytics) {
-        await Promise.all([loadKzAnalyticsSnapshot(), loadKzAnalytics()])
+        await loadKzAnalytics()
       }
 
       return

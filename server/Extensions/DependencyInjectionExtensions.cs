@@ -20,6 +20,8 @@ public static class DependencyInjectionExtensions
     public static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddOpenApi();
+        services.AddMemoryCache();
+        services.AddSingleton<SatuCatalogCache>();
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(configuration.GetConnectionString("Postgres")));
 

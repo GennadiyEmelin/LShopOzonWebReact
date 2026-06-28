@@ -5,7 +5,10 @@ using LShopOzonWebReact.Api.Ozon;
 
 namespace LShopOzonWebReact.Api.Marketplaces;
 
-public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceCredentials credentials)
+public sealed class KzMarketplaceApiClient(
+    HttpClient httpClient,
+    KzMarketplaceCredentials credentials,
+    SatuCatalogCache satuCatalogCache)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -17,7 +20,7 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
         return normalized switch
         {
             MarketplaceTypes.Kaspi => await GetKaspiProductsAsync(credentialSet, cancellationToken),
-            MarketplaceTypes.Satu => await SatuApiClient.GetProductsAsync(
+            MarketplaceTypes.Satu => await satuCatalogCache.GetProductsAsync(
                 httpClient,
                 credentialSet.ApiKey,
                 credentialSet.MerchantId,
@@ -69,7 +72,7 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await SatuApiClient.GetAnalyticsAsync(
+            return await satuCatalogCache.GetAnalyticsAsync(
                 httpClient,
                 credentialSet.ApiKey,
                 credentialSet.MerchantId,
@@ -90,9 +93,10 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await SatuApiClient.GetAnalyticsSnapshotAsync(
+            return await satuCatalogCache.GetAnalyticsSnapshotAsync(
                 httpClient,
                 credentialSet.ApiKey,
+                credentialSet.MerchantId,
                 cancellationToken);
         }
 
@@ -147,9 +151,10 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            var stats = await SatuApiClient.GetCatalogStatsAsync(
+            var stats = await satuCatalogCache.GetCatalogStatsAsync(
                 httpClient,
                 credentialSet.ApiKey,
+                credentialSet.MerchantId,
                 cancellationToken);
 
             return new KzCatalogSummary(stats.Total, stats.Selling, stats.Ready, stats.Archived);
@@ -191,16 +196,15 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
         {
             if (MarketplaceTypes.NormalizeKzMarketplace(marketplace) == MarketplaceTypes.Satu)
             {
-                var ordersCount = await SatuApiClient.GetOrdersCountAsync(
-                    httpClient,
-                    credentialSet.ApiKey,
-                    cancellationToken);
-                var products = await SatuApiClient.GetProductsAsync(
-                    httpClient,
-                    credentialSet.ApiKey,
-                    credentialSet.MerchantId,
-                    cancellationToken);
                 var summary = await GetCatalogSummaryAsync(marketplace, cancellationToken);
+                var ordersCount = summary.Total > 0
+                    ? (await satuCatalogCache.GetOrdersAsync(
+                        httpClient,
+                        credentialSet.ApiKey,
+                        null,
+                        null,
+                        cancellationToken)).Count
+                    : 0;
                 return new KzMarketplaceTestResult(
                     true,
                     $"{label} API отвечает. Заказов: {ordersCount}, товаров в каталоге: {summary.Total}");
