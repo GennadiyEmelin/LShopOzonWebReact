@@ -7,6 +7,7 @@ namespace LShopOzonWebReact.Api.Marketplaces;
 internal static class SatuApiClient
 {
     internal const string BaseUrl = "https://my.satu.kz/api/v1/";
+    internal const int PageSize = 100;
 
     internal static async Task<IReadOnlyList<OzonProductSummary>> GetProductsAsync(
         HttpClient httpClient,
@@ -14,8 +15,72 @@ internal static class SatuApiClient
         string merchantId,
         CancellationToken cancellationToken)
     {
-        var content = await GetJsonAsync(httpClient, "products/list", apiKey, cancellationToken);
-        return ParseProducts(content, merchantId);
+        var result = new List<OzonProductSummary>();
+        var offset = 0;
+
+        while (true)
+        {
+            var page = await GetProductsPageAsync(httpClient, apiKey, offset, cancellationToken);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            result.AddRange(page.Select(item => ToProductSummary(item, merchantId, result.Count + 1)));
+
+            if (page.Count < PageSize)
+            {
+                break;
+            }
+
+            offset += PageSize;
+        }
+
+        return result;
+    }
+
+    internal static async Task<SatuCatalogStats> GetCatalogStatsAsync(
+        HttpClient httpClient,
+        string apiKey,
+        CancellationToken cancellationToken)
+    {
+        var stats = new SatuCatalogStats();
+        var offset = 0;
+
+        while (true)
+        {
+            var page = await GetProductsPageAsync(httpClient, apiKey, offset, cancellationToken);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var item in page)
+            {
+                stats.Total++;
+                switch (NormalizeCatalogStatus(item))
+                {
+                    case "selling":
+                        stats.Selling++;
+                        break;
+                    case "ready":
+                        stats.Ready++;
+                        break;
+                    case "archived":
+                        stats.Archived++;
+                        break;
+                }
+            }
+
+            if (page.Count < PageSize)
+            {
+                break;
+            }
+
+            offset += PageSize;
+        }
+
+        return stats;
     }
 
     internal static async Task<int> GetOrdersCountAsync(
@@ -33,6 +98,19 @@ internal static class SatuApiClient
         }
 
         return root.ValueKind == JsonValueKind.Array ? root.GetArrayLength() : 0;
+    }
+
+    private static async Task<List<JsonElement>> GetProductsPageAsync(
+        HttpClient httpClient,
+        string apiKey,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        var query = offset > 0
+            ? $"products/list?limit={PageSize}&offset={offset}"
+            : $"products/list?limit={PageSize}";
+        var content = await GetJsonAsync(httpClient, query, apiKey, cancellationToken);
+        return ExtractProductElements(content);
     }
 
     internal static async Task<string> GetJsonAsync(
@@ -81,7 +159,7 @@ internal static class SatuApiClient
     private static string TrimResponse(string content) =>
         content.Length <= 240 ? content : content[..240] + "...";
 
-    private static IReadOnlyList<OzonProductSummary> ParseProducts(string content, string merchantId)
+    private static List<JsonElement> ExtractProductElements(string content)
     {
         using var document = JsonDocument.Parse(content);
         var root = document.RootElement;
@@ -93,50 +171,86 @@ internal static class SatuApiClient
             _ => Enumerable.Empty<JsonElement>()
         };
 
-        var result = new List<OzonProductSummary>();
-        var index = 1;
+        return items.Select(item => item.Clone()).ToList();
+    }
 
-        foreach (var item in items)
+    private static OzonProductSummary ToProductSummary(JsonElement item, string merchantId, int fallbackIndex)
+    {
+        var sku = ReadString(item, "sku") ?? ReadString(item, "external_id") ?? $"item-{fallbackIndex}";
+        var name = ReadString(item, "name") ?? sku;
+        var productId = ReadLong(item, "id") ?? fallbackIndex;
+        var imageUrl = ReadString(item, "main_image") ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(imageUrl) &&
+            item.TryGetProperty("images", out var images) &&
+            images.ValueKind == JsonValueKind.Array)
         {
-            var sku = ReadString(item, "sku") ?? ReadString(item, "external_id") ?? $"item-{index}";
-            var name = ReadString(item, "name") ?? sku;
-            var productId = ReadLong(item, "id") ?? index;
-            var imageUrl = ReadString(item, "main_image") ?? string.Empty;
-
-            if (string.IsNullOrWhiteSpace(imageUrl) &&
-                item.TryGetProperty("images", out var images) &&
-                images.ValueKind == JsonValueKind.Array)
+            foreach (var image in images.EnumerateArray())
             {
-                foreach (var image in images.EnumerateArray())
+                imageUrl = ReadString(image, "url", "thumbnail_url") ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(imageUrl))
                 {
-                    imageUrl = ReadString(image, "url", "thumbnail_url") ?? string.Empty;
-                    if (!string.IsNullOrWhiteSpace(imageUrl))
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
-
-            var productUrl = ReadString(item, "url") ??
-                             (productId > 0 ? $"https://satu.kz/p/{productId}" : string.Empty);
-
-            result.Add(new OzonProductSummary(
-                productId,
-                sku,
-                ReadLong(item, "id"),
-                name,
-                ReadDecimal(item, "price"),
-                ReadDecimal(item, "discount"),
-                0,
-                ReadString(item, "currency") ?? "KZT",
-                ReadString(item, "status", "presence") ?? "selling",
-                productUrl,
-                imageUrl));
-
-            index++;
         }
 
-        return result;
+        var productUrl = ReadString(item, "url") ??
+                         (productId > 0 ? $"https://satu.kz/p/{productId}" : string.Empty);
+
+        return new OzonProductSummary(
+            productId,
+            sku,
+            ReadLong(item, "id"),
+            name,
+            ReadDecimal(item, "price"),
+            ReadDecimal(item, "discount"),
+            0,
+            ReadString(item, "currency") ?? "KZT",
+            NormalizeCatalogStatus(item),
+            productUrl,
+            imageUrl);
+    }
+
+    internal static string NormalizeCatalogStatus(JsonElement item)
+    {
+        var status = ReadString(item, "status")?.Trim().ToLowerInvariant() ?? string.Empty;
+        var presence = ReadString(item, "presence")?.Trim().ToLowerInvariant() ?? string.Empty;
+
+        if (status is "deleted" or "off" or "removed")
+        {
+            return "archived";
+        }
+
+        if (status is "draft" or "not_on_display")
+        {
+            return "ready";
+        }
+
+        if (status is "on_display" or "on" or "published")
+        {
+            return presence is "not_available" or "order" or "service"
+                ? "ready"
+                : "selling";
+        }
+
+        if (presence is "available")
+        {
+            return "selling";
+        }
+
+        if (presence is "not_available" or "order" or "service")
+        {
+            return "ready";
+        }
+
+        return status switch
+        {
+            "selling" or "active" or "visible" => "selling",
+            "ready_for_sale" or "ready" => "ready",
+            "archived" or "archive" => "archived",
+            _ => "ready"
+        };
     }
 
     private static string? ReadString(JsonElement element, params string[] names)
@@ -209,4 +323,12 @@ internal static class SatuApiClient
 
         return 0;
     }
+}
+
+internal sealed record SatuCatalogStats
+{
+    public int Total { get; set; }
+    public int Selling { get; set; }
+    public int Ready { get; set; }
+    public int Archived { get; set; }
 }

@@ -111,6 +111,48 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
             0,
             DateTimeOffset.UtcNow.ToString("O"));
 
+    public async Task<KzCatalogSummary> GetCatalogSummaryAsync(string marketplace, CancellationToken cancellationToken)
+    {
+        var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
+        var credentialSet = EnsureConfigured(marketplace);
+
+        if (normalized == MarketplaceTypes.Satu)
+        {
+            var stats = await SatuApiClient.GetCatalogStatsAsync(
+                httpClient,
+                credentialSet.ApiKey,
+                cancellationToken);
+
+            return new KzCatalogSummary(stats.Total, stats.Selling, stats.Ready, stats.Archived);
+        }
+
+        var products = await GetProductsAsync(marketplace, cancellationToken);
+        var summary = new KzCatalogSummary(products.Count, 0, 0, 0);
+        foreach (var product in products)
+        {
+            switch (product.Status.Trim().ToLowerInvariant())
+            {
+                case "selling":
+                case "active":
+                case "visible":
+                case "on_display":
+                    summary = summary with { Selling = summary.Selling + 1 };
+                    break;
+                case "archived":
+                case "archive":
+                case "deleted":
+                case "off":
+                    summary = summary with { Archived = summary.Archived + 1 };
+                    break;
+                default:
+                    summary = summary with { Ready = summary.Ready + 1 };
+                    break;
+            }
+        }
+
+        return summary;
+    }
+
     public async Task<KzMarketplaceTestResult> TestConnectionAsync(string marketplace, CancellationToken cancellationToken)
     {
         var credentialSet = EnsureConfigured(marketplace);
@@ -129,9 +171,10 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
                     credentialSet.ApiKey,
                     credentialSet.MerchantId,
                     cancellationToken);
+                var summary = await GetCatalogSummaryAsync(marketplace, cancellationToken);
                 return new KzMarketplaceTestResult(
                     true,
-                    $"{label} API отвечает. Заказов: {ordersCount}, товаров в каталоге: {products.Count}");
+                    $"{label} API отвечает. Заказов: {ordersCount}, товаров в каталоге: {summary.Total}");
             }
 
             var catalogProducts = await GetProductsAsync(marketplace, cancellationToken);
@@ -367,3 +410,5 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 }
 
 public record KzMarketplaceTestResult(bool Success, string Message);
+
+public record KzCatalogSummary(int Total, int Selling, int Ready, int Archived);

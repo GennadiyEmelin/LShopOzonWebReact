@@ -7872,10 +7872,7 @@ function App() {
                 <p className="analytics-status-line">{productionAnalyticsStatus}</p>
               )}
               {analyticsSubTab === 'summary' && shopRegion === 'kz' && (
-                <KzCatalogAnalyticsPanel
-                  products={kzProducts[kzMarketplace]}
-                  marketplace={kzMarketplace}
-                />
+                <KzCatalogAnalyticsPanel marketplace={kzMarketplace} token={token} />
               )}
               {analyticsSubTab === 'summary' && shopRegion === 'rf' && (
                 <>
@@ -11609,33 +11606,53 @@ function StockRow({
 }
 
 function KzCatalogAnalyticsPanel({
-  products,
   marketplace,
+  token,
 }: {
-  products: OzonProduct[]
   marketplace: KzMarketplace
+  token: string | null
 }) {
-  const stats = useMemo(() => {
-    const result = {
-      total: products.length,
-      selling: 0,
-      ready: 0,
-      archived: 0,
+  const [stats, setStats] = useState({ total: 0, selling: 0, ready: 0, archived: 0 })
+  const [status, setStatus] = useState('')
+
+  useEffect(() => {
+    if (!token) {
+      return
     }
 
-    for (const product of products) {
-      const group = getProductStatusGroup(product.status)
-      if (group === 'selling') {
-        result.selling++
-      } else if (group === 'ready') {
-        result.ready++
-      } else if (group === 'archived') {
-        result.archived++
+    let cancelled = false
+    const label = getKzMarketplaceLabel(marketplace)
+    setStatus(`Загружаем сводку каталога ${label}...`)
+
+    void (async () => {
+      const response = await fetch(`/api/kz/${marketplace}/catalog-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (cancelled) {
+        return
       }
-    }
 
-    return result
-  }, [products])
+      if (!response.ok) {
+        const errorText = await response.text()
+        setStatus(getApiErrorMessage(errorText, `Не удалось загрузить сводку ${label}`))
+        return
+      }
+
+      const data: { total: number; selling: number; ready: number; archived: number } = await response.json()
+      setStats({
+        total: data.total,
+        selling: data.selling,
+        ready: data.ready,
+        archived: data.archived,
+      })
+      setStatus(`Обновлено: ${new Date().toLocaleString('ru-RU')}`)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [marketplace, token])
 
   return (
     <>
@@ -11664,9 +11681,10 @@ function KzCatalogAnalyticsPanel({
       <div className="empty-state">
         <strong>Аналитика продаж {getKzMarketplaceLabel(marketplace)}</strong>
         <span>
-          Данные Ozon в разделе KZ не показываются. Сводка построена только по каталогу{' '}
-          {getKzMarketplaceLabel(marketplace)}.
+          Данные Ozon в разделе KZ не показываются. Сводка построена по полному каталогу{' '}
+          {getKzMarketplaceLabel(marketplace)} через API (с пагинацией).
         </span>
+        {status && <span>{status}</span>}
       </div>
     </>
   )
@@ -12130,8 +12148,16 @@ function getProductStatusGroup(status: string): 'selling' | 'ready' | 'archived'
     return 'archived'
   }
 
-  if (['visible', 'selling', 'active', 'продается', 'продаётся'].includes(normalized)) {
+  if (['visible', 'selling', 'active', 'on_display', 'on', 'published', 'продается', 'продаётся'].includes(normalized)) {
     return 'selling'
+  }
+
+  if (['draft', 'not_on_display', 'not_available', 'order', 'service'].includes(normalized)) {
+    return 'ready'
+  }
+
+  if (['deleted', 'off', 'removed'].includes(normalized)) {
+    return 'archived'
   }
 
   return 'unknown'
