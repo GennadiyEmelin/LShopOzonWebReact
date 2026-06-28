@@ -4075,6 +4075,26 @@ small .offer-id-cell {
   margin-bottom: 16px;
 }
 
+.integration-region-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.integration-region-tabs button {
+  border: 1px solid var(--border-color, #d8dee9);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.integration-region-tabs button.active {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #fff;
+}
+
 .integration-user-select {
   display: grid;
   gap: 6px;

@@ -171,6 +171,11 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<string>("TelegramNotifyEventsKz")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
                     b.Property<string>("UserName")
                         .IsRequired()
                         .HasMaxLength(80)

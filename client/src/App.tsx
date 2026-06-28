@@ -176,6 +176,8 @@ type AdminUserTelegram = {
   connectedAt: string | null
   enabledEvents: string[]
   availableEvents: string[]
+  enabledEventsKz: string[]
+  availableEventsKz: string[]
   connectAllowed: boolean
 }
 
@@ -264,6 +266,7 @@ type TelegramNotificationEvent = {
   id: string
   group: string
   label: string
+  shopRegion?: string
 }
 
 type TelegramIntegrationInfo = {
@@ -276,6 +279,8 @@ type TelegramIntegrationInfo = {
   connectUrl: string | null
   enabledEvents: string[]
   availableEvents: string[]
+  enabledEventsKz: string[]
+  availableEventsKz: string[]
   connectAllowed: boolean
 }
 
@@ -1651,6 +1656,7 @@ function App() {
   const [roleProfilesStatus, setRoleProfilesStatus] = useState('')
   const [userTelegramData, setUserTelegramData] = useState<Record<string, AdminUserTelegram>>({})
   const [userTelegramEvents, setUserTelegramEvents] = useState<Record<string, string[]>>({})
+  const [userTelegramEventsKz, setUserTelegramEventsKz] = useState<Record<string, string[]>>({})
   const [userTelegramStatus, setUserTelegramStatus] = useState<Record<string, string>>({})
   const [userReportData, setUserReportData] = useState<Record<string, AdminUserReport>>({})
   const [userReportSections, setUserReportSections] = useState<Record<string, string[]>>({})
@@ -1658,6 +1664,7 @@ function App() {
   const [reportSections, setReportSections] = useState<ReportSection[]>([])
   const [reportsStatus, setReportsStatus] = useState('')
   const [integrationsSubTab, setIntegrationsSubTab] = useState<'connections' | 'telegram-notifications' | 'telegram-reports'>('connections')
+  const [telegramNotificationsRegion, setTelegramNotificationsRegion] = useState<ShopRegion>('rf')
   const [integrationKzMarketplace, setIntegrationKzMarketplace] = useState<KzMarketplace>('satu')
   const [integrationAdminUserId, setIntegrationAdminUserId] = useState('')
   const [profilePasswordForm, setProfilePasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
@@ -2867,9 +2874,14 @@ function App() {
   }, [activeTab, canManageIntegrationUsers, integrationsSubTab, integrationAdminUserId])
 
   useEffect(() => {
-    if (activeTab !== 'integrations' || !hasFeature('integrations')) {
+    if (activeTab !== 'integrations' || integrationsSubTab !== 'telegram-notifications') {
       return
     }
+
+    void loadTelegramNotificationEvents(telegramNotificationsRegion)
+  }, [activeTab, integrationsSubTab, telegramNotificationsRegion, token])
+
+  useEffect(() => {
 
     const available: Array<'connections' | 'telegram-notifications' | 'telegram-reports'> = []
     if (canViewIntegrationsOzon() || canViewIntegrationsTelegram()) {
@@ -3107,11 +3119,15 @@ function App() {
     const data: AdminUserTelegram = await response.json()
     setUserTelegramData((current) => ({ ...current, [userId]: data }))
     setUserTelegramEvents((current) => ({ ...current, [userId]: data.enabledEvents }))
+    setUserTelegramEventsKz((current) => ({ ...current, [userId]: data.enabledEventsKz }))
     setUserTelegramStatus((current) => ({ ...current, [userId]: '' }))
   }
 
   async function saveUserTelegramPreferences(userId: string) {
-    const events = userTelegramEvents[userId] ?? []
+    const events =
+      telegramNotificationsRegion === 'kz'
+        ? (userTelegramEventsKz[userId] ?? [])
+        : (userTelegramEvents[userId] ?? [])
     setUserTelegramStatus((current) => ({ ...current, [userId]: 'Сохраняем оповещения...' }))
 
     const response = await fetch(`/api/admin/users/${userId}/telegram/preferences`, {
@@ -3120,7 +3136,7 @@ function App() {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ events }),
+      body: JSON.stringify({ events, shopRegion: telegramNotificationsRegion }),
     })
 
     if (!response.ok) {
@@ -3135,6 +3151,7 @@ function App() {
     const data: AdminUserTelegram = await response.json()
     setUserTelegramData((current) => ({ ...current, [userId]: data }))
     setUserTelegramEvents((current) => ({ ...current, [userId]: data.enabledEvents }))
+    setUserTelegramEventsKz((current) => ({ ...current, [userId]: data.enabledEventsKz }))
     setUserTelegramStatus((current) => ({ ...current, [userId]: 'Оповещения сохранены' }))
   }
 
@@ -3419,8 +3436,8 @@ function App() {
     setOzonSettingsStatus(data.message)
   }
 
-  async function loadTelegramNotificationEvents() {
-    const response = await fetch('/api/integrations/notification-events', {
+  async function loadTelegramNotificationEvents(region: ShopRegion = telegramNotificationsRegion) {
+    const response = await fetch(`/api/integrations/notification-events?shopRegion=${region}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
 
@@ -9383,8 +9400,25 @@ function App() {
                   <div className="integration-card-head">
                     <div>
                       <h3>Оповещения пользователям</h3>
-                      <p>Выберите пользователя и отметьте, какие события ему отправлять в Telegram</p>
+                      <p>Настройки РФ и КЗ разделены: задачи Ozon и поставки — в РФ, задачи Kaspi/Satu/Halyk — в КЗ</p>
                     </div>
+                  </div>
+
+                  <div className="integration-region-tabs">
+                    <button
+                      type="button"
+                      className={telegramNotificationsRegion === 'rf' ? 'active' : ''}
+                      onClick={() => setTelegramNotificationsRegion('rf')}
+                    >
+                      РФ
+                    </button>
+                    <button
+                      type="button"
+                      className={telegramNotificationsRegion === 'kz' ? 'active' : ''}
+                      onClick={() => setTelegramNotificationsRegion('kz')}
+                    >
+                      КЗ
+                    </button>
                   </div>
 
                   <div className="integration-admin-toolbar">
@@ -9418,14 +9452,24 @@ function App() {
                           <fieldset key={group}>
                             <legend>{group}</legend>
                             <div className="integration-event-list">
-                              {events.map((eventItem) => (
+                              {events.map((eventItem) => {
+                                const selectedEvents =
+                                  telegramNotificationsRegion === 'kz'
+                                    ? (userTelegramEventsKz[integrationAdminUserId] ?? [])
+                                    : (userTelegramEvents[integrationAdminUserId] ?? [])
+                                const setSelectedEvents =
+                                  telegramNotificationsRegion === 'kz'
+                                    ? setUserTelegramEventsKz
+                                    : setUserTelegramEvents
+
+                                return (
                                 <label key={eventItem.id}>
                                   <input
                                     type="checkbox"
-                                    checked={(userTelegramEvents[integrationAdminUserId] ?? []).includes(eventItem.id)}
+                                    checked={selectedEvents.includes(eventItem.id)}
                                     disabled={!canEditIntegrationsNotifications()}
                                     onChange={(changeEvent) =>
-                                      setUserTelegramEvents((current) => {
+                                      setSelectedEvents((current) => {
                                         const selected = current[integrationAdminUserId] ?? []
                                         return {
                                           ...current,
@@ -9438,7 +9482,8 @@ function App() {
                                   />
                                   {eventItem.label}
                                 </label>
-                              ))}
+                                )
+                              })}
                             </div>
                           </fieldset>
                         ))}
@@ -9446,7 +9491,7 @@ function App() {
                       {canEditIntegrationsNotifications() && (
                       <div className="integration-actions">
                         <button type="button" className="header-action" onClick={() => void saveUserTelegramPreferences(integrationAdminUserId)}>
-                          Сохранить оповещения
+                          Сохранить оповещения ({telegramNotificationsRegion === 'rf' ? 'РФ' : 'КЗ'})
                         </button>
                       </div>
                       )}

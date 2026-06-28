@@ -563,9 +563,10 @@ public static class ProductionEndpoints
                     .FirstOrDefaultAsync(task => task.Id == reworkTask.Id);
                 if (reworkEntity is not null)
                 {
-                    await IntegrationNotificationPublisher.PublishAsync(
+                    await IntegrationNotificationPublisher.PublishTaskAsync(
                         telegram,
                         db,
+                        reworkEntity,
                         "production.rework.created",
                         ProductionTaskResponses.BuildReworkTaskTelegramMessage(reworkEntity));
                 }
@@ -917,13 +918,10 @@ public static class ProductionEndpoints
 
             await hub.Clients.All.SendAsync("ProductionTasksChanged", result);
 
-            var createdEventId = task.IsUrgent
-                ? "production.task.new.urgent"
-                : taskType == ProductionTaskTypes.Novinka
-                    ? "production.task.new.novinka"
-                    : "production.task.new.ozon";
-            NotificationBackgroundPublisher.Publish(
+            var createdEventId = ProductionTaskResponses.ResolveNewTaskEventId(task);
+            NotificationBackgroundPublisher.PublishTask(
                 scopeFactory,
+                task,
                 createdEventId,
                 ProductionTaskResponses.BuildNewTaskTelegramMessage(task),
                 excludeUserId: task.CreatedByUserId);
@@ -1029,9 +1027,10 @@ public static class ProductionEndpoints
             }
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
-            await IntegrationNotificationPublisher.PublishAsync(
+            await IntegrationNotificationPublisher.PublishTaskAsync(
                 telegram,
                 db,
+                task,
                 "production.task.updated",
                 ProductionTaskResponses.BuildUpdatedTaskTelegramMessage(task));
 
@@ -1078,9 +1077,10 @@ public static class ProductionEndpoints
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
             var startedByName = task.AssignedUserName ?? "—";
-            await IntegrationNotificationPublisher.PublishAsync(
+            await IntegrationNotificationPublisher.PublishTaskAsync(
                 telegram,
                 db,
+                task,
                 "production.task.started",
                 ProductionTaskResponses.BuildStartedTaskTelegramMessage(task, startedByName));
 
@@ -1222,9 +1222,10 @@ public static class ProductionEndpoints
 
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
-            await IntegrationNotificationPublisher.PublishAsync(
+            await IntegrationNotificationPublisher.PublishTaskAsync(
                 telegram,
                 db,
+                task,
                 "production.task.cancelled",
                 ProductionTaskResponses.BuildCancelledTaskTelegramMessage(task, cancelledByName, comment));
 
@@ -1337,12 +1338,11 @@ public static class ProductionEndpoints
             await ProductionAnalyticsStore.UpsertFromTaskAsync(db, task);
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
-            var completedEventId = isNovinkaTask
-                ? "production.task.completed.novinka"
-                : "production.task.completed.ozon";
-            await IntegrationNotificationPublisher.PublishAsync(
+            var completedEventId = ProductionTaskResponses.ResolveCompletedTaskEventId(task);
+            await IntegrationNotificationPublisher.PublishTaskAsync(
                 telegram,
                 db,
+                task,
                 completedEventId,
                 ProductionTaskResponses.BuildCompletedTaskTelegramMessage(task));
 
@@ -1381,9 +1381,10 @@ public static class ProductionEndpoints
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
-            await IntegrationNotificationPublisher.PublishAsync(
+            await IntegrationNotificationPublisher.PublishTaskAsync(
                 telegram,
                 db,
+                task,
                 "production.task.archived",
                 ProductionTaskResponses.BuildArchivedTaskTelegramMessage(task));
 

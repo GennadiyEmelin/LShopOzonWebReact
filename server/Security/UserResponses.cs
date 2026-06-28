@@ -132,6 +132,8 @@ public record AdminUserTelegramResponse(
     DateTimeOffset? ConnectedAt,
     List<string> EnabledEvents,
     List<string> AvailableEvents,
+    List<string> EnabledEventsKz,
+    List<string> AvailableEventsKz,
     bool ConnectAllowed);
 
 public record AdminUserReportResponse(

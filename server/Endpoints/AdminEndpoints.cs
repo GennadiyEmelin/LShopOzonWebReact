@@ -242,7 +242,13 @@ public static class AdminEndpoints
                 AppPublicText.MaskSecret(user.TelegramChatId),
                 user.TelegramConnectedAt,
                 TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
-                TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionRf)
+                    .Select(definition => definition.Id)
+                    .ToList(),
+                TelegramNotificationEvents.Parse(user.TelegramNotifyEventsKz).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionKz)
+                    .Select(definition => definition.Id)
+                    .ToList(),
                 FeatureAccess.AllowsTelegramConnect(user)));
         }).RequireAuthorization();
 
@@ -268,7 +274,16 @@ public static class AdminEndpoints
                 return Results.BadRequest("Telegram у пользователя не подключён.");
             }
 
-            user.TelegramNotifyEvents = TelegramNotificationEvents.Serialize(request.Events ?? []);
+            var shopRegion = TelegramNotificationEvents.NormalizeShopRegion(request.ShopRegion);
+            if (shopRegion == TelegramNotificationEvents.ShopRegionKz)
+            {
+                user.TelegramNotifyEventsKz = TelegramNotificationEvents.Serialize(request.Events ?? []);
+            }
+            else
+            {
+                user.TelegramNotifyEvents = TelegramNotificationEvents.Serialize(request.Events ?? []);
+            }
+
             AuditLogWriter.Add(db, principal, "Telegram-оповещения", "User", user.Id.ToString(), user.UserName);
             await db.SaveChangesAsync();
 
@@ -277,7 +292,13 @@ public static class AdminEndpoints
                 AppPublicText.MaskSecret(user.TelegramChatId),
                 user.TelegramConnectedAt,
                 TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
-                TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionRf)
+                    .Select(definition => definition.Id)
+                    .ToList(),
+                TelegramNotificationEvents.Parse(user.TelegramNotifyEventsKz).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionKz)
+                    .Select(definition => definition.Id)
+                    .ToList(),
                 FeatureAccess.AllowsTelegramConnect(user)));
         }).RequireAuthorization();
 

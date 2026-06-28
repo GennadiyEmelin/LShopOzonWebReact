@@ -114,7 +114,13 @@ public class TelegramBotHostedService(
         if (string.IsNullOrWhiteSpace(user.TelegramNotifyEvents))
         {
             user.TelegramNotifyEvents = TelegramNotificationEvents.Serialize(
-                TelegramNotificationEvents.All.Select(definition => definition.Id));
+                TelegramNotificationEvents.DefaultEventIdsForShopRegion(TelegramNotificationEvents.ShopRegionRf));
+        }
+
+        if (string.IsNullOrWhiteSpace(user.TelegramNotifyEventsKz))
+        {
+            user.TelegramNotifyEventsKz = TelegramNotificationEvents.Serialize(
+                TelegramNotificationEvents.DefaultEventIdsForShopRegion(TelegramNotificationEvents.ShopRegionKz));
         }
 
         await db.SaveChangesAsync(cancellationToken);

@@ -720,7 +720,7 @@ app.MapPost("/api/chat/groups/{id:guid}/messages", async (
         preview,
         groupMemberIds,
         parsedCurrentUserId,
-        cancellationToken);
+        cancellationToken: cancellationToken);
 
     return Results.Created($"/api/chat/groups/{id}/messages/{message.Id}", result);
 }).DisableAntiforgery().RequireAuthorization();
@@ -827,7 +827,7 @@ app.MapPost("/api/chat/{userId:guid}/messages", async (
     var hasAttachment = message.AttachmentContent is not null;
     var chatEventId = hasAttachment ? "chat.attachment.received" : "chat.direct.received";
     var preview = ChatNotificationText.BuildPreview(sender.DisplayName, text, hasAttachment);
-    await telegram.SendToUserAsync(db, userId, chatEventId, preview, cancellationToken);
+    await telegram.SendToUserAsync(db, userId, chatEventId, preview, cancellationToken: cancellationToken);
 
     return Results.Created($"/api/chat/{userId}/messages/{message.Id}", result);
 }).DisableAntiforgery().RequireAuthorization();

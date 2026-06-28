@@ -1,4 +1,6 @@
 using LShopOzonWebReact.Api.Data;
+using LShopOzonWebReact.Api.Models;
+using LShopOzonWebReact.Api.Production;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LShopOzonWebReact.Api.Integrations;
@@ -10,7 +12,8 @@ public static class NotificationBackgroundPublisher
         string eventId,
         string message,
         IEnumerable<Guid>? onlyUserIds = null,
-        Guid? excludeUserId = null)
+        Guid? excludeUserId = null,
+        string? shopRegion = null)
     {
         _ = Task.Run(async () =>
         {
@@ -25,12 +28,30 @@ public static class NotificationBackgroundPublisher
                     eventId,
                     message,
                     onlyUserIds,
-                    excludeUserId);
+                    excludeUserId,
+                    shopRegion);
             }
             catch
             {
                 // Уведомления не должны блокировать основной запрос.
             }
         });
+    }
+
+    public static void PublishTask(
+        IServiceScopeFactory scopeFactory,
+        ProductionTask task,
+        string eventId,
+        string message,
+        IEnumerable<Guid>? onlyUserIds = null,
+        Guid? excludeUserId = null)
+    {
+        Publish(
+            scopeFactory,
+            eventId,
+            message,
+            onlyUserIds,
+            excludeUserId,
+            ProductionTaskResponses.ResolveTaskShopRegion(task));
     }
 }

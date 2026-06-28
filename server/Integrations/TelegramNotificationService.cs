@@ -72,6 +72,7 @@ public class TelegramNotificationService(
         string message,
         IEnumerable<Guid>? onlyUserIds = null,
         Guid? excludeUserId = null,
+        string? shopRegion = null,
         CancellationToken cancellationToken = default)
     {
         if (!IsBotConfigured)
@@ -79,6 +80,7 @@ public class TelegramNotificationService(
             return;
         }
 
+        var normalizedRegion = TelegramNotificationEvents.NormalizeShopRegion(shopRegion);
         var allowedIds = onlyUserIds?.ToHashSet();
         var recipients = await db.Users
             .AsNoTracking()
@@ -87,12 +89,18 @@ public class TelegramNotificationService(
                 user.Id != excludeUserId &&
                 !string.IsNullOrWhiteSpace(user.TelegramChatId) &&
                 (allowedIds == null || allowedIds.Contains(user.Id)))
-            .Select(user => new { user.Id, user.TelegramChatId, user.TelegramNotifyEvents })
+            .Select(user => new
+            {
+                user.Id,
+                user.TelegramChatId,
+                user.TelegramNotifyEvents,
+                user.TelegramNotifyEventsKz
+            })
             .ToListAsync(cancellationToken);
 
         foreach (var recipient in recipients)
         {
-            if (!TelegramNotificationEvents.IsEnabled(recipient.TelegramNotifyEvents, eventId))
+            if (!IsEnabledForRecipient(recipient.TelegramNotifyEvents, recipient.TelegramNotifyEventsKz, eventId, normalizedRegion))
             {
                 continue;
             }
@@ -101,14 +109,45 @@ public class TelegramNotificationService(
         }
     }
 
+    private static bool IsEnabledForRecipient(
+        string? rfEvents,
+        string? kzEvents,
+        string eventId,
+        string shopRegion)
+    {
+        var definition = TelegramNotificationEvents.All
+            .FirstOrDefault(item => string.Equals(item.Id, eventId, StringComparison.OrdinalIgnoreCase));
+
+        if (definition is null)
+        {
+            return false;
+        }
+
+        return definition.ShopRegion switch
+        {
+            TelegramNotificationEvents.ShopRegionKz =>
+                TelegramNotificationEvents.IsEnabled(kzEvents, eventId),
+            TelegramNotificationEvents.ShopRegionRf =>
+                TelegramNotificationEvents.IsEnabled(rfEvents, eventId),
+            _ when shopRegion == TelegramNotificationEvents.ShopRegionKz =>
+                TelegramNotificationEvents.IsEnabled(kzEvents, eventId),
+            _ when shopRegion == TelegramNotificationEvents.ShopRegionRf =>
+                TelegramNotificationEvents.IsEnabled(rfEvents, eventId),
+            _ =>
+                TelegramNotificationEvents.IsEnabled(rfEvents, eventId) ||
+                TelegramNotificationEvents.IsEnabled(kzEvents, eventId)
+        };
+    }
+
     public async Task SendToUserAsync(
         AppDbContext db,
         Guid userId,
         string eventId,
         string message,
+        string? shopRegion = null,
         CancellationToken cancellationToken = default)
     {
-        await SendToUsersAsync(db, eventId, message, [userId], null, cancellationToken);
+        await SendToUsersAsync(db, eventId, message, [userId], null, shopRegion, cancellationToken);
     }
 }
 

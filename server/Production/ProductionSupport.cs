@@ -329,7 +329,7 @@ static class ProductionTaskResponses
         }
 
         builder.AppendLine();
-        builder.AppendLine($"Тип: {(isNovinka ? "Новинка" : "Ozon")}");
+        builder.AppendLine($"Тип: {GetTaskTypeLabel(task)}");
 
         if (items.Count == 1)
         {
@@ -911,6 +911,90 @@ static class ProductionTaskResponses
             })
             .OrderBy(item => item.ProductName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    public static string ResolveTaskShopRegion(ProductionTask task)
+    {
+        var taskType = NormalizeTaskType(task.TaskType);
+        return taskType switch
+        {
+            ProductionTaskTypes.Kaspi or ProductionTaskTypes.Satu or ProductionTaskTypes.Halyk => "kz",
+            ProductionTaskTypes.Ozon => "rf",
+            ProductionTaskTypes.Novinka => ResolveNovinkaShopRegion(task),
+            _ => "rf"
+        };
+    }
+
+    public static string ResolveNewTaskEventId(ProductionTask task)
+    {
+        if (task.IsUrgent)
+        {
+            return "production.task.new.urgent";
+        }
+
+        var taskType = NormalizeTaskType(task.TaskType);
+        return taskType switch
+        {
+            ProductionTaskTypes.Novinka => ResolveTaskShopRegion(task) == "kz"
+                ? "production.task.new.novinka.kz"
+                : "production.task.new.novinka",
+            ProductionTaskTypes.Kaspi => "production.task.new.kaspi",
+            ProductionTaskTypes.Satu => "production.task.new.satu",
+            ProductionTaskTypes.Halyk => "production.task.new.halyk",
+            _ => "production.task.new.ozon"
+        };
+    }
+
+    public static string ResolveCompletedTaskEventId(ProductionTask task)
+    {
+        var taskType = NormalizeTaskType(task.TaskType);
+        return taskType switch
+        {
+            ProductionTaskTypes.Novinka => ResolveTaskShopRegion(task) == "kz"
+                ? "production.task.completed.novinka.kz"
+                : "production.task.completed.novinka",
+            ProductionTaskTypes.Kaspi => "production.task.completed.kaspi",
+            ProductionTaskTypes.Satu => "production.task.completed.satu",
+            ProductionTaskTypes.Halyk => "production.task.completed.halyk",
+            _ => "production.task.completed.ozon"
+        };
+    }
+
+    public static string GetTaskTypeLabel(ProductionTask task)
+    {
+        var taskType = NormalizeTaskType(task.TaskType);
+        if (taskType == ProductionTaskTypes.Novinka)
+        {
+            return ResolveTaskShopRegion(task) == "kz" ? "Новинка (КЗ)" : "Новинка (Ozon)";
+        }
+
+        return taskType switch
+        {
+            ProductionTaskTypes.Kaspi => "Kaspi",
+            ProductionTaskTypes.Satu => "Satu",
+            ProductionTaskTypes.Halyk => "Halyk",
+            _ => "Ozon"
+        };
+    }
+
+    private static string ResolveNovinkaShopRegion(ProductionTask task)
+    {
+        foreach (var item in task.Items)
+        {
+            if (ContainsKzMarketplaceMarker(item.ProductLink) || ContainsKzMarketplaceMarker(item.FilePath))
+            {
+                return "kz";
+            }
+        }
+
+        return "rf";
+    }
+
+    private static bool ContainsKzMarketplaceMarker(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        System.Text.RegularExpressions.Regex.IsMatch(
+            value,
+            @"marketplace:(kaspi|satu|halyk)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 }
 
 

@@ -17,6 +17,7 @@ public class AppUser
     public string TelegramChatId { get; set; } = string.Empty;
     public string TelegramConnectToken { get; set; } = string.Empty;
     public string TelegramNotifyEvents { get; set; } = string.Empty;
+    public string TelegramNotifyEventsKz { get; set; } = string.Empty;
     public DateTimeOffset? TelegramConnectedAt { get; set; }
     public bool TelegramConnectAllowed { get; set; }
     public bool TelegramDailyReportEnabled { get; set; }

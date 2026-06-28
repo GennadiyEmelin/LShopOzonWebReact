@@ -3,6 +3,7 @@ using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Integrations;
 using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
+using LShopOzonWebReact.Api.Production;
 using LShopOzonWebReact.Api.Security;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,12 +13,13 @@ public static class IntegrationRoutes
 {
     public static void MapIntegrationRoutes(this WebApplication app)
     {
-        app.MapGet("/api/integrations/notification-events", () =>
-            Results.Ok(TelegramNotificationEvents.All.Select(definition => new
+        app.MapGet("/api/integrations/notification-events", (string? shopRegion) =>
+            Results.Ok(TelegramNotificationEvents.ForShopRegion(shopRegion).Select(definition => new
             {
                 definition.Id,
                 definition.Group,
-                definition.Label
+                definition.Label,
+                definition.ShopRegion
             })))
             .RequireAuthorization();
 
@@ -174,7 +176,13 @@ public static class IntegrationRoutes
                 user.TelegramConnectedAt,
                 connectUrl,
                 TelegramNotificationEvents.Parse(user.TelegramNotifyEvents).ToList(),
-                TelegramNotificationEvents.All.Select(definition => definition.Id).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionRf)
+                    .Select(definition => definition.Id)
+                    .ToList(),
+                TelegramNotificationEvents.Parse(user.TelegramNotifyEventsKz).ToList(),
+                TelegramNotificationEvents.ForShopRegion(TelegramNotificationEvents.ShopRegionKz)
+                    .Select(definition => definition.Id)
+                    .ToList(),
                 connectAllowed));
         }).RequireAuthorization();
 
@@ -275,6 +283,7 @@ public static class IntegrationRoutes
             user.TelegramChatId = string.Empty;
             user.TelegramConnectToken = string.Empty;
             user.TelegramNotifyEvents = string.Empty;
+            user.TelegramNotifyEventsKz = string.Empty;
             user.TelegramConnectedAt = null;
             await db.SaveChangesAsync();
 
@@ -308,11 +317,15 @@ public record TelegramIntegrationResponse(
     string? ConnectUrl,
     IReadOnlyList<string> EnabledEvents,
     IReadOnlyList<string> AvailableEvents,
+    IReadOnlyList<string> EnabledEventsKz,
+    IReadOnlyList<string> AvailableEventsKz,
     bool ConnectAllowed);
 
 public record TelegramConnectResponse(string ConnectUrl, string ConnectToken);
-public record UpdateTelegramPreferencesRequest(List<string>? Events);
-public record TelegramPreferencesResponse(IReadOnlyList<string> EnabledEvents);
+public record UpdateTelegramPreferencesRequest(List<string>? Events, string? ShopRegion);
+public record TelegramPreferencesResponse(
+    IReadOnlyList<string> EnabledEvents,
+    IReadOnlyList<string> EnabledEventsKz);
 
 public static class IntegrationNotificationPublisher
 {
@@ -322,8 +335,25 @@ public static class IntegrationNotificationPublisher
         string eventId,
         string message,
         IEnumerable<Guid>? onlyUserIds = null,
+        Guid? excludeUserId = null,
+        string? shopRegion = null) =>
+        telegram.SendToUsersAsync(db, eventId, message, onlyUserIds, excludeUserId, shopRegion);
+
+    public static Task PublishTaskAsync(
+        TelegramNotificationService telegram,
+        AppDbContext db,
+        ProductionTask task,
+        string eventId,
+        string message,
+        IEnumerable<Guid>? onlyUserIds = null,
         Guid? excludeUserId = null) =>
-        telegram.SendToUsersAsync(db, eventId, message, onlyUserIds, excludeUserId);
+        telegram.SendToUsersAsync(
+            db,
+            eventId,
+            message,
+            onlyUserIds,
+            excludeUserId,
+            ProductionTaskResponses.ResolveTaskShopRegion(task));
 }
 
 public static class ChatNotificationText

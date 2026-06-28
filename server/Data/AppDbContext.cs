@@ -35,6 +35,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(user => user.TelegramChatId).HasMaxLength(32);
             entity.Property(user => user.TelegramConnectToken).HasMaxLength(64);
             entity.Property(user => user.TelegramNotifyEvents).HasMaxLength(4000);
+            entity.Property(user => user.TelegramNotifyEventsKz).HasMaxLength(4000);
             entity.Property(user => user.TelegramDailyReportTime).HasMaxLength(8);
             entity.Property(user => user.TelegramDailyReportTimezone).HasMaxLength(64);
             entity.Property(user => user.TelegramDailyReportSections).HasMaxLength(2000);
