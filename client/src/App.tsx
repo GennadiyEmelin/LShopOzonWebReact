@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
+import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import * as signalR from '@microsoft/signalr'
 import { KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
 import type { KzIntegrationSettings } from './KzRegionUi'
@@ -16,8 +16,6 @@ import {
   isNovinkaCatalogTab,
   appendNovinkaMarketplaceNote,
   parseNovinkaCatalogTab,
-  resolveNovinkaMarketplace,
-  resolveNovinkaMarketplaceFromNotes,
   resolveNovinkaMarketplaceFromTaskType,
   resolveTaskFormNovinkaMarketplace,
   resolveKzMarketplaceFromTaskType,
@@ -27,11 +25,9 @@ import {
   readKzMarketplace,
   readShopRegion,
   SHOP_REGION_STORAGE_KEY,
-  KZ_MARKETPLACES,
   KZ_MARKETPLACE_STORAGE_KEY,
   type KzMarketplace,
   type NovinkaMarketplace,
-  type NovinkaCatalogTab,
   type ShopRegion,
 } from './shopRegion'
 import { getApiErrorMessage } from './shared/api/client'
@@ -51,7 +47,6 @@ import type {
   DraftTaskItem,
   ProductionAnalyticsAssignee,
   ProductionAnalyticsReport,
-  ProductionAnalyticsSummaryRow,
   ProductionCatalogItem,
   ProductionCatalogTab,
   ProductionFile,
@@ -64,16 +59,11 @@ import type {
 import type { OzonProduct } from './domain/types/ozon'
 import {
   fromDatetimeLocalValue,
-  getProductionTaskActualTotal,
   getProductionTaskItems,
-  getProductionTaskRequiredTotal,
   getProductionTaskSummary,
-  getProductionTaskTableLabels,
-  getProductionTaskTableMode,
   isNovinkaTask,
   sortProductionTasksByUrgency,
   toDatetimeLocalValue,
-  translateProductionTaskStatus,
 } from './features/production/lib/taskUtils'
 import {
   buildNovinkaCatalogFromFiles,
