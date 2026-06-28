@@ -17,7 +17,11 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
         return normalized switch
         {
             MarketplaceTypes.Kaspi => await GetKaspiProductsAsync(credentialSet, cancellationToken),
-            MarketplaceTypes.Satu => await GetGenericProductsAsync(normalized, credentialSet, cancellationToken),
+            MarketplaceTypes.Satu => await SatuApiClient.GetProductsAsync(
+                httpClient,
+                credentialSet.ApiKey,
+                credentialSet.MerchantId,
+                cancellationToken),
             MarketplaceTypes.Halyk => await GetGenericProductsAsync(normalized, credentialSet, cancellationToken),
             _ => []
         };
@@ -114,10 +118,26 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 
         try
         {
-            var products = await GetProductsAsync(marketplace, cancellationToken);
+            if (MarketplaceTypes.NormalizeKzMarketplace(marketplace) == MarketplaceTypes.Satu)
+            {
+                var ordersCount = await SatuApiClient.GetOrdersCountAsync(
+                    httpClient,
+                    credentialSet.ApiKey,
+                    cancellationToken);
+                var products = await SatuApiClient.GetProductsAsync(
+                    httpClient,
+                    credentialSet.ApiKey,
+                    credentialSet.MerchantId,
+                    cancellationToken);
+                return new KzMarketplaceTestResult(
+                    true,
+                    $"{label} API отвечает. Заказов: {ordersCount}, товаров в каталоге: {products.Count}");
+            }
+
+            var catalogProducts = await GetProductsAsync(marketplace, cancellationToken);
             return new KzMarketplaceTestResult(
                 true,
-                $"{label} API отвечает. Товаров в каталоге: {products.Count}");
+                $"{label} API отвечает. Товаров в каталоге: {catalogProducts.Count}");
         }
         catch (Exception exception)
         {
@@ -167,7 +187,6 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
         var label = MarketplaceTypes.GetDisplayName(marketplace);
         var baseUrl = marketplace switch
         {
-            MarketplaceTypes.Satu => "https://api.satu.kz",
             MarketplaceTypes.Halyk => "https://api.halykmarket.kz",
             _ => string.Empty
         };
@@ -200,11 +219,20 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
             return [];
         }
 
+        var trimmed = content.AsSpan().TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] is not ('{' or '['))
+        {
+            throw new InvalidOperationException(
+                $"{MarketplaceTypes.GetDisplayName(marketplace)} API вернул не JSON. Проверьте ключи. Ответ: {(content.Length <= 240 ? content : content[..240] + "...")}");
+        }
+
         using var document = JsonDocument.Parse(content);
         var root = document.RootElement;
         var items = root.ValueKind switch
         {
             JsonValueKind.Array => root.EnumerateArray(),
+            JsonValueKind.Object when root.TryGetProperty("products", out var productsNode) && productsNode.ValueKind == JsonValueKind.Array =>
+                productsNode.EnumerateArray(),
             JsonValueKind.Object when root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array =>
                 data.EnumerateArray(),
             JsonValueKind.Object when root.TryGetProperty("items", out var itemsNode) && itemsNode.ValueKind == JsonValueKind.Array =>
@@ -217,22 +245,36 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
 
         foreach (var item in items)
         {
-            var offerId = ReadString(item, "offerId", "sku", "code", "id") ?? $"item-{index}";
+            var offerId = ReadString(item, "sku", "offerId", "code", "external_id", "id") ?? $"item-{index}";
             var name = ReadString(item, "name", "title", "productName") ?? offerId;
             var price = ReadDecimal(item, "price", "sellPrice", "amount");
             var productId = ReadLong(item, "productId", "id") ?? index;
-            var imageUrl = ReadString(item, "imageUrl", "image", "picture", "photo") ?? string.Empty;
-            var status = ReadString(item, "status", "state") ?? "selling";
+            var imageUrl = ReadString(item, "main_image", "imageUrl", "image", "picture", "photo") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(imageUrl) &&
+                item.TryGetProperty("images", out var images) &&
+                images.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var image in images.EnumerateArray())
+                {
+                    imageUrl = ReadString(image, "url", "thumbnail_url") ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var status = ReadString(item, "status", "state", "presence") ?? "selling";
             var productUrl = ReadString(item, "url", "productUrl", "link") ??
                              BuildFallbackProductUrl(marketplace, merchantId, offerId);
 
             products.Add(new OzonProductSummary(
                 productId,
                 offerId,
-                ReadLong(item, "sku"),
+                ReadLong(item, "sku", "productId", "id"),
                 name,
                 price,
-                ReadDecimal(item, "oldPrice", "previousPrice"),
+                ReadDecimal(item, "oldPrice", "previousPrice", "discount"),
                 ReadDecimal(item, "minPrice"),
                 ReadString(item, "currencyCode", "currency") ?? "KZT",
                 status,

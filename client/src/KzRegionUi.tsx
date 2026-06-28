@@ -70,6 +70,43 @@ export function KzMarketplaceTabs({ activeMarketplace, onChange, className = '' 
   )
 }
 
+function getIntegrationStatusClass(status: string) {
+  if (!status) {
+    return ''
+  }
+
+  const normalized = status.toLowerCase()
+  if (
+    normalized.includes('ошиб') ||
+    normalized.includes('не удал') ||
+    normalized.includes('invalid') ||
+    normalized.includes('не json')
+  ) {
+    return 'integration-status-error'
+  }
+
+  if (
+    normalized.includes('отвечает') ||
+    normalized.includes('сохранен') ||
+    normalized.includes('настроен')
+  ) {
+    return 'integration-status-ok'
+  }
+
+  return ''
+}
+
+function getMerchantIdLabel(marketplace: KzMarketplace) {
+  switch (marketplace) {
+    case 'satu':
+      return 'ID магазина'
+    case 'kaspi':
+      return 'Merchant ID'
+    default:
+      return 'ID магазина'
+  }
+}
+
 type KzIntegrationCardProps = {
   marketplace: KzMarketplace
   settings: KzIntegrationSettings | null
@@ -78,6 +115,7 @@ type KzIntegrationCardProps = {
   status: string
   saving: boolean
   canEdit: boolean
+  embedded?: boolean
   onMerchantIdChange: (value: string) => void
   onApiKeyChange: (value: string) => void
   onSave: () => void
@@ -92,47 +130,56 @@ export function KzIntegrationCard({
   status,
   saving,
   canEdit,
+  embedded = false,
   onMerchantIdChange,
   onApiKeyChange,
   onSave,
   onTest,
 }: KzIntegrationCardProps) {
   const label = getKzMarketplaceLabel(marketplace)
+  const merchantIdLabel = getMerchantIdLabel(marketplace)
+  const statusClass = getIntegrationStatusClass(status)
 
   return (
-    <article className="integration-card">
-      <div className="integration-card-head">
-        <div>
-          <h3>{label} API</h3>
-          <p>{status || 'ID и API Key хранятся в базе данных'}</p>
+    <div className={embedded ? 'integration-card-body' : 'integration-card'}>
+      {!embedded && (
+        <div className="integration-card-head">
+          <div>
+            <h3>{label} API</h3>
+            <p className={statusClass || undefined}>{status || 'ID и API Key хранятся в базе данных'}</p>
+          </div>
+          <span className={`integration-badge ${settings?.configured ? 'ok' : 'warn'}`}>
+            {settings?.configured ? 'Настроено' : 'Не настроено'}
+          </span>
         </div>
-        <span className={`integration-badge ${settings?.configured ? 'ok' : 'warn'}`}>
-          {settings?.configured ? 'Настроено' : 'Не настроено'}
-        </span>
-      </div>
+      )}
+
+      {embedded && status && (
+        <p className={`integration-hint ${statusClass}`.trim()}>{status}</p>
+      )}
 
       {settings && (
         <div className="integration-meta">
-          <small>ID: {settings.merchantIdMasked || '—'}</small>
+          <small>{merchantIdLabel}: {settings.merchantIdMasked || '—'}</small>
           <small>API Key: {settings.apiKeyMasked || '—'}</small>
           {settings.updatedAt && <small>Обновлено: {settings.updatedAt}</small>}
         </div>
       )}
 
-      <div className="integration-form-grid">
+      <div className="integration-form-grid integration-form-grid-2">
         <label>
-          <span>ID</span>
+          <span>{merchantIdLabel}</span>
           <input
             type="text"
             value={merchantId}
             disabled={!canEdit}
             onChange={(event) => onMerchantIdChange(event.target.value)}
-            placeholder={settings?.hasStoredMerchantId ? 'Оставьте пустым, чтобы не менять' : `Введите ID ${label}`}
+            placeholder={settings?.hasStoredMerchantId ? 'Оставьте пустым, чтобы не менять' : `Введите ${merchantIdLabel} ${label}`}
             autoComplete="off"
           />
         </label>
         <label>
-          <span>API Key</span>
+          <span>API Key / Token</span>
           <input
             type="password"
             value={apiKey}
@@ -144,16 +191,22 @@ export function KzIntegrationCard({
         </label>
       </div>
 
+      {marketplace === 'satu' && (
+        <p className="integration-hint">
+          Satu API: <code>https://my.satu.kz/api/v1/</code> · авторизация Bearer token из кабинета продавца.
+        </p>
+      )}
+
       <div className="integration-actions">
         {canEdit && (
-          <button type="button" disabled={saving} onClick={onSave}>
-            {saving ? 'Сохранение...' : 'Сохранить'}
+          <button type="button" className="header-action" disabled={saving} onClick={onSave}>
+            {saving ? 'Сохранение...' : `Сохранить ${label}`}
           </button>
         )}
-        <button type="button" className="secondary" onClick={onTest}>
+        <button type="button" className="header-action secondary" onClick={onTest}>
           Проверить подключение
         </button>
       </div>
-    </article>
+    </div>
   )
 }

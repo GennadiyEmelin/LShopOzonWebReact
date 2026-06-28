@@ -1,0 +1,8 @@
+include:
+  - path: ../production/docker-compose.yml
+
+services:
+  app:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Https__UseRedirection: "false"

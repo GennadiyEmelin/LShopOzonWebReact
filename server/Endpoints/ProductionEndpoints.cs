@@ -1,0 +1,1463 @@
+﻿using System.Security.Claims;
+using System.Text;
+using LShopOzonWebReact.Api.Contracts.Production;
+using LShopOzonWebReact.Api.Data;
+using LShopOzonWebReact.Api.Hubs;
+using LShopOzonWebReact.Api.Integrations;
+using LShopOzonWebReact.Api.Models;
+using LShopOzonWebReact.Api.Ozon;
+using LShopOzonWebReact.Api.Production;
+using LShopOzonWebReact.Api.Security;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
+
+namespace LShopOzonWebReact.Api.Endpoints;
+
+public static class ProductionEndpoints
+{
+    public static void MapProductionEndpoints(this WebApplication app)
+    {
+        app.MapGet("/api/production/files", async (string? search, AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            var query = db.ProductionFiles.AsNoTracking();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var value = search.Trim().ToLower();
+                query = query.Where(file =>
+                    file.OfferId.ToLower().Contains(value) ||
+                    file.ProductName.ToLower().Contains(value) ||
+                    file.Notes.ToLower().Contains(value));
+            }
+
+            var files = await query
+                .OrderByDescending(file => file.CreatedAt)
+                .Select(file => new ProductionFileListItem(
+                    file.Id,
+                    file.OzonProductId,
+                    file.OfferId,
+                    file.ProductName,
+                    file.ProductLink,
+                    file.Notes,
+                    file.FileName,
+                    file.ContentType,
+                    file.CreatedAt))
+                .ToListAsync();
+
+            return Results.Ok(files);
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/file-paths", async (string? search, AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            var query = db.ProductionFilePaths.AsNoTracking();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var value = search.Trim().ToLower();
+                query = query.Where(path =>
+                    path.OfferId.ToLower().Contains(value) ||
+                    path.ProductName.ToLower().Contains(value) ||
+                    path.Path.ToLower().Contains(value));
+            }
+
+            var paths = await query
+                .OrderByDescending(path => path.CreatedAt)
+                .Select(path => new ProductionFilePathListItem(
+                    path.Id,
+                    path.OzonProductId,
+                    path.OfferId,
+                    path.ProductName,
+                    path.ProductLink,
+                    path.Path,
+                    path.CreatedAt))
+                .ToListAsync();
+
+            return Results.Ok(paths);
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/catalog", async (string? type, AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            var catalog = await ProductionTaskResponses.BuildCatalogAsync(db, type ?? ProductionTaskTypes.Ozon);
+            return Results.Ok(catalog);
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/catalog/convert-to-ozon", async (
+            ConvertNovinkaToOzonRequest request,
+            AppDbContext db,
+            OzonApiClient ozonApi,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
+            {
+                return Results.Forbid();
+            }
+
+            if (request.TargetOzonProductId <= 0)
+            {
+                return Results.BadRequest("Выберите товар Ozon.");
+            }
+
+            var sourceOfferId = request.SourceOfferId?.Trim() ?? string.Empty;
+            var sourceProductName = request.SourceProductName?.Trim() ?? string.Empty;
+            var sourceProductLink = request.SourceProductLink?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(sourceOfferId) && string.IsNullOrWhiteSpace(sourceProductName))
+            {
+                return Results.BadRequest("Выберите новинку.");
+            }
+
+            OzonProductSummary targetProduct;
+            try
+            {
+                targetProduct = await ozonApi.GetProductSummaryByIdAsync(request.TargetOzonProductId, cancellationToken)
+                    ?? throw new InvalidOperationException("Товар не найден в Ozon.");
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.BadRequest(exception.Message);
+            }
+
+            var allFiles = await db.ProductionFiles.ToListAsync(cancellationToken);
+            var filesToUpdate = ProductionTaskResponses.FindNovinkaCatalogFiles(
+                allFiles,
+                sourceOfferId,
+                sourceProductName,
+                sourceProductLink);
+
+            if (filesToUpdate.Count == 0)
+            {
+                return Results.BadRequest("Не найдены файлы производства для выбранной новинки.");
+            }
+
+            foreach (var file in filesToUpdate)
+            {
+                file.OzonProductId = targetProduct.ProductId;
+                file.OfferId = targetProduct.OfferId;
+                file.ProductName = targetProduct.Name;
+                file.ProductLink = targetProduct.ProductUrl;
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Конвертация новинки в Ozon",
+                "ProductionCatalog",
+                targetProduct.ProductId.ToString(),
+                $"Новинка: {sourceProductName}, файлов: {filesToUpdate.Count}, артикул: {targetProduct.OfferId}");
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            return Results.Ok(new ConvertNovinkaToOzonResponse(
+                filesToUpdate.Count,
+                targetProduct.ProductId,
+                targetProduct.OfferId,
+                targetProduct.Name,
+                targetProduct.ProductUrl));
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/catalog/file-path", async (
+            UpsertCatalogFilePathRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
+            {
+                return Results.Forbid();
+            }
+
+            var path = request.Path?.Trim() ?? string.Empty;
+            if (path.Length < 3)
+            {
+                return Results.BadRequest("Укажите путь к файлу (минимум 3 символа).");
+            }
+
+            var offerId = request.OfferId?.Trim() ?? string.Empty;
+            var productName = request.ProductName?.Trim() ?? string.Empty;
+            var productLink = request.ProductLink?.Trim() ?? string.Empty;
+            var ozonProductId = request.OzonProductId is > 0 ? request.OzonProductId : null;
+
+            if (string.IsNullOrWhiteSpace(offerId) && ozonProductId is null)
+            {
+                return Results.BadRequest("Выберите товар.");
+            }
+
+            if (string.IsNullOrWhiteSpace(productName))
+            {
+                return Results.BadRequest("Укажите название товара.");
+            }
+
+            var existingPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+                entry.Path == path &&
+                ((!string.IsNullOrWhiteSpace(offerId) && entry.OfferId == offerId) ||
+                 (ozonProductId.HasValue && entry.OzonProductId == ozonProductId)));
+
+            ProductionFilePath savedPath;
+            if (existingPath is null)
+            {
+                savedPath = new ProductionFilePath
+                {
+                    OzonProductId = ozonProductId,
+                    OfferId = offerId,
+                    ProductName = productName,
+                    ProductLink = productLink,
+                    Path = path
+                };
+                db.ProductionFilePaths.Add(savedPath);
+            }
+            else
+            {
+                savedPath = existingPath;
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Путь к файлу в каталоге",
+                "ProductionCatalog",
+                offerId != string.Empty ? offerId : ozonProductId?.ToString() ?? productName,
+                $"{productName}: {path}");
+            await db.SaveChangesAsync();
+
+            return Results.Ok(new ProductionFilePathListItem(
+                savedPath.Id,
+                savedPath.OzonProductId,
+                savedPath.OfferId,
+                savedPath.ProductName,
+                savedPath.ProductLink,
+                savedPath.Path,
+                savedPath.CreatedAt));
+        }).RequireAuthorization();
+
+        app.MapDelete("/api/production/catalog/file-path/{id:guid}", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editProducts"))
+            {
+                return Results.Forbid();
+            }
+
+            var path = await db.ProductionFilePaths.FindAsync(id);
+            if (path is null)
+            {
+                return Results.NotFound();
+            }
+
+            db.ProductionFilePaths.Remove(path);
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Удаление пути в каталоге",
+                "ProductionCatalog",
+                path.Id.ToString(),
+                $"{path.ProductName}: {path.Path}");
+            await db.SaveChangesAsync();
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+        app.MapPost("/api/production/files", async (
+            HttpRequest request,
+            AppDbContext db,
+            TelegramNotificationService telegram,
+            CancellationToken cancellationToken) =>
+        {
+            if (!request.HasFormContentType)
+            {
+                return Results.BadRequest("Ожидается multipart/form-data.");
+            }
+
+            var form = await request.ReadFormAsync(cancellationToken);
+            var file = form.Files.GetFile("file");
+
+            if (file is null || file.Length == 0)
+            {
+                return Results.BadRequest("Файл обязателен.");
+            }
+
+            await using var stream = file.OpenReadStream();
+            using var memory = new MemoryStream();
+            await stream.CopyToAsync(memory, cancellationToken);
+
+            var productionFile = new ProductionFile
+            {
+                OzonProductId = long.TryParse(form["ozonProductId"], out var productId) ? productId : null,
+                OfferId = form["offerId"].ToString().Trim(),
+                ProductName = form["productName"].ToString().Trim(),
+                ProductLink = form["productLink"].ToString().Trim(),
+                Notes = form["notes"].ToString().Trim(),
+                FileName = Path.GetFileName(file.FileName),
+                ContentType = string.IsNullOrWhiteSpace(file.ContentType)
+                    ? "application/octet-stream"
+                    : file.ContentType,
+                Content = memory.ToArray()
+            };
+
+            db.ProductionFiles.Add(productionFile);
+            await db.SaveChangesAsync(cancellationToken);
+
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.file.added",
+                $"Добавлен файл производства: {productionFile.ProductName.Trim()} · {productionFile.FileName}");
+
+            return Results.Created($"/api/production/files/{productionFile.Id}", new ProductionFileListItem(
+                productionFile.Id,
+                productionFile.OzonProductId,
+                productionFile.OfferId,
+                productionFile.ProductName,
+                productionFile.ProductLink,
+                productionFile.Notes,
+                productionFile.FileName,
+                productionFile.ContentType,
+                productionFile.CreatedAt));
+        }).DisableAntiforgery().RequireAuthorization();
+
+        app.MapGet("/api/production/files/{id:guid}/download", async (Guid id, AppDbContext db) =>
+        {
+            var file = await db.ProductionFiles.FindAsync(id);
+            if (file is null)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(file.Content, file.ContentType, file.FileName);
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/file-path", async (
+            Guid taskId,
+            Guid itemId,
+            UpdateProductionTaskItemFilePathRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            var path = request.Path?.Trim() ?? string.Empty;
+            if (path.Length < 3)
+            {
+                return Results.BadRequest("Укажите путь к файлу (минимум 3 символа).");
+            }
+
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == taskId);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.InProgress)
+            {
+                return Results.BadRequest("Путь к файлу можно указать только для задачи в работе.");
+            }
+
+            if (ProductionTaskResponses.NormalizeTaskType(task.TaskType) != ProductionTaskTypes.Novinka)
+            {
+                return Results.BadRequest("Путь к файлу доступен только для задач новинок.");
+            }
+
+            var taskItem = task.Items.FirstOrDefault(item => item.Id == itemId);
+            if (taskItem is null)
+            {
+                return Results.NotFound();
+            }
+
+            taskItem.FilePath = path;
+
+            var existingPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+                entry.Path == path &&
+                ((!string.IsNullOrWhiteSpace(taskItem.OfferId) && entry.OfferId == taskItem.OfferId) ||
+                 (taskItem.OzonProductId > 0 && entry.OzonProductId == taskItem.OzonProductId)));
+
+            if (existingPath is null)
+            {
+                db.ProductionFilePaths.Add(new ProductionFilePath
+                {
+                    OzonProductId = taskItem.OzonProductId > 0 ? taskItem.OzonProductId : null,
+                    OfferId = taskItem.OfferId.Trim(),
+                    ProductName = taskItem.ProductName.Trim(),
+                    ProductLink = taskItem.ProductLink.Trim(),
+                    Path = path
+                });
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Путь к файлу в задаче",
+                "ProductionTaskItem",
+                taskItem.Id.ToString(),
+                $"{taskItem.ProductName}: {path}");
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.Ok(new ProductionTaskItemListItem(
+                taskItem.Id,
+                taskItem.OzonProductId,
+                taskItem.OfferId,
+                taskItem.ProductName,
+                taskItem.ProductLink,
+                taskItem.RequiredQuantity,
+                taskItem.ActualQuantity,
+                taskItem.EnforceMinimumQuantity,
+                taskItem.FilePath));
+        }).RequireAuthorization();
+
+        app.MapDelete("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/file-path", async (
+            Guid taskId,
+            Guid itemId,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.deleteFilePaths"))
+            {
+                return Results.Forbid();
+            }
+
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == taskId);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (ProductionTaskResponses.NormalizeTaskType(task.TaskType) != ProductionTaskTypes.Novinka)
+            {
+                return Results.BadRequest("Путь к файлу доступен только для задач новинок.");
+            }
+
+            var taskItem = task.Items.FirstOrDefault(item => item.Id == itemId);
+            if (taskItem is null)
+            {
+                return Results.NotFound();
+            }
+
+            var removedPath = taskItem.FilePath.Trim();
+            taskItem.FilePath = string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(removedPath))
+            {
+                var catalogPath = await db.ProductionFilePaths.FirstOrDefaultAsync(entry =>
+                    entry.Path == removedPath &&
+                    ((!string.IsNullOrWhiteSpace(taskItem.OfferId) && entry.OfferId == taskItem.OfferId) ||
+                     (taskItem.OzonProductId > 0 && entry.OzonProductId == taskItem.OzonProductId)));
+
+                if (catalogPath is not null)
+                {
+                    db.ProductionFilePaths.Remove(catalogPath);
+                }
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Удаление пути к файлу",
+                "ProductionTaskItem",
+                taskItem.Id.ToString(),
+                taskItem.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.Ok(new ProductionTaskItemListItem(
+                taskItem.Id,
+                taskItem.OzonProductId,
+                taskItem.OfferId,
+                taskItem.ProductName,
+                taskItem.ProductLink,
+                taskItem.RequiredQuantity,
+                taskItem.ActualQuantity,
+                taskItem.EnforceMinimumQuantity,
+                taskItem.FilePath));
+        }).RequireAuthorization();
+
+        app.MapDelete("/api/production/files/{id:guid}", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.deleteFiles"))
+            {
+                return Results.Forbid();
+            }
+
+            var file = await db.ProductionFiles.FindAsync(id);
+            if (file is null)
+            {
+                return Results.NotFound();
+            }
+
+            var isNovinkaFile = ProductionTaskResponses.IsNovinkaProductionFile(file);
+            var offerId = file.OfferId;
+            var productName = file.ProductName;
+            var productLink = file.ProductLink;
+
+            db.ProductionFiles.Remove(file);
+            await db.SaveChangesAsync();
+
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.file.deleted",
+                $"Удалён файл производства: {productName.Trim()}");
+
+            ProductionTaskListItem? reworkTask = null;
+            if (isNovinkaFile)
+            {
+                var remainingInCatalog = ProductionTaskResponses.FindNovinkaCatalogFiles(
+                    await db.ProductionFiles.AsNoTracking().ToListAsync(),
+                    offerId,
+                    productName,
+                    productLink);
+
+                if (remainingInCatalog.Count == 0)
+                {
+                    try
+                    {
+                        reworkTask = await ProductionTaskResponses.TryCreateNovinkaReworkTaskAsync(
+                            db,
+                            principal,
+                            productName,
+                            productLink,
+                            offerId);
+                    }
+                    catch
+                    {
+                        // Файл уже удалён — сбой автосоздания задачи не должен отменять удаление.
+                    }
+                }
+            }
+
+            if (reworkTask is not null)
+            {
+                await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+                var reworkEntity = await db.ProductionTasks
+                    .AsNoTracking()
+                    .Include(task => task.Items)
+                    .FirstOrDefaultAsync(task => task.Id == reworkTask.Id);
+                if (reworkEntity is not null)
+                {
+                    await IntegrationNotificationPublisher.PublishAsync(
+                        telegram,
+                        db,
+                        "production.rework.created",
+                        ProductionTaskResponses.BuildReworkTaskTelegramMessage(reworkEntity));
+                }
+            }
+
+            return Results.Ok(new DeleteProductionFileResponse(reworkTask is not null, reworkTask?.Id));
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/tasks", async (string? status, AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            IQueryable<ProductionTask> query = db.ProductionTasks
+                .AsNoTracking()
+                .Include(task => task.Items);
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                query = query.Where(task => task.Status == status);
+            }
+
+            query = await ProductionTaskRoleFilter.ApplyAsync(query, db, principal);
+
+            var tasks = await query
+                .OrderByDescending(task => task.CreatedAt)
+                .ToListAsync();
+
+            return Results.Ok(tasks.Select(ProductionTaskResponses.ToListItem));
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/analytics/assignees", async (AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+            {
+                return Results.Forbid();
+            }
+
+            var allowedRoles = new[] { UserRoles.Production, UserRoles.Designer, UserRoles.Leadership };
+            var assignees = await db.Users.AsNoTracking()
+                .Where(user => user.IsActive && user.Id != SystemUser.Id && allowedRoles.Contains(user.Role))
+                .OrderBy(user => user.DisplayName)
+                .ThenBy(user => user.UserName)
+                .Select(user => new ProductionAnalyticsAssigneeItem(
+                    user.Id,
+                    user.DisplayName,
+                    user.UserName,
+                    user.Role,
+                    UserResponses.AvatarUrl(user.AvatarFileName)))
+                .ToListAsync();
+
+            return Results.Ok(assignees);
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/analytics/report", async (
+            string? dateFrom,
+            string? dateTo,
+            Guid? userId,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+            {
+                return Results.Forbid();
+            }
+
+            var (from, to) = ProductionAnalyticsQueries.ResolveDateRange(dateFrom, dateTo);
+            var query = ProductionAnalyticsStore.BuildRecordsQuery(db, from, to);
+
+            if (userId.HasValue)
+            {
+                var assignee = await db.Users.AsNoTracking()
+                    .Where(user => user.Id == userId.Value && user.IsActive)
+                    .Select(user => new { user.Id, user.DisplayName })
+                    .FirstOrDefaultAsync();
+
+                if (assignee is not null)
+                {
+                    query = query.Where(record =>
+                        record.AssignedUserId == assignee.Id ||
+                        record.AssignedUserName == assignee.DisplayName);
+                }
+            }
+
+            var records = await query
+                .OrderByDescending(record => record.CompletedAt)
+                .ToListAsync();
+
+            var summary = await ProductionAnalyticsStore.BuildSummaryAsync(db, records);
+
+            return Results.Ok(new ProductionAnalyticsReportResponse(
+                summary,
+                records.Select(ProductionAnalyticsStore.ToListItem).ToList()));
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/analytics/records/{id:guid}", async (
+            Guid id,
+            UpdateProductionAnalyticsRecordRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin))
+            {
+                return Results.Forbid();
+            }
+
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+            {
+                return Results.Forbid();
+            }
+
+            var record = await db.ProductionAnalyticsTaskRecords.FirstOrDefaultAsync(entry => entry.Id == id);
+            if (record is null)
+            {
+                return Results.NotFound();
+            }
+
+            Guid? updatedByUserId = UserRoleResolver.GetUserId(principal);
+            ProductionAnalyticsStore.ApplyUpdate(record, request, updatedByUserId);
+
+            if (request.AssignedUserName is not null && !request.AssignedUserId.HasValue)
+            {
+                var normalized = request.AssignedUserName.Trim();
+                record.AssignedUserId = await db.Users.AsNoTracking()
+                    .Where(user => user.IsActive && (user.DisplayName == normalized || user.UserName == normalized))
+                    .Select(user => (Guid?)user.Id)
+                    .FirstOrDefaultAsync();
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Изменение аналитики производства",
+                "ProductionAnalyticsTaskRecord",
+                record.Id.ToString(),
+                record.ProductName);
+            await db.SaveChangesAsync();
+
+            return Results.Ok(ProductionAnalyticsStore.ToListItem(record));
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/analytics/export", async (
+            HttpRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics, "analytics.production"))
+            {
+                return Results.Forbid();
+            }
+
+            var dateFrom = request.Query["dateFrom"].ToString();
+            var dateTo = request.Query["dateTo"].ToString();
+            var userIdRaw = request.Query["userId"].ToString();
+            Guid? userId = Guid.TryParse(userIdRaw, out var parsedUserId) ? parsedUserId : null;
+
+            var (from, to) = ProductionAnalyticsQueries.ResolveDateRange(dateFrom, dateTo);
+            var query = ProductionAnalyticsStore.BuildRecordsQuery(db, from, to);
+
+            if (userId.HasValue)
+            {
+                var assignee = await db.Users.AsNoTracking()
+                    .Where(user => user.Id == userId.Value && user.IsActive)
+                    .Select(user => new { user.Id, user.DisplayName })
+                    .FirstOrDefaultAsync();
+
+                if (assignee is not null)
+                {
+                    query = query.Where(record =>
+                        record.AssignedUserId == assignee.Id ||
+                        record.AssignedUserName == assignee.DisplayName);
+                }
+            }
+
+            var records = await query
+                .OrderByDescending(record => record.CompletedAt)
+                .ToListAsync();
+
+            var rows = new List<string[]>
+            {
+                new[]
+                {
+                    "Завершена",
+                    "Исполнитель",
+                    "Тип",
+                    "Статус",
+                    "Срочно",
+                    "Товар",
+                    "Артикул",
+                    "План",
+                    "Факт",
+                    "Создана",
+                    "Создатель"
+                }
+            };
+
+            foreach (var record in records)
+            {
+                var task = ProductionAnalyticsStore.ToListItem(record);
+                var items = task.Items.Count == 0
+                    ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false, string.Empty)]
+                    : task.Items;
+
+                foreach (var item in items)
+                {
+                    rows.Add([
+                        task.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty,
+                        task.AssignedUserName ?? string.Empty,
+                        task.TaskType,
+                        task.Status,
+                        task.IsUrgent ? "Да" : "Нет",
+                        item.ProductName,
+                        item.OfferId,
+                        item.RequiredQuantity.ToString(),
+                        (item.ActualQuantity ?? 0).ToString(),
+                        task.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                        task.CreatedByDisplayName ?? string.Empty
+                    ]);
+                }
+            }
+
+            var bytes = ExcelExport.CreateWorkbook("Производство", rows);
+            return Results.File(
+                bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                $"production-analytics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx");
+        }).RequireAuthorization();
+
+        app.MapGet("/api/production/tasks/archive/export", async (AppDbContext db) =>
+        {
+            var tasks = await db.ProductionTasks
+                .AsNoTracking()
+                .Include(task => task.Items)
+                .Where(task => task.IsArchived)
+                .OrderByDescending(task => task.CompletedAt ?? task.CreatedAt)
+                .ToListAsync();
+
+            var builder = new StringBuilder();
+            builder.AppendLine("ID задачи;Создана;Создатель;Срочно;Взята в работу;Завершена;Архивирована;Исполнитель;Статус;Товар;Артикул;План;Факт");
+
+            foreach (var task in tasks)
+            {
+                var items = task.Items.Count == 0
+                    ? [new ProductionTaskItem
+                    {
+                        OzonProductId = task.OzonProductId,
+                        OfferId = task.OfferId,
+                        ProductName = task.ProductName,
+                        RequiredQuantity = task.RequiredQuantity,
+                        ActualQuantity = task.ActualQuantity
+                    }]
+                    : task.Items.OrderBy(item => item.ProductName).ToList();
+
+                foreach (var item in items)
+                {
+                    builder.AppendLine(string.Join(';', [
+                        CsvExport.Cell(task.Id.ToString()),
+                        CsvExport.Cell(task.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
+                        CsvExport.Cell(task.CreatedByDisplayName ?? string.Empty),
+                        CsvExport.Cell(task.IsUrgent ? "Да" : "Нет"),
+                        CsvExport.Cell(task.StartedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                        CsvExport.Cell(task.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                        CsvExport.Cell(task.ArchivedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                        CsvExport.Cell(task.AssignedUserName ?? string.Empty),
+                        CsvExport.Cell(task.Status),
+                        CsvExport.Cell(item.ProductName),
+                        CsvExport.Cell(item.OfferId),
+                        CsvExport.Cell(item.RequiredQuantity.ToString()),
+                        CsvExport.Cell((item.ActualQuantity ?? 0).ToString())
+                    ]));
+                }
+            }
+
+            return Results.File(
+                Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(builder.ToString())).ToArray(),
+                "text/csv; charset=utf-8",
+                $"production-task-archive-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+        }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+        app.MapPost("/api/production/tasks", async (
+            CreateProductionTaskRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            IServiceScopeFactory scopeFactory) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.createTask"))
+            {
+                return Results.Forbid();
+            }
+
+            var taskType = ProductionTaskResponses.NormalizeTaskType(request.TaskType);
+            var requestItems = request.Items is { Count: > 0 }
+                ? request.Items
+                : [new CreateProductionTaskItemRequest(
+                    request.OzonProductId,
+                    request.OfferId,
+                    request.ProductName,
+                    request.RequiredQuantity,
+                    false,
+                    null)];
+
+            if (taskType == ProductionTaskTypes.Novinka)
+            {
+                if (requestItems.Any(item => string.IsNullOrWhiteSpace(item.ProductName) || string.IsNullOrWhiteSpace(item.ProductLink)))
+                {
+                    return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
+                }
+            }
+            else if (requestItems.Any(item => !ProductionTaskResponses.IsValidOzonTaskItemRequest(item)))
+            {
+                return Results.BadRequest("Выберите товар и укажите количество больше нуля.");
+            }
+
+            var builtItems = ProductionTaskResponses.BuildTaskItems(taskType, requestItems);
+            var firstItem = builtItems[0];
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
+                ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
+                : null;
+            var task = new ProductionTask
+            {
+                TaskType = taskType,
+                OzonProductId = firstItem.OzonProductId,
+                OfferId = firstItem.OfferId.Trim(),
+                ProductName = builtItems.Count == 1
+                    ? firstItem.ProductName.Trim()
+                    : taskType == ProductionTaskTypes.Novinka
+                        ? $"Новинки · {builtItems.Count} товаров"
+                        : $"Задача на {builtItems.Count} товаров",
+                RequiredQuantity = taskType == ProductionTaskTypes.Novinka
+                    ? 0
+                    : builtItems.Sum(item => item.RequiredQuantity),
+                IsUrgent = request.IsUrgent,
+                CreatedByUserId = currentUser?.Id,
+                CreatedByDisplayName = currentUser?.DisplayName
+                    ?? principal.FindFirstValue("display_name")
+                    ?? principal.FindFirstValue(ClaimTypes.Name),
+                Items = builtItems
+            };
+
+            db.ProductionTasks.Add(task);
+            AuditLogWriter.Add(db, principal, "Создание задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
+            await db.SaveChangesAsync();
+
+            var result = ProductionTaskResponses.ToListItem(task);
+
+            await hub.Clients.All.SendAsync("ProductionTasksChanged", result);
+
+            var createdEventId = task.IsUrgent
+                ? "production.task.new.urgent"
+                : taskType == ProductionTaskTypes.Novinka
+                    ? "production.task.new.novinka"
+                    : "production.task.new.ozon";
+            NotificationBackgroundPublisher.Publish(
+                scopeFactory,
+                createdEventId,
+                ProductionTaskResponses.BuildNewTaskTelegramMessage(task),
+                excludeUserId: task.CreatedByUserId);
+
+            return Results.Created($"/api/production/tasks/{task.Id}", result);
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{id:guid}", async (
+            Guid id,
+            UpdateProductionTaskRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "production.editTasks"))
+            {
+                return Results.Forbid();
+            }
+
+            var requestItems = request.Items is { Count: > 0 }
+                ? request.Items
+                : [];
+
+            if (requestItems.Count == 0)
+            {
+                return Results.BadRequest("Добавьте товары в задачу.");
+            }
+
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.New)
+            {
+                return Results.BadRequest("Редактировать можно только задачу, которая ещё не взята в работу.");
+            }
+
+            var isNovinka = ProductionTaskResponses.IsNovinkaTaskUpdate(task, requestItems);
+            if (isNovinka)
+            {
+                if (requestItems.Any(item => string.IsNullOrWhiteSpace(item.ProductName) || string.IsNullOrWhiteSpace(item.ProductLink)))
+                {
+                    return Results.BadRequest("Укажите наименование и ссылку для каждой новинки.");
+                }
+            }
+            else if (requestItems.Any(item => !ProductionTaskResponses.IsValidOzonTaskItemRequest(item)))
+            {
+                return Results.BadRequest("Добавьте товары и укажите количество больше нуля.");
+            }
+
+            List<ProductionTaskItem> builtItems;
+            if (isNovinka)
+            {
+                task.TaskType = ProductionTaskTypes.Novinka;
+                builtItems = ProductionTaskResponses.ReconcileNovinkaTaskItems(task, requestItems);
+            }
+            else
+            {
+                builtItems = ProductionTaskResponses.ReconcileTaskItems(task, requestItems);
+            }
+
+            foreach (var item in builtItems)
+            {
+                var entry = db.Entry(item);
+                if (entry.State == EntityState.Detached)
+                {
+                    item.ProductionTaskId = task.Id;
+                    task.Items.Add(item);
+                }
+                else if (entry.State == EntityState.Modified
+                         && !await db.ProductionTaskItems.AsNoTracking().AnyAsync(existing => existing.Id == item.Id))
+                {
+                    entry.State = EntityState.Added;
+                }
+            }
+
+            var firstItem = builtItems[0];
+            task.OzonProductId = firstItem.OzonProductId;
+            task.OfferId = (firstItem.OfferId ?? string.Empty).Trim();
+            task.ProductName = builtItems.Count == 1
+                ? (firstItem.ProductName ?? string.Empty).Trim()
+                : isNovinka
+                    ? $"Новинки · {builtItems.Count} товаров"
+                    : $"Задача на {builtItems.Count} товаров";
+            task.RequiredQuantity = isNovinka
+                ? 0
+                : builtItems.Sum(item => item.RequiredQuantity);
+            task.IsUrgent = request.IsUrgent;
+
+            AuditLogWriter.Add(db, principal, "Редактирование задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
+            try
+            {
+                await db.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                return Results.BadRequest("Не удалось сохранить задачу. Проверьте длину названия и ссылки.");
+            }
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.task.updated",
+                ProductionTaskResponses.BuildUpdatedTaskTelegramMessage(task));
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{id:guid}/start", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status == ProductionTaskStatuses.Completed)
+            {
+                return Results.BadRequest("Выполненную задачу нельзя взять в работу.");
+            }
+
+            if (task.Status == ProductionTaskStatuses.Cancelled)
+            {
+                return Results.BadRequest("Отменённую задачу нельзя взять в работу.");
+            }
+
+            task.Status = ProductionTaskStatuses.InProgress;
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
+                ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
+                : null;
+            task.AssignedUserName = currentUser?.DisplayName
+                ?? principal.FindFirstValue("display_name")
+                ?? principal.FindFirstValue(ClaimTypes.Name)
+                ?? task.AssignedUserName;
+            task.StartedAt ??= DateTimeOffset.UtcNow;
+            AuditLogWriter.Add(db, principal, "Задача взята в работу", "ProductionTask", task.Id.ToString(), task.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            var startedByName = task.AssignedUserName ?? "—";
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.task.started",
+                ProductionTaskResponses.BuildStartedTaskTelegramMessage(task, startedByName));
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{taskId:guid}/items/{itemId:guid}", async (
+            Guid taskId,
+            Guid itemId,
+            UpdateProductionTaskItemRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (request.RequiredQuantity <= 0)
+            {
+                return Results.BadRequest("Количество должно быть больше нуля.");
+            }
+
+            var task = await db.ProductionTasks
+                .Include(task => task.Items)
+                .FirstOrDefaultAsync(task => task.Id == taskId);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status is not (ProductionTaskStatuses.New or ProductionTaskStatuses.InProgress))
+            {
+                return Results.BadRequest("Количество можно менять только у новой или активной задачи.");
+            }
+
+            if (task.Items.Count == 0 && task.Id == itemId)
+            {
+                task.RequiredQuantity = request.RequiredQuantity;
+            }
+            else
+            {
+                var item = task.Items.FirstOrDefault(entry => entry.Id == itemId);
+                if (item is null)
+                {
+                    return Results.NotFound();
+                }
+
+                item.RequiredQuantity = request.RequiredQuantity;
+                task.RequiredQuantity = task.Items.Sum(entry => entry.RequiredQuantity);
+            }
+
+            AuditLogWriter.Add(db, principal, "Изменение количества в задаче", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. План: {task.RequiredQuantity}");
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.NoContent();
+        }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+        app.MapPut("/api/production/tasks/{id:guid}/cancel", async (
+            Guid id,
+            CancelProductionTaskRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            var comment = request.Comment?.Trim() ?? string.Empty;
+            if (comment.Length < 3)
+            {
+                return Results.BadRequest("Укажите причину отмены задачи (минимум 3 символа).");
+            }
+
+            var task = await db.ProductionTasks.FindAsync(id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status == ProductionTaskStatuses.Completed)
+            {
+                return Results.BadRequest("Выполненную задачу нельзя отменить.");
+            }
+
+            if (task.Status == ProductionTaskStatuses.Cancelled)
+            {
+                return Results.BadRequest("Задача уже отменена.");
+            }
+
+            if (task.Status is not (ProductionTaskStatuses.New or ProductionTaskStatuses.InProgress))
+            {
+                return Results.BadRequest("Отменить можно только новую задачу или задачу в работе.");
+            }
+
+            if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin)
+                && !await FeatureAccess.HasAnyAsync(db, principal, "production.cancelTasks"))
+            {
+                return Results.Forbid();
+            }
+
+            var userId = UserRoleResolver.GetUserId(principal);
+            if (userId is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var currentUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == userId.Value);
+            var cancelledByName = currentUser?.DisplayName
+                ?? principal.FindFirstValue("display_name")
+                ?? principal.FindFirstValue(ClaimTypes.Name)
+                ?? "Администратор";
+
+            task.Status = ProductionTaskStatuses.Cancelled;
+            task.CancelledAt = DateTimeOffset.UtcNow;
+            task.CancelledByUserId = userId.Value;
+            task.CancelledByDisplayName = cancelledByName;
+            task.CancellationComment = comment;
+            AuditLogWriter.Add(db, principal, "Задача отменена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Причина: {comment}");
+
+            if (task.CreatedByUserId is Guid creatorId && creatorId != userId.Value)
+            {
+                var notificationText = $"Задача «{task.ProductName}» отменена пользователем {cancelledByName}.\n\nПричина: {comment}";
+                var message = new ChatMessage
+                {
+                    SenderId = SystemUser.Id,
+                    ReceiverId = creatorId,
+                    Text = notificationText
+                };
+                db.ChatMessages.Add(message);
+            }
+
+            await db.SaveChangesAsync();
+
+            if (task.CreatedByUserId is Guid notifiedUserId && notifiedUserId != userId.Value)
+            {
+                await hub.Clients.All.SendAsync("ChatMessagesChanged", SystemUser.Id, notifiedUserId, null);
+                await telegram.SendToUserAsync(
+                    db,
+                    notifiedUserId,
+                    "chat.system.notification",
+                    $"Задача «{task.ProductName}» отменена пользователем {cancelledByName}.\n\nПричина: {comment}");
+            }
+
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.task.cancelled",
+                ProductionTaskResponses.BuildCancelledTaskTelegramMessage(task, cancelledByName, comment));
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{id:guid}/complete", async (
+            Guid id,
+            CompleteProductionTaskRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            var task = await db.ProductionTasks
+                .Include(task => task.Items)
+                .FirstOrDefaultAsync(task => task.Id == id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.InProgress)
+            {
+                return Results.BadRequest("Завершить можно только задачу, которая уже в работе.");
+            }
+
+            var isNovinkaTask = ProductionTaskResponses.NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka;
+
+            if (isNovinkaTask)
+            {
+                var files = await db.ProductionFiles.AsNoTracking().ToListAsync();
+                foreach (var taskItem in task.Items.Count == 0
+                             ? [new ProductionTaskItem { OfferId = task.OfferId, OzonProductId = task.OzonProductId, ProductName = task.ProductName }]
+                             : task.Items)
+                {
+                    var hasFiles = files.Any(file =>
+                        ProductionTaskResponses.MatchesProductionFile(file, taskItem));
+
+                    if (!hasFiles)
+                    {
+                        return Results.BadRequest($"Добавьте файлы для «{taskItem.ProductName}» перед завершением задачи.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(taskItem.FilePath))
+                    {
+                        return Results.BadRequest($"Укажите путь к файлу для «{taskItem.ProductName}» перед завершением задачи.");
+                    }
+                }
+
+                task.ActualQuantity = 0;
+                foreach (var taskItem in task.Items)
+                {
+                    taskItem.ActualQuantity = null;
+                }
+            }
+            else if (request.ActualQuantity < 0 || request.Items?.Any(item => item.ActualQuantity < 0) == true)
+            {
+                return Results.BadRequest("Фактическое количество не может быть меньше нуля.");
+            }
+            else if (request.Items is { Count: > 0 })
+            {
+                var taskItems = task.Items.ToDictionary(item => item.Id);
+                foreach (var requestItem in request.Items)
+                {
+                    if (!taskItems.TryGetValue(requestItem.Id, out var taskItem))
+                    {
+                        return Results.BadRequest("В задаче есть неизвестный товар.");
+                    }
+
+                    taskItem.ActualQuantity = requestItem.ActualQuantity;
+                }
+
+                foreach (var taskItem in task.Items)
+                {
+                    if (taskItem.EnforceMinimumQuantity && (taskItem.ActualQuantity ?? 0) < taskItem.RequiredQuantity)
+                    {
+                        return Results.BadRequest(
+                            $"Фактическое количество по «{taskItem.ProductName}» не может быть меньше {taskItem.RequiredQuantity}.");
+                    }
+                }
+
+                task.ActualQuantity = task.Items.Sum(item => item.ActualQuantity ?? 0);
+            }
+            else
+            {
+                task.ActualQuantity = request.ActualQuantity;
+                if (task.Items.Count == 1)
+                {
+                    var singleItem = task.Items[0];
+                    if (singleItem.EnforceMinimumQuantity && request.ActualQuantity < singleItem.RequiredQuantity)
+                    {
+                        return Results.BadRequest(
+                            $"Фактическое количество по «{singleItem.ProductName}» не может быть меньше {singleItem.RequiredQuantity}.");
+                    }
+
+                    singleItem.ActualQuantity = request.ActualQuantity;
+                }
+            }
+
+            task.Status = ProductionTaskStatuses.Completed;
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var currentUser = Guid.TryParse(currentUserId, out var parsedUserId)
+                ? await db.Users.AsNoTracking().FirstOrDefaultAsync(user => user.Id == parsedUserId)
+                : null;
+            task.AssignedUserName ??= currentUser?.DisplayName ?? principal.FindFirstValue("display_name") ?? principal.FindFirstValue(ClaimTypes.Name);
+            task.CompletedAt = DateTimeOffset.UtcNow;
+            AuditLogWriter.Add(db, principal, "Задача завершена", "ProductionTask", task.Id.ToString(), $"{task.ProductName}. Факт: {task.ActualQuantity}");
+            await db.SaveChangesAsync();
+            await ProductionAnalyticsStore.UpsertFromTaskAsync(db, task);
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            var completedEventId = isNovinkaTask
+                ? "production.task.completed.novinka"
+                : "production.task.completed.ozon";
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                completedEventId,
+                ProductionTaskResponses.BuildCompletedTaskTelegramMessage(task));
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{id:guid}/archive", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub,
+            TelegramNotificationService telegram) =>
+        {
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.Completed && task.Status != ProductionTaskStatuses.Cancelled)
+            {
+                return Results.BadRequest("В архив можно отправить только выполненную или отменённую задачу.");
+            }
+
+            if (!await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin)
+                && !await FeatureAccess.HasAnyAsync(db, principal, "production.archive"))
+            {
+                return Results.Forbid();
+            }
+
+            task.IsArchived = true;
+            task.ArchivedAt = DateTimeOffset.UtcNow;
+            AuditLogWriter.Add(db, principal, "Задача архивирована", "ProductionTask", task.Id.ToString(), task.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            await IntegrationNotificationPublisher.PublishAsync(
+                telegram,
+                db,
+                "production.task.archived",
+                ProductionTaskResponses.BuildArchivedTaskTelegramMessage(task));
+
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapPut("/api/production/tasks/{id:guid}/restore", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.Cancelled)
+            {
+                return Results.BadRequest("Вернуть в новые можно только отменённую задачу.");
+            }
+
+            if (task.IsArchived)
+            {
+                return Results.BadRequest("Архивированную задачу нельзя вернуть в новые.");
+            }
+
+            task.Status = ProductionTaskStatuses.New;
+            task.CancelledAt = null;
+            task.CancelledByUserId = null;
+            task.CancelledByDisplayName = null;
+            task.CancellationComment = null;
+            task.StartedAt = null;
+            task.AssignedUserName = null;
+            task.ActualQuantity = null;
+            foreach (var item in task.Items)
+            {
+                item.ActualQuantity = null;
+            }
+
+            AuditLogWriter.Add(db, principal, "Задача возвращена в новые", "ProductionTask", task.Id.ToString(), task.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.NoContent();
+        }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+
+        app.MapDelete("/api/production/tasks/{id:guid}", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            var task = await db.ProductionTasks.FindAsync(id);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (!task.IsArchived)
+            {
+                return Results.BadRequest("Удалить задачу можно только из архива.");
+            }
+
+            db.ProductionTasks.Remove(task);
+            AuditLogWriter.Add(db, principal, "Удаление задачи", "ProductionTask", task.Id.ToString(), task.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.NoContent();
+        }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    }
+}
+

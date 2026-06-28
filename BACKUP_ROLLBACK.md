@@ -1,23 +1,23 @@
-# Откат до разделения LShop РФ / KZ
+# Откат до архитектурного рефакторинга
 
-Перед началом работы над вкладкой KZ создана точка восстановления.
+Перед промышленным рефакторингом (июнь 2026) создана точка восстановления.
 
 ## Git tag
 
 ```bash
-git checkout backup-before-kz-split-2026-06-23
+git checkout pre-architecture-refactor-2026-06-23
 ```
 
 Или ветка:
 
 ```bash
-git checkout backup/before-kz-split-2026-06-23
+git checkout backup/pre-architecture-refactor-2026-06-23
 ```
 
-## Вернуть main к состоянию до KZ
+## Вернуть main к состоянию до рефакторинга
 
 ```bash
-git reset --hard backup-before-kz-split-2026-06-23
+git reset --hard pre-architecture-refactor-2026-06-23
 ```
 
 После отката пересоберите Docker:
@@ -25,3 +25,7 @@ git reset --hard backup-before-kz-split-2026-06-23
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 ```
+
+## Предыдущая точка (до KZ)
+
+См. также `backup-before-kz-split-2026-06-23` / `backup/before-kz-split-2026-06-23`.

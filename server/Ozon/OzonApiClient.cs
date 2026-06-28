@@ -336,10 +336,6 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .Where(product => !allTimeSoldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
             .ToList();
 
-        var analyticsDaysBySku = await TryGetAnalyticsDaysWithoutSalesBySkuAsync(
-            unsoldCandidates.Select(product => product.Sku ?? 0),
-            cancellationToken);
-
         var ozonSupplyArrivalIndex = await TryBuildOzonSupplyArrivalIndexAsync(cancellationToken);
         OzonStockArrivalIndex? supplyArrivalIndex = ozonSupplyArrivalIndex;
         if (supplementalArrivalDates is { Count: > 0 })
@@ -348,17 +344,14 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 .MergeSupplemental(supplementalArrivalDates);
         }
 
-        var unsoldMetricsEnd = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
+        var todayInTimeZone = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
+        var unsoldMetricsEnd = dateTo > todayInTimeZone ? todayInTimeZone : dateTo;
         var unsoldProducts = unsoldCandidates
             .Select(product =>
             {
                 var sku = product.Sku ?? 0;
-                var (sellingSince, daysWithoutSales) = ResolveUnsoldProductMetrics(
-                    product,
-                    sku,
-                    unsoldMetricsEnd,
-                    analyticsDaysBySku,
-                    supplyArrivalIndex);
+                var supplyDate = ResolveUnsoldProductSupplyDate(product, sku, supplyArrivalIndex);
+                var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, unsoldMetricsEnd);
 
                 return new OzonUnsoldProductRow(
                     sku,
@@ -371,7 +364,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                         : stocksByOfferId.GetValueOrDefault(product.OfferId, 0),
                     product.Status,
                     product.ImageUrl,
-                    sellingSince,
+                    supplyDate,
                     daysWithoutSales);
             })
             .OrderByDescending(row => row.DaysWithoutSales ?? 0)
@@ -599,79 +592,70 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     private static string GetProductKey(long sku, string offerId) =>
         sku != 0 ? $"sku:{sku}" : $"offer:{offerId}";
 
-    private static int? CalculateDaysWithoutSales(string? sellingSinceAt, DateOnly periodEnd)
+    private static int? CalculateDaysSinceSupplyDate(string? supplyDateAt, DateOnly periodEnd)
     {
-        if (string.IsNullOrWhiteSpace(sellingSinceAt))
+        if (string.IsNullOrWhiteSpace(supplyDateAt))
         {
             return null;
         }
 
-        DateOnly sellingDate;
-        if (DateOnly.TryParse(sellingSinceAt, out var parsedDate))
-        {
-            sellingDate = parsedDate;
-        }
-        else if (DateTimeOffset.TryParse(sellingSinceAt, out var parsedDateTime))
-        {
-            sellingDate = DateOnly.FromDateTime(parsedDateTime.UtcDateTime);
-        }
-        else
+        if (!TryParseSellingSinceDate(supplyDateAt, out var supplyDate))
         {
             return null;
         }
 
-        return Math.Max(0, periodEnd.DayNumber - sellingDate.DayNumber);
+        if (supplyDate > periodEnd)
+        {
+            return 0;
+        }
+
+        return Math.Max(0, periodEnd.DayNumber - supplyDate.DayNumber);
     }
 
-    private static (string? SellingSince, int? DaysWithoutSales) ResolveUnsoldProductMetrics(
+    private static bool TryParseSellingSinceDate(string value, out DateOnly sellingDate)
+    {
+        sellingDate = default;
+        if (DateOnly.TryParse(value, out sellingDate))
+        {
+            return true;
+        }
+
+        if (DateTimeOffset.TryParse(value, out var parsedDateTime))
+        {
+            sellingDate = DateOnly.FromDateTime(parsedDateTime.DateTime);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? ResolveUnsoldProductSupplyDate(
         OzonProductSummary product,
         long sku,
-        DateOnly periodEnd,
-        IReadOnlyDictionary<long, int> analyticsDaysBySku,
         OzonStockArrivalIndex? supplyArrivalIndex)
     {
-        if (!IsSellingStatus(product.Status))
+        if (!IsSellingStatus(product.Status) || supplyArrivalIndex is null)
         {
-            return (null, null);
+            return null;
         }
 
-        if (sku > 0 && analyticsDaysBySku.TryGetValue(sku, out var ozonDays))
+        if (sku > 0 && TryParseOzonDate(supplyArrivalIndex.GetSkuDate(sku), out var skuDate))
         {
-            var sellingSince = periodEnd.AddDays(-ozonDays).ToString("yyyy-MM-dd");
-            return (sellingSince, Math.Max(0, ozonDays));
+            return skuDate.ToString("yyyy-MM-dd");
         }
 
-        if (supplyArrivalIndex is not null)
+        if (!string.IsNullOrWhiteSpace(product.OfferId) &&
+            TryParseOzonDate(supplyArrivalIndex.GetOfferDate(product.OfferId), out var offerDate))
         {
-            DateOnly? supplyDate = null;
-            if (sku > 0 && TryParseOzonDate(supplyArrivalIndex.GetSkuDate(sku), out var skuDate))
-            {
-                supplyDate = skuDate;
-            }
-            else if (!string.IsNullOrWhiteSpace(product.OfferId) &&
-                     TryParseOzonDate(supplyArrivalIndex.GetOfferDate(product.OfferId), out var offerDate))
-            {
-                supplyDate = offerDate;
-            }
-            else if (TryParseOzonDate(supplyArrivalIndex.GetProductDate(product.ProductId), out var productDate))
-            {
-                supplyDate = productDate;
-            }
-
-            if (supplyDate is not null)
-            {
-                var sellingSince = supplyDate.Value.ToString("yyyy-MM-dd");
-                return (sellingSince, CalculateDaysWithoutSales(sellingSince, periodEnd));
-            }
+            return offerDate.ToString("yyyy-MM-dd");
         }
 
-        if (TryParseOzonDate(product.CreatedAt, out var createdDate))
+        if (TryParseOzonDate(supplyArrivalIndex.GetProductDate(product.ProductId), out var productDate))
         {
-            var sellingSince = createdDate.ToString("yyyy-MM-dd");
-            return (sellingSince, CalculateDaysWithoutSales(sellingSince, periodEnd));
+            return productDate.ToString("yyyy-MM-dd");
         }
 
-        return (null, null);
+        return null;
     }
 
     private async Task<OzonStockArrivalIndex?> TryBuildOzonSupplyArrivalIndexAsync(CancellationToken cancellationToken)
@@ -710,15 +694,9 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                         continue;
                     }
 
-                    if (!order.TryGetProperty("state_updated_date", out var updatedProperty))
-                    {
-                        continue;
-                    }
-
-                    if (!TryParseOzonSupplyCompletionDate(updatedProperty.GetString(), out var completionDate))
-                    {
-                        continue;
-                    }
+                    var orderCompletionDate = DateOnly.MinValue;
+                    var hasOrderCompletionDate = order.TryGetProperty("state_updated_date", out var updatedProperty) &&
+                                                 TryParseOzonSupplyCompletionDate(updatedProperty.GetString(), out orderCompletionDate);
 
                     if (!order.TryGetProperty("supplies", out var supplies) ||
                         supplies.ValueKind != JsonValueKind.Array)
@@ -728,6 +706,18 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
                     foreach (var supply in supplies.EnumerateArray())
                     {
+                        var completionDate = orderCompletionDate;
+                        if (supply.TryGetProperty("storage_warehouse", out var storageWarehouse) &&
+                            storageWarehouse.TryGetProperty("arrival_date", out var arrivalProperty) &&
+                            TryParseOzonSupplyCompletionDate(arrivalProperty.GetString(), out var arrivalDate))
+                        {
+                            completionDate = arrivalDate;
+                        }
+                        else if (!hasOrderCompletionDate)
+                        {
+                            continue;
+                        }
+
                         if (!supply.TryGetProperty("bundle_id", out var bundleProperty))
                         {
                             continue;

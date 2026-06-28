@@ -1,8 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import * as signalR from '@microsoft/signalr'
-import { KzIntegrationCard, KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
+import { KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
 import type { KzIntegrationSettings } from './KzRegionUi'
+import { KzIntegrationsPanel } from './features/integrations/components/KzIntegrationsPanel'
 import {
   getKzMarketplaceLabel,
   getKzTaskType,
@@ -33,6 +34,82 @@ import {
   type NovinkaCatalogTab,
   type ShopRegion,
 } from './shopRegion'
+import { getApiErrorMessage } from './shared/api/client'
+import * as productionApi from './shared/api/productionApi'
+import {
+  formatAnalyticsDate,
+  formatDateTime,
+  formatDaysWithoutSales,
+  formatFileSize,
+  formatInputDate,
+  formatLossMoney,
+  formatMoney,
+  formatOzonCreatedAt,
+} from './shared/utils/formatters'
+import type {
+  DraftNovinkaItem,
+  DraftTaskItem,
+  ProductionAnalyticsAssignee,
+  ProductionAnalyticsReport,
+  ProductionAnalyticsSummaryRow,
+  ProductionCatalogItem,
+  ProductionCatalogTab,
+  ProductionFile,
+  ProductionFilePath,
+  ProductionSubTab,
+  ProductionTask,
+  ProductionTaskItem,
+  TaskFormMode,
+} from './domain/types/production'
+import type { OzonProduct } from './domain/types/ozon'
+import {
+  fromDatetimeLocalValue,
+  getProductionTaskActualTotal,
+  getProductionTaskItems,
+  getProductionTaskRequiredTotal,
+  getProductionTaskSummary,
+  getProductionTaskTableLabels,
+  getProductionTaskTableMode,
+  isNovinkaTask,
+  sortProductionTasksByUrgency,
+  toDatetimeLocalValue,
+  translateProductionTaskStatus,
+} from './features/production/lib/taskUtils'
+import {
+  buildNovinkaCatalogFromFiles,
+  buildNovinkaCatalogFromSupplyReserves,
+  filterNovinkaCatalogByMarketplace,
+  getProductionFilesForCatalogItem,
+  getProductionFilesForTaskItem,
+  getProductionPathsForCatalogItem,
+  getProductionPathsForTaskItem,
+  mergeNovinkaCatalogItems,
+  matchesProductionTask,
+} from './features/production/lib/catalogUtils'
+import {
+  getProductionTaskTypeLabel,
+  matchesKzProductionMarketplace,
+  resolveNovinkaMarketplaceForTask,
+} from './features/production/lib/taskDisplayUtils'
+import {
+  ProductionFilesModal,
+  ProductionTaskArchiveTable,
+  ProductionTaskTable,
+} from './features/production/components/ProductionTaskTables'
+import { ProductionAnalyticsRecordEditModal } from './features/production/components/ProductionAnalyticsRecordEditModal'
+import { ProductionAnalyticsUserDetailModal } from './features/production/components/ProductionAnalyticsUserDetailModal'
+import { NovinkaProductPreview } from './features/production/components/NovinkaProductPreview'
+import { NovinkaSearchInput } from './features/production/components/NovinkaSearchInput'
+import { ProductCatalogFilesEditor } from './features/production/components/ProductCatalogFilesEditor'
+import { ProductSearchInput } from './features/production/components/ProductSearchInput'
+import { ProductionPathsPanel } from './features/production/components/ProductionPathsPanel'
+import { TaskProductPreview } from './features/production/components/TaskProductPreview'
+import { NovinkaExternalLinkButton } from './features/production/components/NovinkaExternalLinkButton'
+import { LinkHoverPreview } from './shared/components/LinkPreview'
+import { OfferIdCell } from './shared/components/OfferIdCell'
+import { ProductImageHoverPreview, ProductThumb } from './shared/components/ProductMedia'
+import { UserAvatarPreview } from './shared/components/UserAvatarPreview'
+import { appRoles, getRoleLabel } from './shared/constants/appRoles'
 import './App.css'
 
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000001'
@@ -208,20 +285,6 @@ type BackupFile = {
   createdAt: string
 }
 
-type OzonProduct = {
-  productId: number
-  offerId: string
-  sku?: number
-  name: string
-  price: number
-  oldPrice: number
-  minPrice: number
-  currencyCode: string
-  status: string
-  productUrl: string
-  imageUrl: string
-}
-
 type OzonStock = {
   productId: number
   offerId: string
@@ -351,75 +414,6 @@ type OzonAnalytics = {
   timestamp: string
 }
 
-type ProductionFile = {
-  id: string
-  ozonProductId?: number
-  offerId: string
-  productName: string
-  productLink?: string
-  notes: string
-  fileName: string
-  contentType: string
-  createdAt: string
-}
-
-type ProductionFilePath = {
-  id: string
-  ozonProductId?: number
-  offerId: string
-  productName: string
-  productLink?: string
-  path: string
-  createdAt: string
-}
-
-type ProductionCatalogItem = {
-  offerId: string
-  ozonProductId?: number
-  productName: string
-  productLink: string
-  fileCount: number
-  completedAt?: string
-  marketplace?: NovinkaMarketplace
-}
-
-type ProductionTask = {
-  id: string
-  ozonProductId: number
-  offerId: string
-  productName: string
-  requiredQuantity: number
-  actualQuantity?: number
-  status: 'New' | 'InProgress' | 'Cancelled' | 'Completed'
-  taskType?: 'Ozon' | 'Novinka' | 'Kaspi' | 'Satu' | 'Halyk'
-  isUrgent: boolean
-  assignedUserName?: string
-  createdByUserId?: string
-  createdByDisplayName?: string
-  createdAt: string
-  startedAt?: string
-  cancelledAt?: string
-  cancelledByUserId?: string
-  cancelledByDisplayName?: string
-  cancellationComment?: string
-  completedAt?: string
-  isArchived: boolean
-  archivedAt?: string
-  items: ProductionTaskItem[]
-}
-
-type ProductionTaskItem = {
-  id: string
-  ozonProductId: number
-  offerId: string
-  productName: string
-  productLink?: string
-  requiredQuantity: number
-  actualQuantity?: number
-  enforceMinimumQuantity?: boolean
-  filePath?: string
-}
-
 type SupplyStatus = 'Created' | 'Sent' | 'Accepted'
 
 type SupplyItem = {
@@ -473,25 +467,6 @@ type DraftSupplyItem = {
   isReserve: boolean
 }
 
-type DraftTaskItem = {
-  tempId: string
-  ozonProductId: number
-  offerId: string
-  productName: string
-  productLink?: string
-  imageUrl: string
-  requiredQuantity: number
-  enforceMinimumQuantity: boolean
-  isNovinka?: boolean
-}
-
-type DraftNovinkaItem = {
-  tempId: string
-  productName: string
-  productLink: string
-  offerId?: string
-}
-
 function createTempId() {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID()
@@ -509,13 +484,6 @@ function groupItemsByField<T>(items: T[], getKey: (item: T) => string): Array<[s
     map.set(key, bucket)
   }
   return Array.from(map.entries())
-}
-
-function formatInputDate(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
 }
 
 function getDefaultAnalyticsDateFrom() {
@@ -696,12 +664,6 @@ const featureGroups = [
     ],
   },
 ]
-const appRoles = [
-  { value: 'Production', label: 'Производство' },
-  { value: 'Designer', label: 'Дизайнер' },
-  { value: 'Leadership', label: 'Руководство' },
-  { value: 'Admin', label: 'Администратор' },
-] as const
 
 const homeBlockDefinitions = [
   {
@@ -978,10 +940,6 @@ function LazyUserSettingsDetails({
   )
 }
 
-function getRoleLabel(role: string) {
-  return appRoles.find((item) => item.value === role)?.label ?? role
-}
-
 function hasExplicitProductionTaskVisibility(features: string[] | undefined) {
   return Boolean(
     features?.includes('production.tasks.designer') || features?.includes('production.tasks.production'),
@@ -1034,33 +992,8 @@ function isProductionTaskVisibleForUser(
 const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'chats.edit', 'integrations', 'integrations.telegram', 'integrations.telegram.connect']
 
 type TabId = (typeof tabs)[number]['id']
-type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
-type ProductionCatalogTab = 'ozon' | 'kaspi' | 'satu' | 'halyk' | NovinkaCatalogTab | 'editor'
-type TaskFormMode = 'ozon' | 'kaspi' | 'satu' | 'halyk'
 type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
 type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales' | 'production'
-
-type ProductionAnalyticsSummaryRow = {
-  userId?: string
-  userName: string
-  role: string
-  avatarUrl: string
-  taskCount: number
-  itemCount: number
-}
-
-type ProductionAnalyticsReport = {
-  summary: ProductionAnalyticsSummaryRow[]
-  tasks: ProductionTask[]
-}
-
-type ProductionAnalyticsAssignee = {
-  id: string
-  displayName: string
-  userName: string
-  role: string
-  avatarUrl: string
-}
 
 function UsersAdminPanel({
   token,
@@ -1725,6 +1658,7 @@ function App() {
   const [reportSections, setReportSections] = useState<ReportSection[]>([])
   const [reportsStatus, setReportsStatus] = useState('')
   const [integrationsSubTab, setIntegrationsSubTab] = useState<'connections' | 'telegram-notifications' | 'telegram-reports'>('connections')
+  const [integrationKzMarketplace, setIntegrationKzMarketplace] = useState<KzMarketplace>('satu')
   const [integrationAdminUserId, setIntegrationAdminUserId] = useState('')
   const [profilePasswordForm, setProfilePasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [profileModalUser, setProfileModalUser] = useState<User | null>(null)
@@ -3611,11 +3545,7 @@ function App() {
   }
 
   async function exportTaskArchive() {
-    const response = await fetch('/api/production/tasks/archive/export', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.exportProductionArchive(token)
 
     if (!response.ok) {
       setTaskStatus('Не удалось скачать архив задач')
@@ -4536,7 +4466,7 @@ function App() {
       ...current,
       [marketplace]: data.configured
         ? `${label} API настроен. Обновлено: ${data.updatedAt ? formatDateTime(data.updatedAt) : '—'}`
-        : `Укажите ID и API Key ${label}`,
+        : `Укажите ID магазина и API Key ${label}`,
     }))
   }
 
@@ -4879,18 +4809,14 @@ function App() {
   }
 
   async function loadProductionAnalyticsAssignees() {
-    const response = await fetch('/api/production/analytics/assignees', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.fetchProductionAnalyticsAssignees(token)
 
     if (!response.ok) {
       setProductionAnalyticsAssignees([])
       return
     }
 
-    const data: ProductionAnalyticsAssignee[] = await response.json()
+    const data = await productionApi.parseProductionAnalyticsAssignees(response)
     setProductionAnalyticsAssignees(data)
   }
 
@@ -4908,18 +4834,14 @@ function App() {
       params.set('userId', productionAnalyticsUserId.trim())
     }
 
-    const response = await fetch(`/api/production/analytics/report?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.fetchProductionAnalyticsReport(token, params)
 
     if (!response.ok) {
       setProductionAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить отчёт'))
       return
     }
 
-    const data: ProductionAnalyticsReport = await response.json()
+    const data = await productionApi.parseProductionAnalyticsReport(response)
     setProductionAnalyticsReport(data)
     setProductionAnalyticsStatus(
       `Отчёт обновлён: ${data.summary.length} исполнителей · ${data.tasks.length} задач`,
@@ -4939,11 +4861,7 @@ function App() {
       params.set('userId', targetUserId)
     }
 
-    const response = await fetch(`/api/production/analytics/export?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.exportProductionAnalytics(token, params)
 
     if (!response.ok) {
       setProductionAnalyticsStatus('Не удалось выгрузить Excel')
@@ -4961,13 +4879,7 @@ function App() {
   }
 
   async function saveProductionAnalyticsRecord(task: ProductionTask) {
-    const response = await fetch(`/api/production/analytics/records/${task.id}`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    const response = await productionApi.updateProductionAnalyticsRecord(token, task.id, {
         completedAt: task.completedAt ? new Date(task.completedAt).toISOString() : undefined,
         assignedUserName: task.assignedUserName ?? '',
         ozonProductId: task.ozonProductId,
@@ -4991,7 +4903,6 @@ function App() {
           enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
           filePath: item.filePath ?? '',
         })),
-      }),
     })
 
     if (!response.ok) {
@@ -5076,25 +4987,7 @@ function App() {
   }
 
   async function loadProductionFiles(search: string) {
-    const params = new URLSearchParams()
-    if (search.trim()) {
-      params.set('search', search.trim())
-    }
-
-    const query = params.toString()
-    const suffix = query ? `?${query}` : ''
-    const [filesResponse, pathsResponse] = await Promise.all([
-      fetch(`/api/production/files${suffix}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }),
-      fetch(`/api/production/file-paths${suffix}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }),
-    ])
+    const [filesResponse, pathsResponse] = await productionApi.fetchProductionFiles(token, search)
 
     if (!filesResponse.ok) {
       setProductionStatus('Не удалось загрузить данные производства')
@@ -5103,10 +4996,10 @@ function App() {
       return
     }
 
-    const data: ProductionFile[] = await filesResponse.json()
+    const data = await productionApi.parseProductionFiles(filesResponse)
     setProductionFiles(data)
     if (pathsResponse.ok) {
-      const paths: ProductionFilePath[] = await pathsResponse.json()
+      const paths = await productionApi.parseProductionFilePaths(pathsResponse)
       setProductionFilePaths(paths)
     } else {
       setProductionFilePaths([])
@@ -5127,13 +5020,7 @@ function App() {
     formData.append('notes', appendNovinkaMarketplaceNote('', marketplace))
     formData.append('file', file)
 
-    const response = await fetch('/api/production/files', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: formData,
-    })
+    const response = await productionApi.uploadProductionFile(token, formData)
 
     if (!response.ok) {
       setTaskStatus('Не удалось загрузить файл')
@@ -5145,11 +5032,7 @@ function App() {
   }
 
   async function downloadProductionFile(id: string) {
-    const response = await fetch(`/api/production/files/${id}/download`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.downloadProductionFile(token, id)
 
     if (!response.ok) {
       setProductionStatus('Не удалось скачать файл')
@@ -5185,12 +5068,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`/api/production/files/${id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
+      const response = await productionApi.deleteProductionFile(token, id)
 
       if (!response.ok) {
         const message = await response.text()
@@ -5310,18 +5188,14 @@ function App() {
   }
 
   async function loadProductionTasks() {
-    const response = await fetch('/api/production/tasks', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.fetchProductionTasks(token)
 
     if (!response.ok) {
       setTaskStatus('Не удалось загрузить задачи')
       return
     }
 
-    const data: ProductionTask[] = await response.json()
+    const data = await productionApi.parseProductionTasks(response)
     const newTasks = data.filter((task) => task.status === 'New' && !task.isArchived)
     const previousTaskIds = knownNewTaskIdsRef.current
     const nextTaskIds = new Set(newTasks.map((task) => task.id))
@@ -5476,18 +5350,11 @@ function App() {
     setProductEditorStatus('')
 
     try {
-      const response = await fetch('/api/production/catalog/convert-to-ozon', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          sourceOfferId: sourceNovinka.offerId,
-          sourceProductName: sourceNovinka.productName,
-          sourceProductLink: sourceNovinka.productLink,
-          targetOzonProductId,
-        }),
+      const response = await productionApi.convertNovinkaCatalogToOzon(token, {
+        sourceOfferId: sourceNovinka.offerId,
+        sourceProductName: sourceNovinka.productName,
+        sourceProductLink: sourceNovinka.productLink,
+        targetOzonProductId,
       })
 
       if (!response.ok) {
@@ -5706,17 +5573,7 @@ function App() {
       : { taskType: 'Novinka', isUrgent: taskIsUrgent, items: itemPayload }
 
     try {
-      const response = await fetch(
-        taskIdBeingEdited ? `/api/production/tasks/${taskIdBeingEdited}` : '/api/production/tasks',
-        {
-          method: taskIdBeingEdited ? 'PUT' : 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        },
-      )
+      const response = await productionApi.saveProductionTask(token, taskIdBeingEdited, payload)
 
       const responseText = await response.text()
 
@@ -5829,17 +5686,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(
-        taskIdBeingEdited ? `/api/production/tasks/${taskIdBeingEdited}` : '/api/production/tasks',
-        {
-          method: taskIdBeingEdited ? 'PUT' : 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        },
-      )
+      const response = await productionApi.saveProductionTask(token, taskIdBeingEdited, payload)
 
       if (!response.ok) {
         const message = getApiErrorMessage(
@@ -5868,12 +5715,7 @@ function App() {
   }
 
   async function startProductionTask(id: string) {
-    const response = await fetch(`/api/production/tasks/${id}/start`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.startProductionTask(token, id)
 
     if (!response.ok) {
       setTaskStatus('Не удалось взять задачу в работу')
@@ -5895,14 +5737,7 @@ function App() {
       return
     }
 
-    const response = await fetch(`/api/production/tasks/${cancelTaskId}/cancel`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ comment }),
-    })
+    const response = await productionApi.cancelProductionTask(token, cancelTaskId, comment)
 
     if (!response.ok) {
       const message = await response.text()
@@ -5936,13 +5771,9 @@ function App() {
         return
       }
 
-      const response = await fetch(`/api/production/tasks/${id}/complete`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ actualQuantity: 0, items: [] }),
+      const response = await productionApi.completeProductionTask(token, id, {
+        actualQuantity: 0,
+        items: [],
       })
 
       if (!response.ok) {
@@ -5980,13 +5811,9 @@ function App() {
 
     const actualQuantity = completedItems.reduce((sum, item) => sum + item.actualQuantity, 0)
 
-    const response = await fetch(`/api/production/tasks/${id}/complete`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ actualQuantity, items: completedItems }),
+    const response = await productionApi.completeProductionTask(token, id, {
+      actualQuantity,
+      items: completedItems,
     })
 
     if (!response.ok) {
@@ -6010,12 +5837,7 @@ function App() {
       return
     }
 
-    const response = await fetch(`/api/production/tasks/${id}/archive`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.archiveProductionTask(token, id)
 
     if (!response.ok) {
       const message = await response.text()
@@ -6028,12 +5850,7 @@ function App() {
   }
 
   async function restoreProductionTask(id: string) {
-    const response = await fetch(`/api/production/tasks/${id}/restore`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.restoreProductionTask(token, id)
 
     if (!response.ok) {
       const message = await response.text()
@@ -6050,12 +5867,7 @@ function App() {
       return
     }
 
-    const response = await fetch(`/api/production/tasks/${id}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    const response = await productionApi.deleteProductionTask(token, id)
 
     if (!response.ok) {
       setTaskStatus('Не удалось удалить задачу')
@@ -8276,6 +8088,8 @@ function App() {
                         ? `${analyticsDateFrom} — ${analyticsDateTo}`
                         : 'не выбран'}
                       {' · '}
+                      дата и дни — с последней FBO-поставки на склад Ozon
+                      {' · '}
                       найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'
                         ? ` из ${unsoldAnalyticsProducts.length}`
@@ -8308,7 +8122,7 @@ function App() {
                       <span>Товар</span>
                       <span>Артикул</span>
                       <span>SKU</span>
-                      <span>В продаже с</span>
+                      <span>Поставка на склад</span>
                       <span>Дней без продаж</span>
                       <span>Статус</span>
                       <span>Остаток</span>
@@ -9445,33 +9259,31 @@ function App() {
                 </article>
               )}
 
-              {canViewIntegrationsOzon() && shopRegion === 'kz' &&
-                (['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
-                  <KzIntegrationCard
-                    key={marketplace}
-                    marketplace={marketplace}
-                    settings={kzIntegrationSettings[marketplace]}
-                    merchantId={kzIntegrationForms[marketplace].merchantId}
-                    apiKey={kzIntegrationForms[marketplace].apiKey}
-                    status={kzIntegrationStatus[marketplace]}
-                    saving={kzIntegrationSaving[marketplace]}
-                    canEdit={canEditIntegrationsOzon()}
-                    onMerchantIdChange={(value) =>
-                      setKzIntegrationForms((current) => ({
-                        ...current,
-                        [marketplace]: { ...current[marketplace], merchantId: value },
-                      }))
-                    }
-                    onApiKeyChange={(value) =>
-                      setKzIntegrationForms((current) => ({
-                        ...current,
-                        [marketplace]: { ...current[marketplace], apiKey: value },
-                      }))
-                    }
-                    onSave={() => void saveKzIntegration(marketplace)}
-                    onTest={() => void testKzIntegration(marketplace)}
-                  />
-                ))}
+              {canViewIntegrationsOzon() && shopRegion === 'kz' && (
+                <KzIntegrationsPanel
+                  activeMarketplace={integrationKzMarketplace}
+                  onMarketplaceChange={setIntegrationKzMarketplace}
+                  settings={kzIntegrationSettings}
+                  forms={kzIntegrationForms}
+                  status={kzIntegrationStatus}
+                  saving={kzIntegrationSaving}
+                  canEdit={canEditIntegrationsOzon()}
+                  onMerchantIdChange={(marketplace, value) =>
+                    setKzIntegrationForms((current) => ({
+                      ...current,
+                      [marketplace]: { ...current[marketplace], merchantId: value },
+                    }))
+                  }
+                  onApiKeyChange={(marketplace, value) =>
+                    setKzIntegrationForms((current) => ({
+                      ...current,
+                      [marketplace]: { ...current[marketplace], apiKey: value },
+                    }))
+                  }
+                  onSave={(marketplace) => void saveKzIntegration(marketplace)}
+                  onTest={(marketplace) => void testKzIntegration(marketplace)}
+                />
+              )}
 
               {canViewIntegrationsTelegram() && (
               <article className="integration-card">
@@ -10744,198 +10556,6 @@ function AnalyticsProductGroupCard({
   )
 }
 
-function ProductSearchInput({
-  listId: _listId,
-  products,
-  selectedProductId,
-  onProductIdChange,
-  placeholder,
-  required = false,
-  largePreview = false,
-  hideInlinePreview = false,
-  showClearButton = false,
-}: {
-  listId: string
-  products: OzonProduct[]
-  selectedProductId: string
-  onProductIdChange: (productId: string) => void
-  placeholder: string
-  required?: boolean
-  largePreview?: boolean
-  hideInlinePreview?: boolean
-  showClearButton?: boolean
-}) {
-  const safeProducts = products ?? []
-  const selectedProduct = safeProducts.find((product) => String(product.productId) === selectedProductId)
-  const selectedLabel = selectedProduct ? formatProductSelectedLabel(selectedProduct) : ''
-  const [query, setQuery] = useState(selectedLabel)
-  const [isOpen, setIsOpen] = useState(false)
-  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
-  const controlRef = useRef<HTMLDivElement>(null)
-  const normalizedQuery = query.trim().toLowerCase()
-  const filteredProducts = normalizedQuery
-    ? safeProducts
-        .filter((product) =>
-          [
-            product.name,
-            product.offerId,
-            product.sku,
-            product.productId,
-            product.status,
-          ]
-            .filter((value) => value !== undefined && value !== null)
-            .some((value) => String(value).toLowerCase().includes(normalizedQuery)),
-        )
-        .slice(0, 80)
-    : safeProducts.slice(0, 80)
-
-  useEffect(() => {
-    setQuery(selectedLabel)
-  }, [selectedLabel])
-
-  useEffect(() => {
-    if (!isOpen) {
-      return
-    }
-
-    function updateMenuPosition() {
-      const input = controlRef.current?.querySelector('.product-search-input')
-      if (!(input instanceof HTMLInputElement)) {
-        return
-      }
-
-      const rect = input.getBoundingClientRect()
-      setMenuStyle({
-        position: 'fixed',
-        top: `${rect.bottom + 6}px`,
-        left: `${rect.left}px`,
-        width: `${Math.min(rect.width, 680)}px`,
-        zIndex: 2000,
-      })
-    }
-
-    updateMenuPosition()
-    window.addEventListener('resize', updateMenuPosition)
-    window.addEventListener('scroll', updateMenuPosition, true)
-    return () => {
-      window.removeEventListener('resize', updateMenuPosition)
-      window.removeEventListener('scroll', updateMenuPosition, true)
-    }
-  }, [isOpen, query, products.length])
-
-  function handleChange(value: string) {
-    setQuery(value)
-    setIsOpen(true)
-
-    const selected = products.find((product) => {
-      const productId = String(product.productId)
-      return productId === value || formatProductOption(product) === value || formatProductSelectedLabel(product) === value
-    })
-
-    onProductIdChange(selected ? String(selected.productId) : '')
-  }
-
-  function selectProduct(product: OzonProduct) {
-    onProductIdChange(String(product.productId))
-    setQuery(formatProductSelectedLabel(product))
-    setIsOpen(false)
-  }
-
-  function clearSelection() {
-    onProductIdChange('')
-    setQuery('')
-    setIsOpen(false)
-  }
-
-  return (
-    <div className="product-search-wrap">
-      <div
-        className={`product-search-control-row ${showClearButton && selectedProduct ? 'has-outside-clear' : ''}`}
-      >
-        <div
-          ref={controlRef}
-          className={`product-search-control ${selectedProduct && !showClearButton ? 'has-inline-thumb' : ''}`}
-        >
-          <input
-            className="product-search-input"
-            placeholder={placeholder}
-            value={query}
-            onChange={(event) => handleChange(event.target.value)}
-            onFocus={() => setIsOpen(true)}
-            onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
-            required={required}
-          />
-          {selectedProduct && !showClearButton && (
-            <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} />
-          )}
-          {isOpen && filteredProducts.length > 0 && (
-            <div className="product-search-menu product-search-menu-fixed" id={_listId} style={menuStyle}>
-              {filteredProducts.map((product) => (
-                <button
-                  type="button"
-                  className="product-search-option"
-                  key={product.productId}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => selectProduct(product)}
-                >
-                  <ProductImageHoverPreview imageUrl={product.imageUrl} name={product.name}>
-                    <ProductThumb imageUrl={product.imageUrl} name={product.name} />
-                  </ProductImageHoverPreview>
-                  <span>
-                    <OfferIdCell offerId={product.offerId} />
-                    <small>{product.name}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {isOpen && filteredProducts.length === 0 && (
-            <div className="product-search-menu product-search-menu-fixed product-search-menu-empty" style={menuStyle}>
-              <span>
-                {products.length === 0
-                  ? 'Список товаров пуст. Подождите загрузку или откройте вкладку «Товары».'
-                  : 'По вашему запросу ничего не найдено.'}
-              </span>
-            </div>
-          )}
-        </div>
-        {showClearButton && selectedProduct && (
-          <button
-            type="button"
-            className="product-search-clear-outside"
-            aria-label="Очистить выбор"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={clearSelection}
-          >
-            ×
-          </button>
-        )}
-      </div>
-      {selectedProduct && !hideInlinePreview && (
-        <div className={`selected-product-card ${largePreview ? 'selected-product-card-large' : ''}`}>
-          <ProductThumb imageUrl={selectedProduct.imageUrl} name={selectedProduct.name} large={largePreview} />
-          <span>
-            <strong>{selectedProduct.name}</strong>
-            <small>
-              <OfferIdCell offerId={selectedProduct.offerId} inline />
-              {selectedProduct.sku ? ` | SKU ${selectedProduct.sku}` : ''}
-            </small>
-          </span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function formatProductOption(product: OzonProduct) {
-  const sku = product.sku ? ` | SKU ${product.sku}` : ''
-  return `${product.offerId} | ${product.name}${sku} | ID ${product.productId}`
-}
-
-function formatProductSelectedLabel(product: OzonProduct) {
-  const name = product.name.length > 64 ? `${product.name.slice(0, 64)}...` : product.name
-  return `${product.offerId} | ${name}`
-}
 
 function ProductTypeEditorPanel({
   token,
@@ -11092,606 +10712,7 @@ function ProductTypeEditorPanel({
   )
 }
 
-function ProductCatalogFilesEditor({
-  token,
-  novinkaProducts,
-  catalogProducts,
-  kzProducts,
-  productionFiles,
-  productionFilePaths,
-  onRefreshProductionData,
-  onDownloadFile,
-  onDeleteFile,
-  shopRegion,
-  kzMarketplace,
-}: {
-  token: string
-  novinkaProducts: ProductionCatalogItem[]
-  catalogProducts: OzonProduct[]
-  kzProducts: Record<KzMarketplace, OzonProduct[]>
-  productionFiles: ProductionFile[]
-  productionFilePaths: ProductionFilePath[]
-  onRefreshProductionData: () => Promise<void>
-  onDownloadFile: (id: string) => void
-  onDeleteFile?: (id: string) => void
-  shopRegion: ShopRegion
-  kzMarketplace: KzMarketplace
-}) {
-  const [targetMode, setTargetMode] = useState<'novinka' | 'catalog'>('novinka')
-  const [filesCatalogMarketplace, setFilesCatalogMarketplace] = useState<KzMarketplace>(kzMarketplace)
-  const [filesNovinkaOfferId, setFilesNovinkaOfferId] = useState('')
-  const [filesCatalogProductId, setFilesCatalogProductId] = useState('')
-  const [pathDraft, setPathDraft] = useState('')
-  const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [filesStatus, setFilesStatus] = useState('')
-  const [filesSaving, setFilesSaving] = useState(false)
 
-  useEffect(() => {
-    setFilesCatalogMarketplace(kzMarketplace)
-  }, [kzMarketplace])
-
-  const activeCatalogProducts =
-    shopRegion === 'rf' ? catalogProducts : kzProducts[filesCatalogMarketplace]
-  const catalogLabel = shopRegion === 'rf' ? 'Ozon' : getKzMarketplaceLabel(filesCatalogMarketplace)
-
-  const selectedNovinka = novinkaProducts.find((item) => item.offerId === filesNovinkaOfferId)
-  const selectedCatalogProduct = activeCatalogProducts.find(
-    (product) => String(product.productId) === filesCatalogProductId,
-  )
-  const selectedCatalogItem: ProductionCatalogItem | undefined =
-    targetMode === 'novinka' && selectedNovinka
-      ? selectedNovinka
-      : selectedCatalogProduct
-        ? {
-            offerId: selectedCatalogProduct.offerId,
-            ozonProductId: selectedCatalogProduct.productId,
-            productName: selectedCatalogProduct.name,
-            productLink: selectedCatalogProduct.productUrl ?? '',
-            fileCount: 0,
-          }
-        : undefined
-
-  const itemFiles = selectedCatalogItem
-    ? getProductionFilesForCatalogItem(selectedCatalogItem, productionFiles)
-    : []
-  const itemPaths = selectedCatalogItem
-    ? getProductionPathsForCatalogItem(selectedCatalogItem, productionFilePaths)
-    : []
-
-  async function deleteCatalogPath(pathId: string) {
-    if (!window.confirm('Удалить путь к файлу?')) {
-      return
-    }
-
-    const response = await fetch(`/api/production/catalog/file-path/${pathId}`, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setFilesStatus(getApiErrorMessage(await response.text(), 'Не удалось удалить путь'))
-      return
-    }
-
-    setFilesStatus('Путь удалён')
-    await onRefreshProductionData()
-  }
-
-  async function saveCatalogAssets() {
-    if (!selectedCatalogItem) {
-      setFilesStatus(
-        shopRegion === 'rf' ? 'Выберите новинку или товар Ozon' : 'Выберите новинку или товар маркетплейса',
-      )
-      return
-    }
-
-    const trimmedPath = pathDraft.trim()
-    if (trimmedPath.length > 0 && trimmedPath.length < 3) {
-      setFilesStatus('Путь к файлу должен содержать минимум 3 символа')
-      return
-    }
-
-    if (trimmedPath.length === 0 && pendingFiles.length === 0) {
-      setFilesStatus('Укажите путь или выберите файлы для загрузки')
-      return
-    }
-
-    setFilesSaving(true)
-    setFilesStatus('')
-
-    try {
-      if (trimmedPath.length >= 3) {
-        const response = await fetch('/api/production/catalog/file-path', {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            offerId: selectedCatalogItem.offerId,
-            ozonProductId: selectedCatalogItem.ozonProductId ?? null,
-            productName: selectedCatalogItem.productName,
-            productLink: selectedCatalogItem.productLink ?? '',
-            path: trimmedPath,
-          }),
-        })
-
-        if (!response.ok) {
-          setFilesStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить путь'))
-          return
-        }
-      }
-
-      const marketplace =
-        targetMode === 'novinka'
-          ? selectedNovinka?.marketplace ?? (shopRegion === 'rf' ? 'ozon' : filesCatalogMarketplace)
-          : shopRegion === 'rf'
-            ? 'ozon'
-            : filesCatalogMarketplace
-
-      const uploadedCount = pendingFiles.length
-
-      for (const file of pendingFiles) {
-        const formData = new FormData()
-        formData.append(
-          'ozonProductId',
-          selectedCatalogItem.ozonProductId ? String(selectedCatalogItem.ozonProductId) : '0',
-        )
-        formData.append('offerId', selectedCatalogItem.offerId)
-        formData.append('productName', selectedCatalogItem.productName)
-        formData.append('productLink', selectedCatalogItem.productLink ?? '')
-        formData.append('notes', appendNovinkaMarketplaceNote('', marketplace))
-        formData.append('file', file)
-
-        const response = await fetch('/api/production/files', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        })
-
-        if (!response.ok) {
-          setFilesStatus(getApiErrorMessage(await response.text(), `Не удалось загрузить файл ${file.name}`))
-          return
-        }
-      }
-
-      setPathDraft('')
-      setPendingFiles([])
-      await onRefreshProductionData()
-      setFilesStatus(
-        uploadedCount > 0 && trimmedPath.length >= 3
-          ? `Сохранено: путь и ${uploadedCount} файл(ов)`
-          : uploadedCount > 0
-            ? `Загружено файлов: ${uploadedCount}`
-            : 'Путь сохранён',
-      )
-    } finally {
-      setFilesSaving(false)
-    }
-  }
-
-  return (
-    <section className="product-catalog-files-editor">
-      <div className="section-title soft-title">
-        <div>
-          <h2>Файлы и пути производства</h2>
-          <p>
-            {shopRegion === 'rf'
-              ? 'Выберите новинку или товар Ozon, укажите путь на диске и прикрепите файлы.'
-              : 'Выберите новинку или товар маркетплейса KZ, укажите путь на диске и прикрепите файлы.'}
-          </p>
-        </div>
-      </div>
-
-      <div className="product-catalog-files-body">
-        <div className="product-catalog-files-tabs" role="tablist" aria-label="Тип товара">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={targetMode === 'novinka'}
-            className={targetMode === 'novinka' ? 'active' : ''}
-            onClick={() => setTargetMode('novinka')}
-          >
-            Новинка
-          </button>
-          {shopRegion === 'rf' ? (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={targetMode === 'catalog'}
-              className={targetMode === 'catalog' ? 'active' : ''}
-              onClick={() => setTargetMode('catalog')}
-            >
-              Товар Ozon
-            </button>
-          ) : (
-            KZ_MARKETPLACES.map((marketplace) => (
-              <button
-                type="button"
-                role="tab"
-                key={marketplace}
-                aria-selected={targetMode === 'catalog' && filesCatalogMarketplace === marketplace}
-                className={targetMode === 'catalog' && filesCatalogMarketplace === marketplace ? 'active' : ''}
-                onClick={() => {
-                  setTargetMode('catalog')
-                  setFilesCatalogMarketplace(marketplace)
-                  setFilesCatalogProductId('')
-                }}
-              >
-                {getKzMarketplaceLabel(marketplace)}
-              </button>
-            ))
-          )}
-        </div>
-
-        <div className="supply-form-block supply-form-block-novinka product-catalog-files-picker">
-          <strong>{targetMode === 'novinka' ? 'Новинка' : `Товар ${catalogLabel}`}</strong>
-          <span className="product-type-editor-hint">
-            {targetMode === 'novinka'
-              ? 'Выберите новинку из списка'
-              : shopRegion === 'rf'
-                ? 'Выберите товар из каталога Ozon'
-                : `Выберите товар из каталога ${getKzMarketplaceLabel(filesCatalogMarketplace)}`}
-          </span>
-          {targetMode === 'novinka' ? (
-            <NovinkaSearchInput
-              listId="product-editor-files-novinka-list"
-              products={novinkaProducts}
-              selectedOfferId={filesNovinkaOfferId}
-              onOfferIdChange={setFilesNovinkaOfferId}
-              placeholder="Начните писать название или артикул"
-              showClearButton
-            />
-          ) : (
-            <ProductSearchInput
-              listId="product-editor-files-catalog-list"
-              products={activeCatalogProducts}
-              selectedProductId={filesCatalogProductId}
-              onProductIdChange={setFilesCatalogProductId}
-              placeholder="Начните писать название или артикул"
-              hideInlinePreview
-              showClearButton
-            />
-          )}
-        </div>
-
-        {selectedCatalogItem ? (
-          <div className="product-catalog-files-current">
-            {targetMode === 'catalog' && selectedCatalogProduct ? (
-              <TaskProductPreview product={selectedCatalogProduct} />
-            ) : (
-              <NovinkaProductPreview
-                item={selectedCatalogItem}
-                token={token}
-                files={itemFiles}
-                paths={itemPaths}
-              />
-            )}
-
-            {itemPaths.length > 0 && (
-              <div className="product-catalog-files-list">
-                <strong>Текущие пути</strong>
-                {itemPaths.map((entry) => (
-                  <div className="product-catalog-files-row" key={entry.id}>
-                    <PathCopyBlock path={entry.path} />
-                    <button type="button" className="danger" onClick={() => void deleteCatalogPath(entry.id)}>
-                      Удалить
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {itemFiles.length > 0 && (
-              <div className="product-catalog-files-list">
-                <strong>Текущие файлы</strong>
-                {itemFiles.map((file) => (
-                  <div className="product-catalog-files-row" key={file.id}>
-                    <span>
-                      <strong>{file.fileName}</strong>
-                      <small>{formatDateTime(file.createdAt)}</small>
-                    </span>
-                    <span className="product-catalog-files-actions">
-                      <button type="button" onClick={() => onDownloadFile(file.id)}>
-                        Скачать
-                      </button>
-                      {onDeleteFile && (
-                        <button type="button" className="danger" onClick={() => void onDeleteFile(file.id)}>
-                          Удалить
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="task-form-modal-preview task-form-modal-preview-empty product-catalog-files-empty">
-            <span>Выберите товар, чтобы добавить файлы и пути</span>
-          </div>
-        )}
-
-        <div className="supply-form-block supply-form-block-novinka product-catalog-files-form">
-          <strong>Добавить путь и файлы</strong>
-          <label className="product-catalog-files-field">
-            <span className="product-type-editor-hint">Путь к файлу на диске</span>
-            <input
-              type="text"
-              value={pathDraft}
-              placeholder="Например: D:\Production\Товар\макет.psd"
-              onChange={(event) => setPathDraft(event.target.value)}
-            />
-          </label>
-
-          <label className="product-catalog-files-field">
-            <span className="product-type-editor-hint">Файлы для загрузки</span>
-            <input
-              type="file"
-              multiple
-              onChange={(event) => setPendingFiles(Array.from(event.target.files ?? []))}
-            />
-            {pendingFiles.length > 0 && (
-              <small className="product-catalog-files-pending">Выбрано файлов: {pendingFiles.length}</small>
-            )}
-          </label>
-        </div>
-      </div>
-
-      <div className="supply-create-bar product-type-editor-footer product-catalog-files-footer">
-        <button
-          type="button"
-          disabled={!selectedCatalogItem || filesSaving}
-          onClick={() => void saveCatalogAssets()}
-        >
-          {filesSaving ? 'Сохранение...' : 'Сохранить'}
-        </button>
-        {filesStatus && <p className="modal-status">{filesStatus}</p>}
-      </div>
-    </section>
-  )
-}
-
-function formatNovinkaSelectedLabel(item: ProductionCatalogItem) {
-  const name = item.productName.length > 64 ? `${item.productName.slice(0, 64)}...` : item.productName
-  return `${item.offerId} | ${name}`
-}
-
-function NovinkaSearchInput({
-  listId: _listId,
-  products,
-  selectedOfferId,
-  onOfferIdChange,
-  placeholder,
-  showClearButton = false,
-}: {
-  listId: string
-  products: ProductionCatalogItem[]
-  selectedOfferId: string
-  onOfferIdChange: (offerId: string) => void
-  placeholder: string
-  showClearButton?: boolean
-}) {
-  const selectedProduct = products.find((item) => item.offerId === selectedOfferId)
-  const selectedLabel = selectedProduct ? formatNovinkaSelectedLabel(selectedProduct) : ''
-  const [query, setQuery] = useState(selectedLabel)
-  const [isOpen, setIsOpen] = useState(false)
-  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
-  const controlRef = useRef<HTMLDivElement>(null)
-  const normalizedQuery = query.trim().toLowerCase()
-  const filteredProducts = normalizedQuery
-    ? products
-        .filter((item) =>
-          [item.productName, item.offerId, item.productLink]
-            .filter(Boolean)
-            .some((value) => value.toLowerCase().includes(normalizedQuery)),
-        )
-        .slice(0, 80)
-    : products.slice(0, 80)
-
-  useEffect(() => {
-    setQuery(selectedLabel)
-  }, [selectedLabel])
-
-  useEffect(() => {
-    if (!isOpen) {
-      return
-    }
-
-    function updateMenuPosition() {
-      const input = controlRef.current?.querySelector('.product-search-input')
-      if (!(input instanceof HTMLInputElement)) {
-        return
-      }
-
-      const rect = input.getBoundingClientRect()
-      setMenuStyle({
-        position: 'fixed',
-        top: `${rect.bottom + 6}px`,
-        left: `${rect.left}px`,
-        width: `${Math.min(rect.width, 680)}px`,
-        zIndex: 2000,
-      })
-    }
-
-    updateMenuPosition()
-    window.addEventListener('resize', updateMenuPosition)
-    window.addEventListener('scroll', updateMenuPosition, true)
-    return () => {
-      window.removeEventListener('resize', updateMenuPosition)
-      window.removeEventListener('scroll', updateMenuPosition, true)
-    }
-  }, [isOpen, query, products.length])
-
-  function selectProduct(item: ProductionCatalogItem) {
-    onOfferIdChange(item.offerId)
-    setQuery(formatNovinkaSelectedLabel(item))
-    setIsOpen(false)
-  }
-
-  function clearSelection() {
-    onOfferIdChange('')
-    setQuery('')
-    setIsOpen(false)
-  }
-
-  return (
-    <div className="product-search-wrap">
-      <div
-        className={`product-search-control-row ${showClearButton && selectedProduct ? 'has-outside-clear' : ''}`}
-      >
-        <div ref={controlRef} className="product-search-control">
-          <input
-            className="product-search-input"
-            placeholder={placeholder}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setIsOpen(true)
-              if (!event.target.value.trim()) {
-                onOfferIdChange('')
-              }
-            }}
-            onFocus={() => setIsOpen(true)}
-            onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
-          />
-          {isOpen && filteredProducts.length > 0 && (
-            <div className="product-search-menu product-search-menu-fixed" id={_listId} style={menuStyle}>
-              {filteredProducts.map((item) => (
-                <button
-                  type="button"
-                  className="product-search-option"
-                  key={item.offerId}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => selectProduct(item)}
-                >
-                  <ProductThumb name={item.productName} />
-                  <span>
-                    <OfferIdCell offerId={item.offerId} />
-                    <small>{item.productName}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {isOpen && filteredProducts.length === 0 && (
-            <div className="product-search-menu product-search-menu-fixed product-search-menu-empty" style={menuStyle}>
-              <span>
-                {products.length === 0
-                  ? 'Список новинок пуст. Добавьте новый товар в поставку или завершите задачи по новинкам с файлами.'
-                  : 'По вашему запросу ничего не найдено.'}
-              </span>
-            </div>
-          )}
-        </div>
-        {showClearButton && selectedProduct && (
-          <button
-            type="button"
-            className="product-search-clear-outside"
-            aria-label="Очистить выбор"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={clearSelection}
-          >
-            ×
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function NovinkaProductPreview({
-  item,
-  token,
-  files = [],
-  paths = [],
-}: {
-  item: ProductionCatalogItem
-  token: string
-  files?: ProductionFile[]
-  paths?: ProductionFilePath[]
-}) {
-  const imageFile = files.find((file) => file.contentType.startsWith('image/'))
-
-  return (
-    <div className="task-form-modal-preview selected-product-card selected-product-card-large">
-      {imageFile ? (
-        <ProductionFileThumb file={imageFile} token={token} name={item.productName} />
-      ) : (
-        <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
-      )}
-      <span>
-        <strong>{item.productName}</strong>
-        <OfferIdCell offerId={item.offerId} />
-        {item.productLink && <NovinkaExternalLinkButton url={item.productLink} />}
-        {files.length > 0 && (
-          <small className="novinka-preview-meta">Файлы производства: {files.length}</small>
-        )}
-        {paths.length > 0 && (
-          <div className="novinka-preview-paths">
-            <small className="novinka-preview-meta">Пути к файлу</small>
-            <ProductionPathsPanel paths={paths} showCopy />
-          </div>
-        )}
-      </span>
-    </div>
-  )
-}
-
-function NovinkaExternalLinkButton({ url }: { url: string }) {
-  const normalizedUrl = url.trim()
-  if (!normalizedUrl) {
-    return null
-  }
-
-  return (
-    <button
-      type="button"
-      className="task-form-modal-btn novinka-external-link-btn"
-      onClick={() => window.open(normalizedUrl, '_blank', 'noopener,noreferrer')}
-    >
-      Ссылка
-    </button>
-  )
-}
-
-function UserAvatarPreview({
-  avatarUrl,
-  displayName,
-  nested = false,
-  className = 'chat-avatar',
-}: {
-  avatarUrl?: string
-  displayName: string
-  nested?: boolean
-  className?: string
-}) {
-  const content = avatarUrl ? (
-    <img src={avatarUrl} alt={displayName} />
-  ) : (
-    <span>Фото</span>
-  )
-
-  const avatar = nested ? (
-    content
-  ) : (
-    <span className={className}>{content}</span>
-  )
-
-  if (!avatarUrl) {
-    return avatar
-  }
-
-  return (
-    <ProductImageHoverPreview imageUrl={avatarUrl} name={displayName}>
-      {avatar}
-    </ProductImageHoverPreview>
-  )
-}
 
 function UserProfileModal({
   profileUser,
@@ -11839,1891 +10860,12 @@ function UserProfileModal({
   )
 }
 
-type LinkPreviewData = {
-  imageUrl?: string
-  title?: string
-}
 
-const linkPreviewCache = new Map<string, LinkPreviewData>()
 
-function parseLinkPreviewResponse(data: Record<string, unknown>): LinkPreviewData {
-  return {
-    imageUrl: (data.imageUrl ?? data.ImageUrl) as string | undefined,
-    title: (data.title ?? data.Title) as string | undefined,
-  }
-}
-
-async function fetchLinkPreview(url: string, token: string): Promise<LinkPreviewData> {
-  const normalizedUrl = url.trim()
-  if (!normalizedUrl || !token) {
-    return {}
-  }
-
-  const cached = linkPreviewCache.get(normalizedUrl)
-  if (cached) {
-    return cached
-  }
-
-  const response = await fetch(`/api/link-preview?url=${encodeURIComponent(normalizedUrl)}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  })
-
-  if (!response.ok) {
-    return {}
-  }
-
-  const data = parseLinkPreviewResponse((await response.json()) as Record<string, unknown>)
-  linkPreviewCache.set(normalizedUrl, data)
-  return data
-}
-
-function usePreviewImageSrc(imageUrl: string | undefined, token: string) {
-  const [displaySrc, setDisplaySrc] = useState<string | undefined>()
-
-  useEffect(() => {
-    if (!imageUrl?.trim() || !token) {
-      setDisplaySrc(undefined)
-      return
-    }
-
-    let objectUrl: string | undefined
-    let cancelled = false
-
-    void fetch(`/api/link-preview/image?url=${encodeURIComponent(imageUrl.trim())}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then((response) => (response.ok ? response.blob() : null))
-      .then((blob) => {
-        if (cancelled || !blob) {
-          return
-        }
-
-        objectUrl = URL.createObjectURL(blob)
-        setDisplaySrc(objectUrl)
-      })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [imageUrl, token])
-
-  return displaySrc
-}
-
-function LinkHoverPreview({
-  url,
-  name,
-  token,
-}: {
-  url: string
-  name: string
-  token: string
-}) {
-  const normalizedUrl = url.trim()
-  const [preview, setPreview] = useState<LinkPreviewData | null>(
-    () => linkPreviewCache.get(normalizedUrl) ?? null,
-  )
-  const [visible, setVisible] = useState(false)
-  const [position, setPosition] = useState({ x: 0, y: 0 })
-  const displaySrc = usePreviewImageSrc(preview?.imageUrl, token)
-
-  useEffect(() => {
-    if (!normalizedUrl || !token) {
-      return
-    }
-
-    const cached = linkPreviewCache.get(normalizedUrl)
-    if (cached) {
-      setPreview(cached)
-      return
-    }
-
-    let cancelled = false
-    void fetchLinkPreview(normalizedUrl, token).then((data) => {
-      if (cancelled) {
-        return
-      }
-
-      setPreview(data)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [normalizedUrl, token])
-
-  function updatePosition(clientX: number, clientY: number) {
-    const popupWidth = 296
-    const popupHeight = 296
-    const offset = 16
-    const maxLeft = window.innerWidth - popupWidth - 12
-    const maxTop = window.innerHeight - popupHeight - 12
-
-    setPosition({
-      x: Math.max(12, Math.min(clientX + offset, maxLeft)),
-      y: Math.max(12, Math.min(clientY + offset, maxTop)),
-    })
-  }
-
-  const label = preview?.title || name || 'Ссылка'
-
-  return (
-    <>
-      <span
-        className="product-image-hover-trigger"
-        onMouseEnter={(event) => {
-          setVisible(true)
-          updatePosition(event.clientX, event.clientY)
-        }}
-        onMouseLeave={() => setVisible(false)}
-        onMouseMove={(event) => updatePosition(event.clientX, event.clientY)}
-      >
-        <ProductThumb imageUrl={displaySrc ?? preview?.imageUrl} name={label} />
-      </span>
-      {visible && (
-        <div className="product-image-hover-popup link-hover-popup" style={{ left: position.x, top: position.y }}>
-          {displaySrc || preview?.imageUrl ? (
-            <img src={displaySrc ?? preview?.imageUrl} alt={label} referrerPolicy="no-referrer" />
-          ) : (
-            <div className="link-hover-popup-fallback">
-              <strong>{label}</strong>
-              <small>{normalizedUrl}</small>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  )
-}
-
-function ProductThumb({ imageUrl, name, large = false }: { imageUrl?: string; name: string; large?: boolean }) {
-  return (
-    <span className={`product-thumb ${large ? 'product-thumb-large' : ''}`}>
-      {imageUrl ? <img src={imageUrl} alt={name} loading="lazy" /> : <span>Фото</span>}
-    </span>
-  )
-}
-
-function ProductImageHoverPreview({
-  imageUrl,
-  name,
-  children,
-}: {
-  imageUrl?: string
-  name: string
-  children: ReactNode
-}) {
-  const [visible, setVisible] = useState(false)
-  const [position, setPosition] = useState({ x: 0, y: 0 })
-
-  if (!imageUrl) {
-    return <>{children}</>
-  }
-
-  function updatePosition(clientX: number, clientY: number) {
-    const popupWidth = 296
-    const popupHeight = 296
-    const offset = 16
-    const maxLeft = window.innerWidth - popupWidth - 12
-    const maxTop = window.innerHeight - popupHeight - 12
-
-    setPosition({
-      x: Math.max(12, Math.min(clientX + offset, maxLeft)),
-      y: Math.max(12, Math.min(clientY + offset, maxTop)),
-    })
-  }
-
-  return (
-    <>
-      <span
-        className="product-image-hover-trigger"
-        onMouseEnter={(event) => {
-          setVisible(true)
-          updatePosition(event.clientX, event.clientY)
-        }}
-        onMouseLeave={() => setVisible(false)}
-        onMouseMove={(event) => updatePosition(event.clientX, event.clientY)}
-      >
-        {children}
-      </span>
-      {visible && (
-        <div className="product-image-hover-popup" style={{ left: position.x, top: position.y }}>
-          <img src={imageUrl} alt={name} />
-        </div>
-      )}
-    </>
-  )
-}
-
-function TaskProductPreview({ product }: { product: OzonProduct }) {
-  return (
-    <div className="task-form-modal-preview selected-product-card selected-product-card-large">
-      <ProductImageHoverPreview imageUrl={product.imageUrl} name={product.name}>
-        <ProductThumb imageUrl={product.imageUrl} name={product.name} large />
-      </ProductImageHoverPreview>
-      <span>
-        <strong>{product.name}</strong>
-        <small>
-          <OfferIdCell offerId={product.offerId} inline />
-          {product.sku ? ` | SKU ${product.sku}` : ''}
-        </small>
-        {product.productUrl && (
-          <a className="task-product-ozon-link" href={product.productUrl} target="_blank" rel="noreferrer">
-            Открыть на Ozon
-          </a>
-        )}
-      </span>
-    </div>
-  )
-}
-
-function getProductionTaskTableMode(
-  tasks: ProductionTask[],
-  whenEmpty: 'ozon' | 'novinka' | 'mixed' = 'ozon',
-) {
-  if (tasks.length === 0) {
-    return whenEmpty
-  }
-
-  if (tasks.every((task) => isNovinkaTask(task))) {
-    return 'novinka' as const
-  }
-
-  if (tasks.every((task) => !isNovinkaTask(task))) {
-    return 'ozon' as const
-  }
-
-  return 'mixed' as const
-}
-
-function getProductionTaskTableLabels(tableMode: ReturnType<typeof getProductionTaskTableMode>) {
-  const showQuantityColumns = tableMode === 'ozon' || tableMode === 'mixed'
-  const showTypeColumn = tableMode === 'ozon' || tableMode === 'mixed'
-
-  return {
-    showQuantityColumns,
-    showTypeColumn,
-    skuHeaderLabel:
-      tableMode === 'novinka' ? 'Ссылка' : tableMode === 'mixed' ? 'Артикул / Ссылка' : 'Артикул',
-    neededHeaderLabel: tableMode === 'mixed' ? 'План' : 'Нужно',
-  }
-}
-
-function renderNovinkaItemLink(item: ProductionTaskItem) {
-  const productLink = stripNovinkaMarketplaceNote(item.productLink)
-
-  if (!productLink) {
-    return '—'
-  }
-
-  return <NovinkaExternalLinkButton url={productLink} />
-}
-
-function useProductionFilePreviewUrl(fileId: string, token: string, enabled: boolean) {
-  const [previewUrl, setPreviewUrl] = useState<string>()
-
-  useEffect(() => {
-    if (!enabled || !token) {
-      setPreviewUrl(undefined)
-      return
-    }
-
-    let objectUrl: string | undefined
-    let cancelled = false
-
-    void fetch(`/api/production/files/${fileId}/download`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then((response) => (response.ok ? response.blob() : null))
-      .then((blob) => {
-        if (cancelled || !blob) {
-          return
-        }
-
-        objectUrl = URL.createObjectURL(blob)
-        setPreviewUrl(objectUrl)
-      })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [enabled, fileId, token])
-
-  return previewUrl
-}
-
-function ProductionFilePreviewCell({
-  file,
-  token,
-  onDelete,
-  compact = false,
-}: {
-  file: ProductionFile
-  token: string
-  onDelete?: (id: string) => void
-  compact?: boolean
-}) {
-  const isImage = file.contentType.startsWith('image/')
-  const previewUrl = useProductionFilePreviewUrl(file.id, token, isImage)
-
-  if (compact) {
-    return (
-      <span className="production-file-preview-cell production-file-preview-compact">
-        {isImage ? (
-          <ProductImageHoverPreview imageUrl={previewUrl} name={file.fileName}>
-            <ProductThumb imageUrl={previewUrl} name={file.fileName} />
-          </ProductImageHoverPreview>
-        ) : (
-          <span className="production-file-preview-fallback">Файл</span>
-        )}
-        <span className="production-file-name" title={file.fileName}>
-          {file.fileName}
-        </span>
-        {onDelete && (
-          <button
-            type="button"
-            className="production-file-delete-icon danger"
-            title="Удалить"
-            aria-label="Удалить файл"
-            onClick={() => onDelete(file.id)}
-          >
-            ×
-          </button>
-        )}
-      </span>
-    )
-  }
-
-  if (!isImage) {
-    return (
-      <span className="production-file-preview-cell">
-        <span>{file.fileName}</span>
-        {onDelete && (
-          <button type="button" className="danger production-file-delete-btn" onClick={() => onDelete(file.id)}>
-            Удалить
-          </button>
-        )}
-      </span>
-    )
-  }
-
-  return (
-    <span className="production-file-preview-cell product-mini">
-      <ProductImageHoverPreview imageUrl={previewUrl} name={file.fileName}>
-        <ProductThumb imageUrl={previewUrl} name={file.fileName} />
-      </ProductImageHoverPreview>
-      <span>{file.fileName}</span>
-      {onDelete && (
-        <button type="button" className="danger production-file-delete-btn" onClick={() => onDelete(file.id)}>
-          Удалить
-        </button>
-      )}
-    </span>
-  )
-}
-
-function TaskItemFilesPanel({
-  item,
-  itemFiles,
-  token,
-  onDeleteFile,
-  onOpenFiles,
-  onUploadTaskItemFile,
-  canUpload,
-}: {
-  item: ProductionTaskItem
-  itemFiles: ProductionFile[]
-  token: string
-  onDeleteFile?: (id: string) => void
-  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
-  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
-  canUpload: boolean
-}) {
-  const uploadInputId = `task-item-upload-${item.id}`
-
-  return (
-    <span className="task-item-files">
-      {itemFiles.length > 0 ? (
-        <div className="task-item-file-list">
-          {itemFiles.map((file) => (
-            <ProductionFilePreviewCell
-              key={file.id}
-              file={file}
-              token={token}
-              compact
-              onDelete={onDeleteFile}
-            />
-          ))}
-        </div>
-      ) : (
-        !canUpload && '—'
-      )}
-      {(itemFiles.length > 0 || canUpload) && (
-        <div className="task-item-files-actions">
-          {itemFiles.length > 0 && onOpenFiles && (
-            <button
-              type="button"
-              className="production-files-trigger"
-              onClick={() => onOpenFiles(item.productName, itemFiles)}
-            >
-              Все ({itemFiles.length})
-            </button>
-          )}
-          {canUpload && onUploadTaskItemFile && (
-            <>
-              <input
-                id={uploadInputId}
-                type="file"
-                className="task-item-file-input"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) {
-                    void onUploadTaskItemFile(item, file)
-                  }
-                  event.target.value = ''
-                }}
-              />
-              <button
-                type="button"
-                className="task-item-upload-btn"
-                onClick={() => document.getElementById(uploadInputId)?.click()}
-              >
-                {itemFiles.length > 0 ? 'Добавить' : 'Загрузить файл'}
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </span>
-  )
-}
-
-function ProductionFilesModal({
-  productName,
-  files,
-  token,
-  onClose,
-  onDownload,
-  onDelete,
-}: {
-  productName: string
-  files: ProductionFile[]
-  token: string
-  onClose: () => void
-  onDownload: (id: string) => void
-  onDelete?: (id: string) => void
-}) {
-  return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="modal-card modal-card-wide production-files-modal"
-        role="dialog"
-        aria-modal="true"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="modal-title-row">
-          <h3>Файлы производства</h3>
-          <button type="button" onClick={onClose}>
-            Закрыть
-          </button>
-        </div>
-        <p className="production-files-modal-product">{productName}</p>
-        <div className="data-table modal-table">
-          <div className="table-row file-row table-head">
-            <span>Файл</span>
-            <span>Дата</span>
-            <span>Действия</span>
-          </div>
-          {files.map((file) => (
-            <div className="table-row file-row" key={file.id}>
-              <span>
-                <ProductionFilePreviewCell file={file} token={token} />
-              </span>
-              <span>{new Date(file.createdAt).toLocaleDateString('ru-RU')}</span>
-              <span className="file-actions">
-                <button type="button" onClick={() => onDownload(file.id)}>
-                  Скачать
-                </button>
-                {onDelete && (
-                  <button type="button" className="danger" onClick={() => onDelete(file.id)}>
-                    Удалить
-                  </button>
-                )}
-              </span>
-            </div>
-          ))}
-          {files.length === 0 && (
-            <div className="empty-state">
-              <strong>Для этого товара еще нет файлов производства.</strong>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ProductionTaskTable({
-  tasks,
-  tableContext = 'ozon',
-  products,
-  productionFiles,
-  productionFilePaths = [],
-  token,
-  actualQuantities,
-  setActualQuantities,
-  currentUserId,
-  isAdmin,
-  canCancelTasks = false,
-  onStart,
-  onCancelRequest,
-  onComplete,
-  onOpenFiles,
-  onUploadTaskItemFile,
-  onDeleteFile,
-  onDelete,
-  onArchive,
-  onRestore,
-  onEdit,
-  completed = false,
-  cancelled = false,
-}: {
-  tasks: ProductionTask[]
-  products: OzonProduct[]
-  productionFiles: ProductionFile[]
-  productionFilePaths?: ProductionFilePath[]
-  token: string
-  actualQuantities: Record<string, string>
-  setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
-  currentUserId?: string
-  isAdmin?: boolean
-  canCancelTasks?: boolean
-  onStart: (id: string) => void
-  onCancelRequest: (id: string) => void
-  onComplete: (id: string) => void
-  onOpenFiles: (productName: string, files: ProductionFile[]) => void
-  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
-  onDeleteFile?: (id: string) => void
-  onDelete?: (id: string) => void
-  onArchive?: (id: string) => void
-  onRestore?: (id: string) => void
-  onEdit?: (task: ProductionTask) => void
-  completed?: boolean
-  cancelled?: boolean
-  tableContext?: 'ozon' | 'novinka' | 'mixed'
-}) {
-  const tableMode = getProductionTaskTableMode(tasks, tableContext)
-  const { showQuantityColumns, showTypeColumn, skuHeaderLabel, neededHeaderLabel } =
-    getProductionTaskTableLabels(tableMode)
-
-  return (
-    <div className={`data-table production-task-table production-task-table-${tableMode}`}>
-      <div className="table-row task-row table-head">
-        <span className="task-col-product">Товар</span>
-        <span className="task-col-sku">{skuHeaderLabel}</span>
-        {showTypeColumn && <span className="task-col-type">Тип</span>}
-        {showQuantityColumns && (
-          <>
-            <span className="task-col-needed">{neededHeaderLabel}</span>
-            <span className="task-col-fact">Факт</span>
-          </>
-        )}
-        <span className="task-col-status">Статус</span>
-        <span className="task-col-creator">Создатель</span>
-        <span className="task-col-assignee">Исполнитель</span>
-        <span></span>
-      </div>
-      {tasks.map((task) => {
-        const taskItems = getProductionTaskItems(task)
-        const novinka = isNovinkaTask(task)
-        const isStaleNew =
-          task.status === 'New' &&
-          Date.now() - new Date(task.createdAt).getTime() > 4 * 60 * 60 * 1000
-        const isCreator = Boolean(currentUserId && task.createdByUserId === currentUserId)
-        const hasMinimumViolations =
-          !novinka &&
-          task.status === 'InProgress' &&
-          !completed &&
-          !cancelled &&
-          taskItems.some((item) => {
-            if (!item.enforceMinimumQuantity) {
-              return false
-            }
-            const actualValue = actualQuantities[item.id] ?? ''
-            const actualNumber = Number(actualValue)
-            return actualValue !== '' && Number.isFinite(actualNumber) && actualNumber < item.requiredQuantity
-          })
-        const hasMissingNovinkaFiles =
-          novinka &&
-          task.status === 'InProgress' &&
-          !completed &&
-          !cancelled &&
-          taskItems.some((item) => getProductionFilesForTaskItem(item, productionFiles).length === 0)
-        const hasMissingNovinkaPaths =
-          novinka &&
-          task.status === 'InProgress' &&
-          !completed &&
-          !cancelled &&
-          taskItems.some((item) => getProductionPathsForTaskItem(item, productionFilePaths).length === 0)
-        const hasMissingNovinkaRequirements = hasMissingNovinkaFiles || hasMissingNovinkaPaths
-
-        return (
-        <details
-          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''} ${novinka && task.status === 'InProgress' ? 'task-novinka' : ''} ${novinka ? 'task-details-novinka' : ''}`}
-          key={task.id}
-        >
-          <summary className={`table-row task-row ${novinka ? 'task-row-novinka' : ''}`}>
-          <span className="task-col-product">
-            <strong>{getProductionTaskSummary(task)}</strong>
-            <small>
-              {task.isUrgent ? 'Срочно · ' : ''}
-              {novinka ? `${getProductionTaskTypeLabel(task, productionFiles)} · ` : ''}
-              {task.status === 'Cancelled' && task.cancelledAt
-                ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
-                : `Создана: ${formatDateTime(task.createdAt)}`}
-            </small>
-          </span>
-          <span
-            className="task-col-sku offer-id-cell"
-            title={
-              novinka
-                ? undefined
-                : taskItems.map((item) => item.offerId || '-').join(', ')
-            }
-          >
-            {novinka
-              ? taskItems.length === 1
-                ? renderNovinkaItemLink(taskItems[0])
-                : '—'
-              : taskItems.length === 1
-                ? taskItems[0].offerId || '-'
-                : taskItems.map((item) => item.offerId || '-').join(', ')}
-          </span>
-          {showTypeColumn && (
-            <span className="task-col-type">
-              <span className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}>
-                {getProductionTaskTypeLabel(task, productionFiles)}
-              </span>
-            </span>
-          )}
-          {showQuantityColumns && (
-            <>
-              <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
-              <span className="task-col-fact">
-                {novinka ? (
-                  <small>—</small>
-                ) : completed ? (
-                  getProductionTaskActualTotal(task)
-                ) : task.status === 'InProgress' ? (
-                  <small>По товарам</small>
-                ) : (
-                  <small>—</small>
-                )}
-              </span>
-            </>
-          )}
-          <span className="task-col-status">{translateProductionTaskStatus(task.status, task.isUrgent)}</span>
-          <span className="task-col-creator">{task.createdByDisplayName || '-'}</span>
-          <span className="task-col-assignee">{task.assignedUserName || '-'}</span>
-          <span className="task-actions">
-            {!completed && !cancelled && task.status === 'New' && onEdit && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                onEdit(task)
-              }}>
-                Редактировать
-              </button>
-            )}
-            {!completed && !cancelled && task.status === 'New' && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                onStart(task.id)
-              }}>
-                В работу
-              </button>
-            )}
-            {!completed && !cancelled && canCancelTasks && (task.status === 'New' || task.status === 'InProgress') && (
-              <button type="button" className="danger" onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onCancelRequest(task.id)
-              }}>
-                Отменить
-              </button>
-            )}
-            {!completed && !cancelled && task.status === 'InProgress' && (
-              <button
-                type="button"
-                className={hasMinimumViolations || hasMissingNovinkaRequirements ? 'task-complete-blocked' : ''}
-                title={
-                  hasMissingNovinkaFiles
-                    ? 'Добавьте файлы производства по каждому товару'
-                    : hasMissingNovinkaPaths
-                      ? 'Укажите путь к файлу по каждому товару'
-                    : hasMinimumViolations
-                      ? 'Исправьте количество: факт не может быть меньше плана'
-                      : undefined
-                }
-                onClick={(event) => {
-                event.preventDefault()
-                onComplete(task.id)
-              }}>
-                Завершить
-              </button>
-            )}
-            {cancelled && isAdmin && onRestore && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                onRestore(task.id)
-              }}>
-                В новые
-              </button>
-            )}
-            {cancelled && onArchive && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onArchive(task.id)
-              }}>
-                В архив
-              </button>
-            )}
-            {completed && onDelete && (
-              <button type="button" className="danger" onClick={(event) => {
-                event.preventDefault()
-                onDelete(task.id)
-              }}>
-                Удалить
-              </button>
-            )}
-          </span>
-          </summary>
-          {cancelled && (task.cancellationComment || task.cancelledByDisplayName) && (
-            <div className={`task-cancel-comment ${isCreator ? 'task-cancel-comment-creator' : ''}`}>
-              {task.cancelledByDisplayName && (
-                <p className="task-cancelled-by">
-                  <strong>Отменил:</strong> {task.cancelledByDisplayName}
-                </p>
-              )}
-              {task.cancellationComment && (
-                <>
-                  <strong>{isCreator ? 'Ваша задача отменена. Причина:' : 'Причина отмены:'}</strong>
-                  <p>{task.cancellationComment}</p>
-                </>
-              )}
-            </div>
-          )}
-          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
-            <div className="table-row task-item-table-row table-head">
-              <span>Товар</span>
-              {!novinka && <span>Артикул</span>}
-              {novinka ? (
-                <>
-                  <span>Ссылка</span>
-                  <span>Файлы</span>
-                  <span>Путь к файлу</span>
-                </>
-              ) : (
-                <>
-                  <span>План</span>
-                  <span>Факт</span>
-                  <span>Файлы</span>
-                </>
-              )}
-            </div>
-            {taskItems.map((item) => {
-              const actualValue = actualQuantities[item.id] ?? ''
-              const actualNumber = Number(actualValue)
-              const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
-              const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
-              const isBelowMinimum =
-                !novinka &&
-                !completed &&
-                !cancelled &&
-                task.status === 'InProgress' &&
-                item.enforceMinimumQuantity &&
-                actualValue !== '' &&
-                Number.isFinite(actualNumber) &&
-                actualNumber < item.requiredQuantity
-
-              return (
-              <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
-                <span className="product-mini task-product-mini">
-                  <TaskItemThumb
-                    item={item}
-                    products={products}
-                    productionFiles={productionFiles}
-                    token={token}
-                  />
-                  <span>
-                    <strong>{item.productName}</strong>
-                    {item.enforceMinimumQuantity && !novinka && !completed && !cancelled && (
-                      <small className="task-minimum-badge">Факт не меньше {item.requiredQuantity}</small>
-                    )}
-                  </span>
-                </span>
-                {!novinka && <OfferIdCell offerId={item.offerId} />}
-                {novinka ? (
-                  <>
-                    <span>{renderNovinkaItemLink(item)}</span>
-                    <TaskItemFilesPanel
-                      item={item}
-                      itemFiles={itemFiles}
-                      token={token}
-                      onDeleteFile={onDeleteFile}
-                      onOpenFiles={onOpenFiles}
-                      onUploadTaskItemFile={onUploadTaskItemFile}
-                      canUpload={!completed && !cancelled && task.status === 'InProgress'}
-                    />
-                    <TaskItemPathCell paths={itemPaths} />
-                  </>
-                ) : (
-                  <>
-                    <span>{item.requiredQuantity}</span>
-                    <span>
-                      {completed ? (
-                        item.actualQuantity ?? 0
-                      ) : task.status === 'InProgress' ? (
-                        <span className="task-actual-input-wrap">
-                          <input
-                            className={isBelowMinimum ? 'task-quantity-invalid' : ''}
-                            type="number"
-                            min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
-                            placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
-                            value={actualValue}
-                            onChange={(event) =>
-                              setActualQuantities((current) => ({
-                                ...current,
-                                [item.id]: event.target.value,
-                              }))
-                            }
-                          />
-                          {isBelowMinimum && (
-                            <small className="task-minimum-error">
-                              Нельзя меньше {item.requiredQuantity}
-                            </small>
-                          )}
-                          {item.enforceMinimumQuantity && actualValue === '' && (
-                            <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
-                          )}
-                        </span>
-                      ) : (
-                        '—'
-                      )}
-                    </span>
-                    <TaskItemFilesAndPathsCell
-                      item={item}
-                      itemFiles={itemFiles}
-                      itemPaths={itemPaths}
-                      onOpenFiles={onOpenFiles}
-                    />
-                  </>
-                )}
-              </div>
-              )
-            })}
-          </div>
-        </details>
-        )
-      })}
-    </div>
-  )
-}
-
-function getProductionTaskItems(task: ProductionTask) {
-  if (task.items?.length) {
-    return task.items
-  }
-
-  return [{
-    id: task.id,
-    ozonProductId: task.ozonProductId,
-    offerId: task.offerId,
-    productName: task.productName,
-    requiredQuantity: task.requiredQuantity,
-    actualQuantity: task.actualQuantity,
-    enforceMinimumQuantity: false,
-  }]
-}
-
-function isNovinkaTask(task: ProductionTask) {
-  if (task.taskType === 'Novinka') {
-    return true
-  }
-
-  if (task.taskType === 'Ozon') {
-    return false
-  }
-
-  return getProductionTaskItems(task).some(
-    (item) =>
-      item.ozonProductId <= 0 &&
-      (item.offerId.startsWith('NV-') || Boolean(item.productLink?.trim())),
-  )
-}
-
-function resolveNovinkaMarketplaceForTask(
-  task: ProductionTask,
-  productionFiles: ProductionFile[] = [],
-): NovinkaMarketplace | null {
-  if (!isNovinkaTask(task)) {
-    return null
-  }
-
-  const items = getProductionTaskItems(task)
-
-  for (const item of items) {
-    const fromLinkTag = resolveNovinkaMarketplaceFromNotes(item.productLink)
-    if (fromLinkTag) {
-      return fromLinkTag
-    }
-  }
-
-  for (const item of items) {
-    const fromUrl = resolveNovinkaMarketplace(item.productLink, '')
-    if (fromUrl !== 'ozon') {
-      return fromUrl
-    }
-  }
-
-  for (const item of items) {
-    const files = getProductionFilesForTaskItem(item, productionFiles)
-    if (files.length > 0) {
-      return resolveNovinkaMarketplaceForFileGroup(files)
-    }
-  }
-
-  return null
-}
-
-function matchesKzProductionMarketplace(
-  task: ProductionTask,
-  marketplace: KzMarketplace,
-  productionFiles: ProductionFile[] = [],
-) {
-  if (isNovinkaTask(task)) {
-    const resolved = resolveNovinkaMarketplaceForTask(task, productionFiles)
-    if (resolved === null) {
-      return false
-    }
-
-    return resolved === marketplace
-  }
-
-  return task.taskType === getKzTaskType(marketplace)
-}
-
-function getProductionTaskTypeLabel(task: ProductionTask, productionFiles: ProductionFile[] = []) {
-  if (isKzMarketplaceTaskType(task.taskType ?? 'Ozon')) {
-    return getKzMarketplaceLabel(resolveKzMarketplaceFromTaskType(task.taskType))
-  }
-
-  if (!isNovinkaTask(task)) {
-    return 'Ozon'
-  }
-
-  const marketplace = resolveNovinkaMarketplaceForTask(task, productionFiles)
-  if (marketplace && marketplace !== 'ozon') {
-    return `Новинка · ${getNovinkaMarketplaceLabel(marketplace)}`
-  }
-
-  return 'Новинка'
-}
-
-function toDatetimeLocalValue(value?: string) {
-  if (!value) {
-    return ''
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-
-  const offset = date.getTimezoneOffset()
-  const local = new Date(date.getTime() - offset * 60000)
-  return local.toISOString().slice(0, 16)
-}
-
-function fromDatetimeLocalValue(value: string) {
-  if (!value.trim()) {
-    return undefined
-  }
-
-  return new Date(value).toISOString()
-}
-
-function ProductionAnalyticsRecordEditModal({
-  task,
-  assignees,
-  onClose,
-  onSave,
-}: {
-  task: ProductionTask
-  assignees: ProductionAnalyticsAssignee[]
-  onClose: () => void
-  onSave: (task: ProductionTask) => Promise<boolean>
-}) {
-  const [draft, setDraft] = useState<ProductionTask>(() => ({
-    ...task,
-    items: getProductionTaskItems(task).map((item) => ({ ...item })),
-  }))
-  const [saving, setSaving] = useState(false)
-
-  async function handleSave() {
-    setSaving(true)
-    try {
-      await onSave(draft)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  function updateItem(index: number, patch: Partial<ProductionTaskItem>) {
-    setDraft((current) => ({
-      ...current,
-      items: getProductionTaskItems(current).map((item, itemIndex) =>
-        itemIndex === index ? { ...item, ...patch } : item,
-      ),
-    }))
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal-card production-analytics-edit-modal"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="modal-title-row">
-          <h3>Редактирование записи аналитики</h3>
-          <button type="button" className="text-action-button" onClick={onClose}>
-            Закрыть
-          </button>
-        </div>
-        <div className="production-analytics-edit-form">
-          <label>
-            Завершена
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(draft.completedAt)}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  completedAt: fromDatetimeLocalValue(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label>
-            Исполнитель
-            <input
-              list="production-analytics-assignee-options"
-              value={draft.assignedUserName ?? ''}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  assignedUserName: event.target.value,
-                }))
-              }
-            />
-            <datalist id="production-analytics-assignee-options">
-              {assignees.map((assignee) => (
-                <option key={assignee.id} value={assignee.displayName} />
-              ))}
-            </datalist>
-          </label>
-          <label>
-            Тип
-            <select
-              value={draft.taskType ?? 'Ozon'}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  taskType: event.target.value as ProductionTask['taskType'],
-                }))
-              }
-            >
-              <option value="Ozon">Ozon</option>
-              <option value="Novinka">Новинка</option>
-            </select>
-          </label>
-          <label className="production-analytics-edit-checkbox">
-            <input
-              type="checkbox"
-              checked={draft.isUrgent}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  isUrgent: event.target.checked,
-                }))
-              }
-            />
-            Срочная задача
-          </label>
-          <label>
-            Ozon Product ID
-            <input
-              type="number"
-              value={draft.ozonProductId}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  ozonProductId: Number(event.target.value) || 0,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Артикул
-            <input
-              value={draft.offerId}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  offerId: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Название товара
-            <input
-              value={draft.productName}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  productName: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            План (общий)
-            <input
-              type="number"
-              min={0}
-              value={draft.requiredQuantity}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  requiredQuantity: Number(event.target.value) || 0,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Факт (общий)
-            <input
-              type="number"
-              min={0}
-              value={draft.actualQuantity ?? 0}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  actualQuantity: Number(event.target.value) || 0,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Создал
-            <input
-              value={draft.createdByDisplayName ?? ''}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  createdByDisplayName: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Создана
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(draft.createdAt)}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  createdAt: fromDatetimeLocalValue(event.target.value) ?? current.createdAt,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Начата
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(draft.startedAt)}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  startedAt: fromDatetimeLocalValue(event.target.value),
-                }))
-              }
-            />
-          </label>
-        </div>
-        <section className="production-analytics-edit-items">
-          <h4>Позиции</h4>
-          {getProductionTaskItems(draft).map((item, index) => (
-            <div className="production-analytics-edit-item" key={item.id ?? `${item.offerId}-${index}`}>
-              <label>
-                Товар
-                <input
-                  value={item.productName}
-                  onChange={(event) => updateItem(index, { productName: event.target.value })}
-                />
-              </label>
-              <label>
-                Артикул
-                <input
-                  value={item.offerId}
-                  onChange={(event) => updateItem(index, { offerId: event.target.value })}
-                />
-              </label>
-              <label>
-                Ссылка
-                <input
-                  value={item.productLink ?? ''}
-                  onChange={(event) => updateItem(index, { productLink: event.target.value })}
-                />
-              </label>
-              <label>
-                План
-                <input
-                  type="number"
-                  min={0}
-                  value={item.requiredQuantity}
-                  onChange={(event) =>
-                    updateItem(index, { requiredQuantity: Number(event.target.value) || 0 })
-                  }
-                />
-              </label>
-              <label>
-                Факт
-                <input
-                  type="number"
-                  min={0}
-                  value={item.actualQuantity ?? 0}
-                  onChange={(event) =>
-                    updateItem(index, { actualQuantity: Number(event.target.value) || 0 })
-                  }
-                />
-              </label>
-              <label>
-                Путь к файлу
-                <input
-                  value={item.filePath ?? ''}
-                  onChange={(event) => updateItem(index, { filePath: event.target.value })}
-                />
-              </label>
-            </div>
-          ))}
-        </section>
-        <div className="production-analytics-edit-actions">
-          <button type="button" className="primary-button" disabled={saving} onClick={() => void handleSave()}>
-            {saving ? 'Сохранение...' : 'Сохранить'}
-          </button>
-          <button type="button" className="text-action-button" onClick={onClose}>
-            Отмена
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ProductionAnalyticsUserDetailModal({
-  userName,
-  summaryRow,
-  tasks,
-  isAdmin,
-  onClose,
-  onExportExcel,
-  onEditTask,
-}: {
-  userName: string
-  summaryRow: ProductionAnalyticsSummaryRow | null
-  tasks: ProductionTask[]
-  isAdmin?: boolean
-  onClose: () => void
-  onExportExcel: (userId: string) => void
-  onEditTask?: (task: ProductionTask) => void
-}) {
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal-card production-analytics-detail-modal"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="modal-title-row production-analytics-detail-title">
-          <div className="production-analytics-detail-head">
-            <UserAvatarPreview
-              avatarUrl={summaryRow?.avatarUrl}
-              displayName={userName}
-              className="production-analytics-avatar production-analytics-avatar-large"
-            />
-            <div>
-              <h3>{userName}</h3>
-              <p>
-                {summaryRow?.role ? getRoleLabel(summaryRow.role) : 'Исполнитель'} · {tasks.length}{' '}
-                {tasks.length === 1 ? 'задача' : tasks.length < 5 ? 'задачи' : 'задач'}
-              </p>
-            </div>
-          </div>
-          <div className="production-analytics-detail-actions">
-            {summaryRow?.userId && (
-              <button type="button" className="text-action-button" onClick={() => onExportExcel(summaryRow.userId!)}>
-                Excel
-              </button>
-            )}
-            <button type="button" className="text-action-button" onClick={onClose}>
-              Закрыть
-            </button>
-          </div>
-        </div>
-        <div className="production-analytics-detail-body">
-          {tasks.length === 0 && (
-            <div className="empty-state">
-              <strong>За выбранный период задач не найдено.</strong>
-            </div>
-          )}
-          {tasks.map((task) => (
-            <article className="production-analytics-detail-task" key={task.id}>
-              <header className="production-analytics-detail-task-head">
-                <div>
-                  <strong>{task.productName}</strong>
-                  <p>
-                    {getProductionTaskTypeLabel(task)}
-                    {task.isUrgent ? ' · срочно' : ''}
-                    {task.createdByDisplayName ? ` · создал ${task.createdByDisplayName}` : ''}
-                  </p>
-                </div>
-                <div className="production-analytics-detail-task-meta">
-                  <div className="production-analytics-detail-task-dates">
-                    <span>Создана: {formatDateTime(task.createdAt)}</span>
-                    {task.startedAt && <span>Начата: {formatDateTime(task.startedAt)}</span>}
-                    {task.completedAt && <span>Завершена: {formatDateTime(task.completedAt)}</span>}
-                  </div>
-                  {isAdmin && onEditTask && (
-                    <button type="button" className="text-action-button" onClick={() => onEditTask(task)}>
-                      Изменить
-                    </button>
-                  )}
-                </div>
-              </header>
-              <div className="data-table production-analytics-detail-items">
-                <div className="table-row production-analytics-detail-item-row table-head">
-                  <span>Товар</span>
-                  <span>Артикул</span>
-                  <span>Ссылка</span>
-                  <span>План</span>
-                  <span>Факт</span>
-                </div>
-                {getProductionTaskItems(task).map((item) => (
-                  <div className="table-row production-analytics-detail-item-row" key={item.id ?? item.offerId}>
-                    <span>{item.productName}</span>
-                    <OfferIdCell offerId={item.offerId} />
-                    <span>
-                      {item.productLink?.trim() ? (
-                        <a href={item.productLink} target="_blank" rel="noreferrer">
-                          {item.productLink}
-                        </a>
-                      ) : (
-                        '—'
-                      )}
-                    </span>
-                    <span>{item.requiredQuantity}</span>
-                    <span>{item.actualQuantity ?? 0}</span>
-                  </div>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function getTaskItemImageUrl(item: ProductionTaskItem, products: OzonProduct[]) {
-  return products.find((product) => product.productId === item.ozonProductId)?.imageUrl
-}
-
-function ProductionFileThumb({
-  file,
-  token,
-  name,
-}: {
-  file: ProductionFile
-  token?: string
-  name: string
-}) {
-  const previewUrl = useProductionFilePreviewUrl(file.id, token ?? '', Boolean(token && file.contentType.startsWith('image/')))
-
-  return (
-    <ProductImageHoverPreview imageUrl={previewUrl} name={name}>
-      <ProductThumb imageUrl={previewUrl} name={name} />
-    </ProductImageHoverPreview>
-  )
-}
-
-function TaskItemThumb({
-  item,
-  products,
-  productionFiles,
-  token,
-}: {
-  item: ProductionTaskItem
-  products: OzonProduct[]
-  productionFiles: ProductionFile[]
-  token?: string
-}) {
-  const imageFile = getProductionFilesForTaskItem(item, productionFiles).find((file) =>
-    file.contentType.startsWith('image/'),
-  )
-
-  if (imageFile) {
-    return <ProductionFileThumb file={imageFile} token={token} name={item.productName} />
-  }
-
-  if (item.productLink?.trim() && token && (item.offerId?.startsWith('NV-') || !item.ozonProductId)) {
-    return <LinkHoverPreview url={item.productLink} name={item.productName} token={token} />
-  }
-
-  const imageUrl = getTaskItemImageUrl(item, products)
-
-  if (imageUrl) {
-    return (
-      <ProductImageHoverPreview imageUrl={imageUrl} name={item.productName}>
-        <ProductThumb imageUrl={imageUrl} name={item.productName} />
-      </ProductImageHoverPreview>
-    )
-  }
-
-  return <ProductThumb name={item.productName} />
-}
-
-function getProductionTaskRequiredTotal(task: ProductionTask) {
-  return getProductionTaskItems(task).reduce((sum, item) => sum + item.requiredQuantity, 0)
-}
-
-function getProductionTaskActualTotal(task: ProductionTask) {
-  return getProductionTaskItems(task).reduce((sum, item) => sum + (item.actualQuantity ?? 0), 0)
-}
-
-function sortProductionTasksByUrgency(tasks: ProductionTask[]) {
-  return [...tasks].sort((left, right) => {
-    if (left.isUrgent !== right.isUrgent) {
-      return left.isUrgent ? -1 : 1
-    }
-
-    return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
-  })
-}
-
-function isNovinkaProductionFile(file: ProductionFile) {
-  return (
-    file.offerId.startsWith('NV-') ||
-    (Boolean(file.productLink?.trim()) && !file.ozonProductId)
-  )
-}
-
-function getNovinkaCatalogKey(file: ProductionFile) {
-  const name = file.productName.trim().toLowerCase()
-  const link = file.productLink?.trim().toLowerCase() ?? ''
-  if (link) {
-    return `${name}|${link}`
-  }
-
-  if (file.offerId.trim()) {
-    return file.offerId.trim().toUpperCase()
-  }
-
-  return name
-}
-
-function filterNovinkaCatalogByMarketplace(
-  items: ProductionCatalogItem[],
-  marketplace: NovinkaMarketplace,
-) {
-  return items.filter((item) => (item.marketplace ?? 'ozon') === marketplace)
-}
-
-function resolveNovinkaMarketplaceForFileGroup(files: ProductionFile[]): NovinkaMarketplace {
-  for (const file of files) {
-    const fromNotes = resolveNovinkaMarketplaceFromNotes(file.notes)
-    if (fromNotes) {
-      return fromNotes
-    }
-  }
-
-  const latest = files.reduce((left, right) =>
-    new Date(left.createdAt).getTime() >= new Date(right.createdAt).getTime() ? left : right,
-  )
-
-  return resolveNovinkaMarketplace(latest.productLink, latest.notes)
-}
-
-function getSupplyReserveOfferId(item: SupplyItem) {
-  const trimmed = item.offerId?.trim()
-  if (trimmed) {
-    return trimmed
-  }
-
-  return `NV-${item.id.replace(/-/g, '')}`
-}
-
-function buildNovinkaCatalogFromSupplyReserves(supplies: Supply[]): ProductionCatalogItem[] {
-  const seen = new Set<string>()
-  const items: ProductionCatalogItem[] = []
-
-  for (const supply of supplies) {
-    if (supply.isArchived) {
-      continue
-    }
-
-    for (const item of supply.items) {
-      if (!item.isReserve) {
-        continue
-      }
-
-      const offerId = getSupplyReserveOfferId(item)
-      const key = offerId.toUpperCase()
-      if (seen.has(key)) {
-        continue
-      }
-
-      seen.add(key)
-      items.push({
-        offerId,
-        productName: item.productName,
-        productLink: '',
-        fileCount: 0,
-        completedAt: supply.sentAt ?? supply.createdAt,
-        marketplace: 'ozon',
-      })
-    }
-  }
-
-  return items.sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
-}
-
-function mergeNovinkaCatalogItems(
-  fromFiles: ProductionCatalogItem[],
-  fromSupplies: ProductionCatalogItem[],
-): ProductionCatalogItem[] {
-  const byOfferId = new Map<string, ProductionCatalogItem>()
-
-  for (const item of fromFiles) {
-    byOfferId.set(item.offerId.toUpperCase(), item)
-  }
-
-  for (const item of fromSupplies) {
-    const key = item.offerId.toUpperCase()
-    if (!byOfferId.has(key)) {
-      byOfferId.set(key, item)
-    }
-  }
-
-  return [...byOfferId.values()].sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
-}
-
-function buildNovinkaCatalogFromFiles(files: ProductionFile[]): ProductionCatalogItem[] {
-  const groups = new Map<string, ProductionFile[]>()
-
-  for (const file of files.filter(isNovinkaProductionFile)) {
-    const key = getNovinkaCatalogKey(file)
-    const bucket = groups.get(key) ?? []
-    bucket.push(file)
-    groups.set(key, bucket)
-  }
-
-  return [...groups.values()]
-    .map((group) => {
-      const latest = group.reduce((left, right) =>
-        new Date(left.createdAt).getTime() >= new Date(right.createdAt).getTime() ? left : right,
-      )
-      const latestCreatedAt = group.reduce((max, file) =>
-        new Date(file.createdAt).getTime() > new Date(max).getTime() ? file.createdAt : max,
-      group[0].createdAt)
-
-      return {
-        offerId: latest.offerId,
-        ozonProductId: latest.ozonProductId || undefined,
-        productName: latest.productName,
-        productLink: latest.productLink ?? '',
-        fileCount: group.length,
-        completedAt: latestCreatedAt,
-        marketplace: resolveNovinkaMarketplaceForFileGroup(group),
-      }
-    })
-    .sort((left, right) => left.productName.localeCompare(right.productName, 'ru'))
-}
-
-function getProductionFilesForCatalogItem(
-  item: ProductionCatalogItem,
-  files: ProductionFile[],
-) {
-  return files.filter(
-    (file) =>
-      (item.offerId && file.offerId === item.offerId) ||
-      (item.ozonProductId && file.ozonProductId === item.ozonProductId) ||
-      (item.productLink && file.productLink === item.productLink) ||
-      (item.productName &&
-        file.productName === item.productName &&
-        item.offerId?.startsWith('NV-')),
-  )
-}
-
-function toProductionCatalogItem(item: ProductionTaskItem): ProductionCatalogItem {
-  return {
-    offerId: item.offerId,
-    ozonProductId: item.ozonProductId > 0 ? item.ozonProductId : undefined,
-    productName: item.productName,
-    productLink: item.productLink ?? '',
-    fileCount: 0,
-  }
-}
-
-function getProductionPathsForTaskItem(
-  item: ProductionTaskItem,
-  paths: ProductionFilePath[],
-): ProductionFilePath[] {
-  const catalogPaths = getProductionPathsForCatalogItem(toProductionCatalogItem(item), paths)
-  const itemPath = item.filePath?.trim()
-  if (!itemPath) {
-    return catalogPaths
-  }
-
-  if (catalogPaths.some((entry) => entry.path === itemPath)) {
-    return catalogPaths
-  }
-
-  return [
-    {
-      id: `item-${item.id}`,
-      offerId: item.offerId,
-      ozonProductId: item.ozonProductId > 0 ? item.ozonProductId : undefined,
-      productName: item.productName,
-      productLink: item.productLink ?? '',
-      path: itemPath,
-      createdAt: '',
-    },
-    ...catalogPaths,
-  ]
-}
-
-function getProductionFilesForTaskItem(
-  item: { offerId: string; ozonProductId: number; productLink?: string; productName?: string },
-  files: ProductionFile[],
-) {
-  return files.filter(
-    (file) =>
-      (item.offerId && file.offerId === item.offerId) ||
-      (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId) ||
-      (item.productLink && file.productLink === item.productLink) ||
-      (item.productName && file.productName === item.productName && item.offerId?.startsWith('NV-')),
-  )
-}
-
-function getProductionPathsForCatalogItem(
-  item: ProductionCatalogItem,
-  paths: ProductionFilePath[],
-) {
-  return paths.filter((path) => pathsMatchProductionItem(path, item))
-}
-
-function pathsMatchProductionItem(
-  path: ProductionFilePath,
-  item: {
-    offerId?: string
-    ozonProductId?: number
-    productLink?: string
-    productName?: string
-  },
-) {
-  if (
-    item.offerId &&
-    path.offerId &&
-    path.offerId.localeCompare(item.offerId, undefined, { sensitivity: 'accent' }) === 0
-  ) {
-    return true
-  }
-
-  if (item.ozonProductId && path.ozonProductId && path.ozonProductId === item.ozonProductId) {
-    return true
-  }
-
-  if (
-    item.productLink &&
-    path.productLink &&
-    path.productLink.trim().toLowerCase() === item.productLink.trim().toLowerCase()
-  ) {
-    return true
-  }
-
-  if (
-    item.productName &&
-    path.productName &&
-    path.productName.trim().toLowerCase() === item.productName.trim().toLowerCase()
-  ) {
-    return true
-  }
-
-  return false
-}
-
-function TaskItemPathsButtons({ paths }: { paths: ProductionFilePath[] }) {
-  if (paths.length === 0) {
-    return (
-      <button type="button" className="production-files-trigger path-missing-button" disabled>
-        нет пути
-      </button>
-    )
-  }
-
-  return (
-    <div className="task-item-paths-buttons">
-      {paths.map((entry) => (
-        <PathCopyBlock key={entry.id} path={entry.path} />
-      ))}
-    </div>
-  )
-}
-
-function TaskItemFilesAndPathsCell({
-  item,
-  itemFiles,
-  itemPaths,
-  onOpenFiles,
-}: {
-  item: ProductionTaskItem
-  itemFiles: ProductionFile[]
-  itemPaths: ProductionFilePath[]
-  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
-}) {
-  return (
-    <span className="task-item-files-paths">
-      {itemFiles.length > 0 && onOpenFiles ? (
-        <button
-          type="button"
-          className="production-files-trigger"
-          onClick={() => onOpenFiles(item.productName, itemFiles)}
-        >
-          Файлы ({itemFiles.length})
-        </button>
-      ) : null}
-      <TaskItemPathsButtons paths={itemPaths} />
-    </span>
-  )
-}
-
-function PathCopyBlock({ path }: { path: string }) {
-  const [copied, setCopied] = useState(false)
-
-  return (
-    <div className="path-copy-block">
-      <button
-        type="button"
-        className="copy-path-button"
-        onClick={() => {
-          void navigator.clipboard.writeText(path).then(() => {
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1500)
-          })
-        }}
-      >
-        {copied ? 'Скопировано' : 'Копировать путь'}
-      </button>
-      <span className="path-copy-block-text" title={path}>
-        {path}
-      </span>
-    </div>
-  )
-}
-
-function TaskItemPathCell({ paths }: { paths: ProductionFilePath[] }) {
-  return (
-    <span className="task-item-path-cell">
-      <TaskItemPathsButtons paths={paths} />
-    </span>
-  )
-}
-
-function ProductionPathsPanel({
-  paths,
-  showCopy = true,
-}: {
-  paths: ProductionFilePath[]
-  showCopy?: boolean
-}) {
-  if (paths.length === 0) {
-    return <small className="task-path-empty">Путь не указан</small>
-  }
-
-  return (
-    <div className="production-paths-panel">
-      {paths.map((entry) =>
-        showCopy ? (
-          <PathCopyBlock key={entry.id} path={entry.path} />
-        ) : (
-          <span className="production-path-text" key={entry.id} title={entry.path}>
-            {entry.path}
-          </span>
-        ),
-      )}
-    </div>
-  )
-}
-
-function getProductionTaskSummary(task: ProductionTask) {
-  const items = getProductionTaskItems(task)
-  return items.length === 1 ? items[0].productName : `${items.length} товаров в задаче`
-}
 
 function getSupplyNotificationSummary(supply: Supply) {
   const items = supply.items ?? []
   return items.length === 1 ? items[0].productName : `${items.length} товаров в поставке`
-}
-
-function matchesProductionTask(task: ProductionTask, search: string) {
-  return [
-    task.offerId,
-    task.productName,
-    task.status,
-    task.assignedUserName,
-    task.createdByDisplayName,
-    task.cancelledByDisplayName,
-    task.cancellationComment,
-    task.isUrgent ? 'срочно' : '',
-    task.requiredQuantity,
-    task.actualQuantity,
-    ...getProductionTaskItems(task).flatMap((item) => [
-      item.offerId,
-      item.productName,
-      item.productLink,
-      item.requiredQuantity,
-      item.actualQuantity,
-    ]),
-  ]
-    .filter((value) => value !== undefined && value !== null)
-    .some((value) => String(value).toLowerCase().includes(search))
 }
 
 function matchesSupply(supply: Supply, search: string) {
@@ -13742,223 +10884,6 @@ function matchesSupply(supply: Supply, search: string) {
   ]
     .filter((value) => value !== undefined && value !== null)
     .some((value) => String(value).toLowerCase().includes(search))
-}
-
-function formatFileSize(value: number) {
-  if (value < 1024) {
-    return `${value} Б`
-  }
-
-  const kb = value / 1024
-  if (kb < 1024) {
-    return `${kb.toFixed(1)} КБ`
-  }
-
-  return `${(kb / 1024).toFixed(1)} МБ`
-}
-
-function ProductionTaskArchiveTable({
-  tasks,
-  tableContext = 'mixed',
-  products,
-  productionFiles = [],
-  productionFilePaths = [],
-  token = '',
-  onOpenFiles,
-  onDeleteFile,
-  onArchive,
-  onDelete,
-  archiveView = false,
-  emptyText = 'В архиве задач пока нет.',
-}: {
-  tasks: ProductionTask[]
-  products: OzonProduct[]
-  productionFiles?: ProductionFile[]
-  productionFilePaths?: ProductionFilePath[]
-  token?: string
-  onOpenFiles?: (productName: string, files: ProductionFile[]) => void
-  onDeleteFile?: (id: string) => void
-  onArchive?: (id: string) => void
-  onDelete?: (id: string) => void
-  archiveView?: boolean
-  emptyText?: string
-  tableContext?: 'ozon' | 'novinka' | 'mixed'
-}) {
-  const tableMode = getProductionTaskTableMode(tasks, tableContext)
-  const { showQuantityColumns, showTypeColumn, skuHeaderLabel, neededHeaderLabel } =
-    getProductionTaskTableLabels(tableMode)
-
-  return (
-    <div className={`data-table production-task-table production-task-table-${tableMode}`}>
-      <div className={`table-row task-archive-row table-head ${archiveView ? 'task-archive-row-extended' : ''}`}>
-        <span>Что было в задаче</span>
-        <span className="task-col-sku">{skuHeaderLabel}</span>
-        {showTypeColumn && <span className="task-col-type">Тип</span>}
-        {showQuantityColumns && (
-          <>
-            <span className="task-col-needed">{neededHeaderLabel}</span>
-            <span className="task-col-fact">Факт</span>
-          </>
-        )}
-        {archiveView && <span>Статус</span>}
-        <span>Кто выполнял</span>
-        <span>Взял в работу</span>
-        <span>{archiveView ? 'Завершена / отменена' : 'Завершил'}</span>
-        <span></span>
-      </div>
-      {tasks.map((task) => {
-        const novinka = isNovinkaTask(task)
-        const taskItems = getProductionTaskItems(task)
-
-        return (
-        <details className={`task-details-row ${novinka ? 'task-details-novinka' : ''}`} key={task.id}>
-          <summary className={`table-row task-archive-row ${archiveView ? 'task-archive-row-extended' : ''} ${novinka ? 'task-row-novinka' : ''}`}>
-          <span>
-            <strong>{getProductionTaskSummary(task)}</strong>
-            <small>
-              Создана: {formatDateTime(task.createdAt)}
-              {task.isUrgent ? ' · Срочно' : ''}
-            </small>
-          </span>
-          <span
-            className="task-col-sku offer-id-cell"
-            title={
-              novinka
-                ? undefined
-                : taskItems.map((item) => item.offerId || '-').join(', ')
-            }
-          >
-            {novinka
-              ? taskItems.length === 1
-                ? renderNovinkaItemLink(taskItems[0])
-                : '—'
-              : taskItems.length === 1
-                ? taskItems[0].offerId || '-'
-                : taskItems.map((item) => item.offerId || '-').join(', ')}
-          </span>
-          {showTypeColumn && (
-            <span className="task-col-type">
-              <span
-                className={`task-type-badge ${novinka ? 'task-type-badge-novinka' : 'task-type-badge-ozon'}`}
-              >
-                {getProductionTaskTypeLabel(task, productionFiles)}
-              </span>
-            </span>
-          )}
-          {showQuantityColumns && (
-            <>
-              <span className="task-col-needed">{novinka ? '—' : getProductionTaskRequiredTotal(task)}</span>
-              <span className="task-col-fact">
-                {novinka ? '—' : task.status === 'Cancelled' ? '—' : getProductionTaskActualTotal(task)}
-              </span>
-            </>
-          )}
-          {archiveView && <span>{translateProductionTaskStatus(task.status, task.isUrgent)}</span>}
-          <span>{task.assignedUserName || '-'}</span>
-          <span>{task.startedAt ? formatDateTime(task.startedAt) : '-'}</span>
-          <span>
-            {task.status === 'Cancelled'
-              ? task.cancelledAt
-                ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
-                : '-'
-              : task.completedAt
-                ? formatDateTime(task.completedAt)
-                : '-'}
-          </span>
-          <span className="task-actions">
-            {onArchive && (
-              <button type="button" onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onArchive(task.id)
-              }}>
-                Архивировать
-              </button>
-            )}
-            {onDelete && (
-              <button type="button" className="danger" onClick={(event) => {
-                event.preventDefault()
-                onDelete(task.id)
-              }}>
-                Удалить из архива
-              </button>
-            )}
-          </span>
-          </summary>
-          {archiveView && task.status === 'Cancelled' && task.cancellationComment && (
-            <div className="task-cancel-comment">
-              <strong>Причина отмены:</strong>
-              <p>{task.cancellationComment}</p>
-            </div>
-          )}
-          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
-            <div className="table-row task-item-table-row table-head">
-              <span>Товар</span>
-              {!novinka && <span>Артикул</span>}
-              {novinka ? (
-                <>
-                  <span>Ссылка</span>
-                  <span>Файлы</span>
-                  <span>Путь к файлу</span>
-                </>
-              ) : (
-                <>
-                  <span>План</span>
-                  <span>Факт</span>
-                </>
-              )}
-            </div>
-            {taskItems.map((item) => {
-              const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
-              const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
-
-              return (
-              <div className="table-row task-item-table-row" key={item.id}>
-                <span className="product-mini task-product-mini">
-                  <TaskItemThumb
-                    item={item}
-                    products={products}
-                    productionFiles={productionFiles}
-                    token={token}
-                  />
-                  <span>
-                    <strong>{item.productName}</strong>
-                  </span>
-                </span>
-                {!novinka && <OfferIdCell offerId={item.offerId} />}
-                {novinka ? (
-                  <>
-                    <span>{renderNovinkaItemLink(item)}</span>
-                    <TaskItemFilesPanel
-                      item={item}
-                      itemFiles={itemFiles}
-                      token={token}
-                      onDeleteFile={onDeleteFile}
-                      onOpenFiles={onOpenFiles}
-                      canUpload={false}
-                    />
-                    <TaskItemPathCell paths={itemPaths} />
-                  </>
-                ) : (
-                  <>
-                    <span>{item.requiredQuantity}</span>
-                    <span>{item.actualQuantity ?? 0}</span>
-                  </>
-                )}
-              </div>
-              )
-            })}
-          </div>
-        </details>
-        )
-      })}
-      {tasks.length === 0 && (
-        <div className="empty-state">
-          <strong>{emptyText}</strong>
-        </div>
-      )}
-    </div>
-  )
 }
 
 function SupplyItemsModal({
@@ -14967,19 +11892,6 @@ function HomeAnalyticsBlock({
   )
 }
 
-function getApiErrorMessage(errorText: string, fallback: string) {
-  if (!errorText.trim()) {
-    return fallback
-  }
-
-  try {
-    const data = JSON.parse(errorText) as { detail?: string; title?: string; message?: string }
-    return data.detail || data.message || data.title || fallback
-  } catch {
-    return errorText.length > 180 ? `${errorText.slice(0, 180)}...` : errorText
-  }
-}
-
 function AnalyticsPipelineBoard({
   snapshot,
   analytics,
@@ -15108,35 +12020,6 @@ function AnalyticsPipelineBoard({
   )
 }
 
-function formatMoney(value: number, currency: string) {
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: currency || 'KZT',
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
-function formatLossMoney(value: number, currency: string) {
-  return formatMoney(-Math.abs(value), currency || 'KZT')
-}
-
-function formatAnalyticsDate(value: string) {
-  if (!value || value === '—' || value === 'unknown') {
-    return 'Без даты'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value.slice(0, 10)
-  }
-
-  return date.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  })
-}
-
 function normalizeOrderStatus(status: string) {
   const value = status.trim().toLowerCase()
 
@@ -15244,17 +12127,6 @@ function translateProductStatus(status: string) {
   return statuses[normalized] ?? status
 }
 
-function translateProductionTaskStatus(status: ProductionTask['status'], isUrgent = false) {
-  const statuses: Record<ProductionTask['status'], string> = {
-    New: isUrgent ? 'Срочно' : 'Новая',
-    InProgress: 'В работе',
-    Cancelled: 'Отменена',
-    Completed: 'Выполнено',
-  }
-
-  return statuses[status] ?? status
-}
-
 function translateSupplyStatus(status: SupplyStatus) {
   const statuses: Record<SupplyStatus, string> = {
     Created: 'Создано',
@@ -15279,53 +12151,6 @@ function getSupplyDisplayDate(supply: { sentAt?: string; createdAt: string }) {
 
 function formatSupplyTitle(supply: { sentAt?: string; createdAt: string }) {
   return `Поставка от ${formatDateTime(getSupplyDisplayDate(supply))}`
-}
-
-function formatOzonCreatedAt(value?: string) {
-  if (!value) {
-    return '-'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  })
-}
-
-function formatDaysWithoutSales(value?: number | null) {
-  if (value === null || value === undefined) {
-    return '-'
-  }
-
-  return `${value} дн.`
-}
-
-function OfferIdCell({ offerId, inline = false }: { offerId?: string | null; inline?: boolean }) {
-  const value = offerId?.trim() || '-'
-  return (
-    <span
-      className={`offer-id-cell${inline ? ' offer-id-cell-inline' : ''}`}
-      title={value === '-' ? undefined : value}
-    >
-      {value}
-    </span>
-  )
-}
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function HomeSalesChartBlock({

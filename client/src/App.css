@@ -4259,6 +4259,34 @@ small .offer-id-cell {
   gap: 12px;
 }
 
+.integration-form-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.integrations-marketplace-panel {
+  gap: 14px;
+}
+
+.integration-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.integration-status-ok {
+  color: #166534;
+}
+
+.integration-status-error {
+  color: #b91c1c;
+}
+
+.integrations-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .integration-form-grid label {
   display: flex;
   flex-direction: column;
