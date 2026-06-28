@@ -1948,7 +1948,9 @@ function App() {
   })
   const analyticsProductImages = useMemo(() => {
     const map = new Map<string, string>()
-    for (const product of ozonProducts) {
+    const products = shopRegion === 'kz' ? kzProducts[kzMarketplace] : ozonProducts
+
+    for (const product of products) {
       if (!product.imageUrl) {
         continue
       }
@@ -1963,7 +1965,10 @@ function App() {
     }
 
     return map
-  }, [ozonProducts])
+  }, [ozonProducts, kzProducts, kzMarketplace, shopRegion])
+  const showKzFullAnalytics = shopRegion === 'kz' && kzMarketplace === 'satu'
+  const showFullAnalytics = shopRegion === 'rf' || showKzFullAnalytics
+  const analyticsMarketplaceLabel = shopRegion === 'rf' ? 'OZON' : getKzMarketplaceLabel(kzMarketplace)
   const topAnalyticsProducts = (analytics?.topProducts ?? [])
     .map((row) => ({
       ...row,
@@ -2721,12 +2726,8 @@ function App() {
       void loadKzProducts(kzMarketplace)
     }
 
-    if (activeTab === 'analytics') {
-      for (const marketplace of ['kaspi', 'satu', 'halyk'] as const) {
-        if (kzProducts[marketplace].length === 0) {
-          void loadKzProducts(marketplace)
-        }
-      }
+    if (activeTab === 'analytics' && showKzFullAnalytics && kzProducts[kzMarketplace].length === 0) {
+      void loadKzProducts(kzMarketplace)
     }
   }, [
     token,
@@ -2753,6 +2754,37 @@ function App() {
 
     loadAllHomeKzAnalytics()
   }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || !showKzFullAnalytics) {
+      return
+    }
+
+    setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
+    setAnalyticsDateTo(getDefaultAnalyticsDateTo())
+    void loadKzAnalyticsSnapshot()
+  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion, kzMarketplace])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || !showKzFullAnalytics) {
+      return
+    }
+
+    if (!analyticsDateFrom || !analyticsDateTo) {
+      return
+    }
+
+    void loadKzAnalytics()
+  }, [
+    analyticsDateFrom,
+    analyticsDateTo,
+    activeTab,
+    token,
+    user?.role,
+    user?.allowedFeatures,
+    shopRegion,
+    kzMarketplace,
+  ])
 
   useEffect(() => {
     if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || shopRegion !== 'rf') {
@@ -4754,6 +4786,51 @@ function App() {
     }
   }
 
+  async function loadKzAnalyticsSnapshot(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    const response = await fetch(`/api/kz/${marketplace}/analytics/snapshot`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), `Не удалось получить сводку ${label}`))
+      return
+    }
+
+    const data: OzonAnalyticsSnapshot = await response.json()
+    setAnalyticsSnapshot(data)
+  }
+
+  async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
+    const label = getKzMarketplaceLabel(marketplace)
+    setAnalyticsStatus(`Загружаем аналитику ${label} за период...`)
+
+    const params = new URLSearchParams()
+    if (analyticsDateFrom) {
+      params.set('dateFrom', analyticsDateFrom)
+    }
+    if (analyticsDateTo) {
+      params.set('dateTo', analyticsDateTo)
+    }
+
+    const response = await fetch(`/api/kz/${marketplace}/analytics?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), `Не удалось получить аналитику ${label}`))
+      return
+    }
+
+    const data: OzonAnalytics = await response.json()
+    setAnalytics(data)
+    setAnalyticsStatus(`Аналитика ${label} за период обновлена: ${data.timestamp}`)
+  }
+
   async function loadAnalyticsSnapshot() {
     const response = await fetch('/api/ozon/analytics/snapshot', {
       headers: {
@@ -4801,9 +4878,13 @@ function App() {
     if (shopRegion === 'kz') {
       if (analyticsSubTab === 'production') {
         await loadProductionAnalyticsReport()
-      } else if (kzProducts[kzMarketplace].length === 0) {
-        await loadKzProducts(kzMarketplace)
+        return
       }
+
+      if (showKzFullAnalytics) {
+        await Promise.all([loadKzAnalyticsSnapshot(), loadKzAnalytics()])
+      }
+
       return
     }
 
@@ -7799,7 +7880,7 @@ function App() {
                 )}
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
-                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && shopRegion === 'rf' && (
+                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && showFullAnalytics && (
                   <div className="date-filter">
                     <label>
                       <span>С</span>
@@ -7871,12 +7952,13 @@ function App() {
               {productionAnalyticsStatus && analyticsSubTab === 'production' && (
                 <p className="analytics-status-line">{productionAnalyticsStatus}</p>
               )}
-              {analyticsSubTab === 'summary' && shopRegion === 'kz' && (
-                <KzCatalogAnalyticsPanel marketplace={kzMarketplace} token={token} />
-              )}
-              {analyticsSubTab === 'summary' && shopRegion === 'rf' && (
+              {analyticsSubTab === 'summary' && showFullAnalytics && (
                 <>
-                  <AnalyticsPipelineBoard snapshot={analyticsSnapshot} analytics={analytics} />
+                  <AnalyticsPipelineBoard
+                    snapshot={analyticsSnapshot}
+                    analytics={analytics}
+                    marketplaceLabel={analyticsMarketplaceLabel}
+                  />
                   <div className="analytics-table-toolbar">
                     <input
                       className="toolbar-search"
@@ -7950,13 +8032,13 @@ function App() {
                   </div>
                 </>
               )}
-              {analyticsSubTab === 'topProducts' && shopRegion === 'kz' && (
+              {analyticsSubTab === 'summary' && shopRegion === 'kz' && !showKzFullAnalytics && (
                 <div className="empty-state">
-                  <strong>Топ товаров {getKzMarketplaceLabel(kzMarketplace)}</strong>
-                  <span>Данные Ozon в разделе KZ не отображаются.</span>
+                  <strong>Аналитика {getKzMarketplaceLabel(kzMarketplace)}</strong>
+                  <span>Полная аналитика пока доступна только для Satu.</span>
                 </div>
               )}
-              {analyticsSubTab === 'topProducts' && shopRegion === 'rf' && (
+              {analyticsSubTab === 'topProducts' && showFullAnalytics && (
                 <>
                   <div className="ozon-status">
                     <strong>Все продажи без фильтра по статусу доставки</strong>
@@ -8004,95 +8086,22 @@ function App() {
                   </div>
                 </>
               )}
-              {analyticsSubTab === 'noSales' && shopRegion === 'kz' && (
-                <>
-                  <div className="ozon-status">
-                    <strong>Каталог {getKzMarketplaceLabel(kzMarketplace)}</strong>
-                    <span>
-                      Данные Ozon в KZ не используются · найдено: {filteredKzCatalogAnalyticsProducts.length}
-                      {unsoldProductStatusFilter !== 'all'
-                        ? ` из ${kzCatalogAnalyticsProducts.length}`
-                        : ''}
-                    </span>
-                  </div>
-                  <div className="analytics-table-toolbar">
-                    <input
-                      className="toolbar-search"
-                      placeholder="Поиск по товару, артикулу или SKU"
-                      value={analyticsRowSearch}
-                      onChange={(event) => setAnalyticsRowSearch(event.target.value)}
-                    />
-                  </div>
-                  <div className="analytics-status-filters-bar unsold-status-filters-bar">
-                    <div className="analytics-status-filters">
-                      {(
-                        [
-                          ['all', 'Все'],
-                          ['selling', 'Продается'],
-                          ['ready', 'Готов к продаже'],
-                        ] as const
-                      ).map(([value, label]) => (
-                        <button
-                          type="button"
-                          key={value}
-                          className={unsoldProductStatusFilter === value ? 'active' : ''}
-                          onClick={() => setUnsoldProductStatusFilter(value)}
-                        >
-                          {label}
-                          <small>{kzUnsoldProductStatusCounts[value] ?? 0}</small>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="data-table">
-                    <div className="table-row unsold-products-row table-head">
-                      <span>Товар</span>
-                      <span>Артикул</span>
-                      <span>SKU</span>
-                      <span>Статус</span>
-                      <span>Цена</span>
-                    </div>
-                    {filteredKzCatalogAnalyticsProducts.map((row) => (
-                      <div className="table-row unsold-products-row" key={row.key}>
-                        <span className="unsold-product-name">
-                          {row.imageUrl ? (
-                            <ProductImageHoverPreview imageUrl={row.imageUrl} name={row.productName}>
-                              <ProductThumb imageUrl={row.imageUrl} name={row.productName} />
-                            </ProductImageHoverPreview>
-                          ) : (
-                            <ProductThumb name={row.productName} />
-                          )}
-                          <strong>{row.productName}</strong>
-                        </span>
-                        <OfferIdCell offerId={row.offerId} />
-                        <span>{row.sku || '-'}</span>
-                        <span>{translateProductStatus(row.status)}</span>
-                        <span>{formatMoney(row.price, row.currencyCode)}</span>
-                      </div>
-                    ))}
-                    {filteredKzCatalogAnalyticsProducts.length === 0 && (
-                      <div className="empty-state">
-                        <strong>
-                          {kzCatalogAnalyticsProducts.length === 0
-                            ? `Товары ${getKzMarketplaceLabel(kzMarketplace)} ещё не загружены.`
-                            : 'Нет товаров с выбранным статусом.'}
-                        </strong>
-                      </div>
-                    )}
-                  </div>
-                </>
+              {analyticsSubTab === 'topProducts' && shopRegion === 'kz' && !showKzFullAnalytics && (
+                <div className="empty-state">
+                  <strong>Топ товаров {getKzMarketplaceLabel(kzMarketplace)}</strong>
+                  <span>Полная аналитика пока доступна только для Satu.</span>
+                </div>
               )}
-              {analyticsSubTab === 'noSales' && shopRegion === 'rf' && (
+              {analyticsSubTab === 'noSales' && showFullAnalytics && (
                 <>
                   <div className="ozon-status">
                     <strong>Товары без единой продажи</strong>
                     <span>
-                      Сравнение каталога Ozon с заказами за период{' '}
+                      Сравнение каталога {analyticsMarketplaceLabel} с заказами за период{' '}
                       {analyticsDateFrom && analyticsDateTo
                         ? `${analyticsDateFrom} — ${analyticsDateTo}`
                         : 'не выбран'}
-                      {' · '}
-                      дата и дни — с последней FBO-поставки на склад Ozon
+                      {shopRegion === 'rf' ? ' · дата и дни — с последней FBO-поставки на склад Ozon' : ''}
                       {' · '}
                       найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'
@@ -8164,6 +8173,12 @@ function App() {
                     )}
                   </div>
                 </>
+              )}
+              {analyticsSubTab === 'noSales' && shopRegion === 'kz' && !showKzFullAnalytics && (
+                <div className="empty-state">
+                  <strong>Без продаж · {getKzMarketplaceLabel(kzMarketplace)}</strong>
+                  <span>Полная аналитика пока доступна только для Satu.</span>
+                </div>
               )}
               {analyticsSubTab === 'production' && hasFeature('analytics.production') && (
                 <>
@@ -11605,91 +11620,6 @@ function StockRow({
   )
 }
 
-function KzCatalogAnalyticsPanel({
-  marketplace,
-  token,
-}: {
-  marketplace: KzMarketplace
-  token: string | null
-}) {
-  const [stats, setStats] = useState({ total: 0, selling: 0, ready: 0, archived: 0 })
-  const [status, setStatus] = useState('')
-
-  useEffect(() => {
-    if (!token) {
-      return
-    }
-
-    let cancelled = false
-    const label = getKzMarketplaceLabel(marketplace)
-    setStatus(`Загружаем сводку каталога ${label}...`)
-
-    void (async () => {
-      const response = await fetch(`/api/kz/${marketplace}/catalog-summary`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-
-      if (cancelled) {
-        return
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        setStatus(getApiErrorMessage(errorText, `Не удалось загрузить сводку ${label}`))
-        return
-      }
-
-      const data: { total: number; selling: number; ready: number; archived: number } = await response.json()
-      setStats({
-        total: data.total,
-        selling: data.selling,
-        ready: data.ready,
-        archived: data.archived,
-      })
-      setStatus(`Обновлено: ${new Date().toLocaleString('ru-RU')}`)
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [marketplace, token])
-
-  return (
-    <>
-      <div className="analytics-pipeline">
-        <section className="analytics-pipeline-panel analytics-pipeline-panel--summary">
-          <div className="analytics-pipeline-grid analytics-pipeline-grid--summary">
-            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c1">
-              <span>Всего позиций</span>
-              <strong>{stats.total}</strong>
-            </div>
-            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c2">
-              <span>Товаров в продаже</span>
-              <strong>{stats.selling}</strong>
-            </div>
-            <div className="analytics-pipeline-card analytics-pipeline-cell--s1c3">
-              <span>Готовых к продаже</span>
-              <strong>{stats.ready}</strong>
-            </div>
-            <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell--s1c4">
-              <span>В архиве</span>
-              <strong>{stats.archived}</strong>
-            </div>
-          </div>
-        </section>
-      </div>
-      <div className="empty-state">
-        <strong>Аналитика продаж {getKzMarketplaceLabel(marketplace)}</strong>
-        <span>
-          Данные Ozon в разделе KZ не показываются. Сводка построена по полному каталогу{' '}
-          {getKzMarketplaceLabel(marketplace)} через API (с пагинацией).
-        </span>
-        {status && <span>{status}</span>}
-      </div>
-    </>
-  )
-}
-
 function computeHomeProductionStats(tasks: ProductionTask[]) {
   const activeTasks = tasks.filter((task) => !task.isArchived)
 
@@ -11948,9 +11878,11 @@ function HomeAnalyticsBlock({
 function AnalyticsPipelineBoard({
   snapshot,
   analytics,
+  marketplaceLabel = 'OZON',
 }: {
   snapshot: OzonAnalyticsSnapshot | null
   analytics: OzonAnalytics | null
+  marketplaceLabel?: string
 }) {
   const currency = 'KZT'
   const balanceCurrency = snapshot?.accountBalanceCurrency || currency
@@ -11982,7 +11914,7 @@ function AnalyticsPipelineBoard({
             <strong>{snapshot?.archivedProductsCount ?? '—'}</strong>
           </div>
           <div className="analytics-pipeline-card analytics-pipeline-card--balance analytics-pipeline-cell--s1c6">
-            <span>Баланс на OZON</span>
+            <span>Баланс на {marketplaceLabel}</span>
             <strong>
               {snapshot?.accountBalance === null || snapshot?.accountBalance === undefined
                 ? '—'
@@ -12037,7 +11969,7 @@ function AnalyticsPipelineBoard({
         </div>
 
         <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c1">
-          <span>Комиссия OZON</span>
+          <span>Комиссия {marketplaceLabel}</span>
           <strong>{analytics ? formatLossMoney(analytics.commissionTotal, currency) : '—'}</strong>
         </div>
         <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c2">
@@ -12045,7 +11977,7 @@ function AnalyticsPipelineBoard({
           <strong>{analytics ? formatLossMoney(analytics.logisticsTotal, currency) : '—'}</strong>
         </div>
         <div className="analytics-pipeline-card analytics-pipeline-card--text-danger analytics-pipeline-cell analytics-pipeline-cell--r3c3">
-          <span>Прочие услуги OZON</span>
+          <span>Прочие услуги {marketplaceLabel}</span>
           <strong>{analytics ? formatLossMoney(analytics.servicesTotal, currency) : '—'}</strong>
         </div>
         <div className="analytics-pipeline-card analytics-pipeline-card--highlight-danger analytics-pipeline-cell analytics-pipeline-cell--r3c4">

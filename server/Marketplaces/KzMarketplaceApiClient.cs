@@ -58,24 +58,53 @@ public sealed class KzMarketplaceApiClient(HttpClient httpClient, KzMarketplaceC
             JsonDocument.Parse("{}").RootElement);
     }
 
-    public Task<OzonAnalyticsResult> GetAnalyticsAsync(
+    public async Task<OzonAnalyticsResult> GetAnalyticsAsync(
         string marketplace,
         DateOnly from,
         DateOnly to,
         CancellationToken cancellationToken)
     {
-        _ = from;
-        _ = to;
-        _ = cancellationToken;
         var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
-        var credentialSet = credentials.Get(normalized);
-        if (!credentialSet.IsConfigured)
+        var credentialSet = EnsureConfigured(marketplace);
+
+        if (normalized == MarketplaceTypes.Satu)
         {
-            return Task.FromResult(CreateEmptyAnalytics());
+            return await SatuApiClient.GetAnalyticsAsync(
+                httpClient,
+                credentialSet.ApiKey,
+                credentialSet.MerchantId,
+                from,
+                to,
+                cancellationToken);
         }
 
-        // Пока у Kaspi / Satu / Halyk нет полноценного API продаж — возвращаем пустую сводку той же формы, что Ozon.
-        return Task.FromResult(CreateEmptyAnalytics());
+        return CreateEmptyAnalytics();
+    }
+
+    public async Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(
+        string marketplace,
+        CancellationToken cancellationToken)
+    {
+        var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
+        var credentialSet = EnsureConfigured(marketplace);
+
+        if (normalized == MarketplaceTypes.Satu)
+        {
+            return await SatuApiClient.GetAnalyticsSnapshotAsync(
+                httpClient,
+                credentialSet.ApiKey,
+                cancellationToken);
+        }
+
+        var summary = await GetCatalogSummaryAsync(marketplace, cancellationToken);
+        return new OzonAnalyticsSnapshot(
+            summary.Total,
+            summary.Selling,
+            summary.Ready,
+            summary.Archived,
+            null,
+            "KZT",
+            DateTimeOffset.UtcNow.ToString("O"));
     }
 
     public static OzonAnalyticsResult CreateEmptyAnalytics(string currencyCode = "KZT") =>

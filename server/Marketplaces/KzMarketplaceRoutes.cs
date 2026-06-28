@@ -170,6 +170,32 @@ public static class KzMarketplaceRoutes
             }
         }).RequireAuthorization();
 
+        app.MapGet("/api/kz/{marketplace}/analytics/snapshot", async (
+            string marketplace,
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            try
+            {
+                var result = await marketplaceApi.GetAnalyticsSnapshotAsync(marketplace, cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
         app.MapGet("/api/kz/{marketplace}/analytics", async (
             string marketplace,
             string? dateFrom,

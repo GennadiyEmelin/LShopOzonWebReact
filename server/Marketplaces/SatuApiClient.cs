@@ -88,16 +88,143 @@ internal static class SatuApiClient
         string apiKey,
         CancellationToken cancellationToken)
     {
-        var content = await GetJsonAsync(httpClient, "orders/list", apiKey, cancellationToken);
-        using var document = JsonDocument.Parse(content);
-        var root = document.RootElement;
+        var orders = await GetOrdersAsync(httpClient, apiKey, null, null, cancellationToken);
+        return orders.Count;
+    }
 
-        if (root.TryGetProperty("orders", out var orders) && orders.ValueKind == JsonValueKind.Array)
+    internal static async Task<IReadOnlyList<JsonElement>> GetOrdersAsync(
+        HttpClient httpClient,
+        string apiKey,
+        DateOnly? from,
+        DateOnly? to,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<JsonElement>();
+        var offset = 0;
+
+        while (true)
         {
-            return orders.GetArrayLength();
+            var page = await GetOrdersPageAsync(httpClient, apiKey, offset, cancellationToken);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var order in page)
+            {
+                var orderDate = ReadOrderDate(order);
+                if (from is not null && orderDate is not null && orderDate.Value < from.Value)
+                {
+                    continue;
+                }
+
+                if (to is not null && orderDate is not null && orderDate.Value > to.Value)
+                {
+                    continue;
+                }
+
+                result.Add(order);
+            }
+
+            if (page.Count < PageSize)
+            {
+                break;
+            }
+
+            offset += PageSize;
         }
 
-        return root.ValueKind == JsonValueKind.Array ? root.GetArrayLength() : 0;
+        return result;
+    }
+
+    internal static Task<OzonAnalyticsSnapshot> GetAnalyticsSnapshotAsync(
+        HttpClient httpClient,
+        string apiKey,
+        CancellationToken cancellationToken) =>
+        SatuAnalyticsBuilder.GetAnalyticsSnapshotAsync(httpClient, apiKey, cancellationToken);
+
+    internal static Task<OzonAnalyticsResult> GetAnalyticsAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken) =>
+        SatuAnalyticsBuilder.GetAnalyticsAsync(httpClient, apiKey, merchantId, from, to, cancellationToken);
+
+    internal static string NormalizeOrderStatus(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant() ?? string.Empty;
+        return normalized switch
+        {
+            "delivered" => "delivered",
+            "canceled" or "cancelled" or "cancel" => "cancelled",
+            "paid" or "delivering" or "shipping" or "sent" => "delivering",
+            _ => "awaiting_deliver"
+        };
+    }
+
+    internal static DateOnly? ReadOrderDate(JsonElement order)
+    {
+        foreach (var name in new[] { "date_created", "created_at", "date", "order_date", "updated_at" })
+        {
+            var value = ReadString(order, name);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            if (DateTimeOffset.TryParse(value, out var parsed))
+            {
+                return DateOnly.FromDateTime(parsed.UtcDateTime);
+            }
+        }
+
+        return null;
+    }
+
+    internal static IEnumerable<JsonElement> EnumerateOrderProducts(JsonElement order)
+    {
+        foreach (var name in new[] { "products", "items", "order_items" })
+        {
+            if (order.TryGetProperty(name, out var products) && products.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var product in products.EnumerateArray())
+                {
+                    yield return product;
+                }
+
+                yield break;
+            }
+        }
+    }
+
+    private static async Task<List<JsonElement>> GetOrdersPageAsync(
+        HttpClient httpClient,
+        string apiKey,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        var query = offset > 0
+            ? $"orders/list?limit={PageSize}&offset={offset}"
+            : $"orders/list?limit={PageSize}";
+        var content = await GetJsonAsync(httpClient, query, apiKey, cancellationToken);
+        return ExtractOrderElements(content);
+    }
+
+    private static List<JsonElement> ExtractOrderElements(string content)
+    {
+        using var document = JsonDocument.Parse(content);
+        var root = document.RootElement;
+        var items = root.ValueKind switch
+        {
+            JsonValueKind.Array => root.EnumerateArray(),
+            JsonValueKind.Object when root.TryGetProperty("orders", out var orders) && orders.ValueKind == JsonValueKind.Array =>
+                orders.EnumerateArray(),
+            _ => Enumerable.Empty<JsonElement>()
+        };
+
+        return items.Select(item => item.Clone()).ToList();
     }
 
     private static async Task<List<JsonElement>> GetProductsPageAsync(
@@ -253,7 +380,7 @@ internal static class SatuApiClient
         };
     }
 
-    private static string? ReadString(JsonElement element, params string[] names)
+    internal static string? ReadString(JsonElement element, params string[] names)
     {
         foreach (var name in names)
         {
@@ -276,7 +403,7 @@ internal static class SatuApiClient
         return null;
     }
 
-    private static long? ReadLong(JsonElement element, params string[] names)
+    internal static long? ReadLong(JsonElement element, params string[] names)
     {
         foreach (var name in names)
         {
@@ -300,7 +427,7 @@ internal static class SatuApiClient
         return null;
     }
 
-    private static decimal ReadDecimal(JsonElement element, params string[] names)
+    internal static decimal ReadDecimal(JsonElement element, params string[] names)
     {
         foreach (var name in names)
         {
