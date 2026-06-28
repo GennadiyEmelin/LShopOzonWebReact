@@ -4735,23 +4735,6 @@ function App() {
     }
   }
 
-  async function loadKzAnalyticsSnapshot(marketplace: KzMarketplace = kzMarketplace) {
-    const label = getKzMarketplaceLabel(marketplace)
-    const response = await fetch(`/api/kz/${marketplace}/analytics/snapshot`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setAnalyticsStatus(getApiErrorMessage(await response.text(), `Не удалось получить сводку ${label}`))
-      return
-    }
-
-    const data: OzonAnalyticsSnapshot = await response.json()
-    setAnalyticsSnapshot(data)
-  }
-
   function applyKzAnalytics(data: OzonAnalytics) {
     setAnalytics(data)
     setAnalyticsSnapshot({
