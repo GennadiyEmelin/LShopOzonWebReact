@@ -1500,6 +1500,11 @@ function App() {
   const [productStatusFilter, setProductStatusFilter] = useState<'all' | 'selling' | 'ready' | 'archived'>('all')
   const [kzProductsLoading, setKzProductsLoading] = useState(false)
   const [kzProductsLoadingAll, setKzProductsLoadingAll] = useState(false)
+  const [kzProductsPageFull, setKzProductsPageFull] = useState<Record<KzMarketplace, boolean>>({
+    kaspi: false,
+    satu: false,
+    halyk: false,
+  })
   const [stockStatus, setStockStatus] = useState('')
   const [ozonStocks, setOzonStocks] = useState<OzonStock[]>([])
   const [stockSearch, setStockSearch] = useState('')
@@ -1749,8 +1754,7 @@ function App() {
   }, [shopRegion, kzCatalogSummary, kzMarketplace, productStatusFilter])
   const kzHasMoreProducts =
     shopRegion === 'kz' &&
-    kzMatchedCatalogTotal > 0 &&
-    catalogProductsSource.length < kzMatchedCatalogTotal
+    (catalogProductsSource.length < kzMatchedCatalogTotal || kzProductsPageFull[kzMarketplace])
   const catalogStocksStatus = shopRegion === 'rf' ? stockStatus : kzStocksStatus[kzMarketplace]
   const productionLookupProducts =
     shopRegion === 'rf'
@@ -1761,7 +1765,10 @@ function App() {
   const productStatusCounts = useMemo(() => {
     if (shopRegion === 'kz') {
       const summary = kzCatalogSummary[kzMarketplace]
-      if (summary) {
+      const summaryStatsTotal = (summary?.selling ?? 0) + (summary?.ready ?? 0) + (summary?.archived ?? 0)
+      const hasAuthoritativeSummary = Boolean(summary && summary.total > 0 && summaryStatsTotal > 0)
+
+      if (hasAuthoritativeSummary && summary) {
         return {
           all: summary.total,
           selling: summary.selling,
@@ -1787,6 +1794,13 @@ function App() {
         counts.ready++
       } else if (group === 'archived') {
         counts.archived++
+      }
+    }
+
+    if (shopRegion === 'kz') {
+      const summary = kzCatalogSummary[kzMarketplace]
+      if (summary && summary.total > counts.all) {
+        counts.all = summary.total
       }
     }
 
@@ -2742,14 +2756,7 @@ function App() {
     }
 
     void loadKzCatalogSummary(kzMarketplace)
-  }, [activeTab, kzMarketplace, token, shopRegion])
-
-  useEffect(() => {
-    if (!token || shopRegion !== 'kz' || activeTab !== 'products') {
-      return
-    }
-
-    void loadKzProducts(kzMarketplace, false)
+    void loadKzProducts(kzMarketplace, false, productStatusFilter)
   }, [activeTab, kzMarketplace, productStatusFilter, token, shopRegion])
 
   useEffect(() => {
@@ -4459,7 +4466,9 @@ function App() {
     setOzonStatus(`Загружено товаров Ozon: ${data.length}`)
   }
 
-  async function loadKzCatalogSummary(marketplace: KzMarketplace = kzMarketplace) {
+  async function loadKzCatalogSummary(
+    marketplace: KzMarketplace = kzMarketplace,
+  ): Promise<{ total: number; selling: number; ready: number; archived: number } | null> {
     const label = getKzMarketplaceLabel(marketplace)
     setKzProductsStatus((current) => ({
       ...current,
@@ -4478,7 +4487,7 @@ function App() {
         ...current,
         [marketplace]: getApiErrorMessage(errorText, `Не удалось получить сводку ${label}`),
       }))
-      return
+      return null
     }
 
     const data: { total: number; selling: number; ready: number; archived: number } = await response.json()
@@ -4497,12 +4506,14 @@ function App() {
         ? current[marketplace]
         : `Каталог ${label}: ${data.total} позиций`,
     }))
+    return data
   }
 
   async function loadKzProducts(
     marketplace: KzMarketplace = kzMarketplace,
     append = false,
     statusFilter: 'all' | 'selling' | 'ready' | 'archived' = productStatusFilter,
+    catalogSummary: { total: number; selling: number; ready: number; archived: number } | null = null,
   ): Promise<{ loadedCount: number; matchedTotal: number; hasMore: boolean } | null> {
     const label = getKzMarketplaceLabel(marketplace)
     const skip = append ? (kzProducts[marketplace]?.length ?? 0) : 0
@@ -4547,21 +4558,43 @@ function App() {
         items: OzonProduct[]
       } = await response.json()
 
-      setKzCatalogSummary((current) => ({
+      const summaryStatsTotal = data.selling + data.ready + data.archived
+      if (summaryStatsTotal > 0 || data.total > data.items.length) {
+        setKzCatalogSummary((current) => ({
+          ...current,
+          [marketplace]: {
+            total: data.total,
+            selling: data.selling,
+            ready: data.ready,
+            archived: data.archived,
+          },
+        }))
+      }
+
+      setKzProductsPageFull((current) => ({
         ...current,
-        [marketplace]: {
-          total: data.total,
-          selling: data.selling,
-          ready: data.ready,
-          archived: data.archived,
-        },
+        [marketplace]: data.items.length >= 200,
       }))
       setKzProducts((current) => ({
         ...current,
         [marketplace]: append ? [...(current[marketplace] ?? []), ...data.items] : data.items,
       }))
       const loadedCount = append ? skip + data.items.length : data.items.length
-      const matchedTotal = data.matchedTotal ?? data.total
+      const summary = catalogSummary ?? kzCatalogSummary[marketplace]
+      const matchedTotal =
+        data.matchedTotal > loadedCount
+          ? data.matchedTotal
+          : summary && summary.total > loadedCount
+            ? statusFilter === 'selling'
+              ? summary.selling
+              : statusFilter === 'ready'
+                ? summary.ready
+                : statusFilter === 'archived'
+                  ? summary.archived
+                  : summary.total
+            : data.items.length >= 200
+              ? loadedCount + 1
+              : loadedCount
       setKzProductsStatus((current) => ({
         ...current,
         [marketplace]:
@@ -8017,11 +8050,30 @@ function App() {
                   <span>
                     Показано: {filteredCatalogProducts.length}
                     {productStatusFilter !== 'all' || productSearch.trim()
-                      ? ` из ${shopRegion === 'kz' ? kzMatchedCatalogTotal : catalogProductsSource.length}`
+                      ? ` из ${shopRegion === 'kz' ? kzMatchedCatalogTotal || productStatusCounts.all : catalogProductsSource.length}`
                       : shopRegion === 'kz' && kzHasMoreProducts
-                        ? ` (загружено ${catalogProductsSource.length} из ${kzMatchedCatalogTotal})`
+                        ? ` (загружено ${catalogProductsSource.length}${kzMatchedCatalogTotal ? ` из ${kzMatchedCatalogTotal}` : '+'})`
                         : ''}
                   </span>
+                </div>
+              )}
+
+              {shopRegion === 'kz' && kzHasMoreProducts && (
+                <div className="subtabs-placeholder products-toolbar products-load-more-bar">
+                  <button
+                    type="button"
+                    disabled={kzProductsLoading || kzProductsLoadingAll}
+                    onClick={() => void loadKzProducts(kzMarketplace, true)}
+                  >
+                    {kzProductsLoading ? 'Загрузка...' : 'Загрузить ещё 200'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={kzProductsLoading || kzProductsLoadingAll}
+                    onClick={() => void loadAllKzProducts(kzMarketplace)}
+                  >
+                    {kzProductsLoadingAll ? 'Загружаем все...' : 'Загрузить все'}
+                  </button>
                 </div>
               )}
 
@@ -12346,6 +12398,9 @@ function translateProductStatus(status: string) {
     visible: 'Продается',
     selling: 'Продается',
     active: 'Продается',
+    on_display: 'Продается',
+    on: 'Продается',
+    published: 'Продается',
     продается: 'Продается',
     'продаётся': 'Продается',
     archived: 'Архив',
