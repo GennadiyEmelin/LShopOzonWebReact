@@ -76,38 +76,113 @@ internal static class SatuApiClient
 
         while (true)
         {
-            var page = await GetProductsPageAsync(httpClient, apiKey, offset, cancellationToken);
-            if (page.Count == 0)
-            {
-                break;
-            }
+            var offsets = Enumerable.Range(0, ParallelPages)
+                .Select(index => offset + index * PageSize)
+                .ToArray();
 
-            foreach (var item in page)
+            var pages = await Task.WhenAll(
+                offsets.Select(pageOffset =>
+                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
+
+            var reachedEnd = false;
+            var addedInBatch = false;
+
+            foreach (var page in pages)
             {
-                stats.Total++;
-                switch (NormalizeCatalogStatus(item))
+                if (page.Count == 0)
                 {
-                    case "selling":
-                        stats.Selling++;
-                        break;
-                    case "ready":
-                        stats.Ready++;
-                        break;
-                    case "archived":
-                        stats.Archived++;
-                        break;
+                    continue;
+                }
+
+                addedInBatch = true;
+
+                foreach (var item in page)
+                {
+                    stats.Total++;
+                    switch (NormalizeCatalogStatus(item))
+                    {
+                        case "selling":
+                            stats.Selling++;
+                            break;
+                        case "ready":
+                            stats.Ready++;
+                            break;
+                        case "archived":
+                            stats.Archived++;
+                            break;
+                    }
+                }
+
+                if (page.Count < PageSize)
+                {
+                    reachedEnd = true;
                 }
             }
 
-            if (page.Count < PageSize)
+            if (reachedEnd || !addedInBatch)
             {
                 break;
             }
 
-            offset += PageSize;
+            offset += ParallelPages * PageSize;
         }
 
         return stats;
+    }
+
+    internal static async Task<IReadOnlyList<OzonProductSummary>> LoadProductsRangeAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        take = Math.Clamp(take, 1, 500);
+        skip = Math.Max(0, skip);
+
+        if (take == 0)
+        {
+            return [];
+        }
+
+        var startOffset = skip / PageSize * PageSize;
+        var endOffset = (skip + take - 1) / PageSize * PageSize;
+        var offsets = new List<int>();
+        for (var pageOffset = startOffset; pageOffset <= endOffset; pageOffset += PageSize)
+        {
+            offsets.Add(pageOffset);
+        }
+
+        var collected = new List<OzonProductSummary>();
+        var fallbackIndex = skip + 1;
+
+        for (var batchStart = 0; batchStart < offsets.Count; batchStart += ParallelPages)
+        {
+            var batchOffsets = offsets.Skip(batchStart).Take(ParallelPages).ToArray();
+            var pages = await Task.WhenAll(
+                batchOffsets.Select(pageOffset =>
+                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
+
+            foreach (var page in pages)
+            {
+                foreach (var item in page)
+                {
+                    collected.Add(ToProductSummary(item, merchantId, fallbackIndex++));
+                }
+            }
+        }
+
+        var sliceStart = skip - startOffset;
+        if (sliceStart >= collected.Count)
+        {
+            return [];
+        }
+
+        return collected
+            .Skip(sliceStart)
+            .Take(take)
+            .ToList();
     }
 
     internal static async Task<int> GetOrdersCountAsync(

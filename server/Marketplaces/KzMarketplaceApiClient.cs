@@ -17,17 +17,52 @@ public sealed class KzMarketplaceApiClient(
         var credentialSet = EnsureConfigured(marketplace);
         var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
 
-        return normalized switch
+        if (normalized == MarketplaceTypes.Satu)
         {
-            MarketplaceTypes.Kaspi => await GetKaspiProductsAsync(credentialSet, cancellationToken),
-            MarketplaceTypes.Satu => await satuCatalogCache.GetProductsAsync(
+            return await satuCatalogCache.GetProductsAsync(
                 httpClient,
                 credentialSet.ApiKey,
                 credentialSet.MerchantId,
-                cancellationToken),
+                cancellationToken);
+        }
+
+        return (await GetProductsPageAsync(marketplace, 0, int.MaxValue, cancellationToken)).Items;
+    }
+
+    public async Task<KzProductsPage> GetProductsPageAsync(
+        string marketplace,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        var credentialSet = EnsureConfigured(marketplace);
+        var normalized = MarketplaceTypes.NormalizeKzMarketplace(marketplace);
+
+        if (normalized == MarketplaceTypes.Satu)
+        {
+            return await satuCatalogCache.GetProductsPageAsync(
+                httpClient,
+                credentialSet.ApiKey,
+                credentialSet.MerchantId,
+                skip,
+                take,
+                cancellationToken);
+        }
+
+        var products = normalized switch
+        {
+            MarketplaceTypes.Kaspi => await GetKaspiProductsAsync(credentialSet, cancellationToken),
             MarketplaceTypes.Halyk => await GetGenericProductsAsync(normalized, credentialSet, cancellationToken),
-            _ => []
+            _ => (IReadOnlyList<OzonProductSummary>)[]
         };
+
+        var summary = BuildCatalogSummary(products);
+        var items = products
+            .Skip(Math.Max(0, skip))
+            .Take(take <= 0 ? products.Count : Math.Clamp(take, 1, 500))
+            .ToList();
+
+        return new KzProductsPage(summary.Total, summary.Selling, summary.Ready, summary.Archived, items);
     }
 
     public async Task<IReadOnlyList<OzonStockSummary>> GetStocksAsync(string marketplace, CancellationToken cancellationToken)
@@ -190,30 +225,7 @@ public sealed class KzMarketplaceApiClient(
         }
 
         var products = await GetProductsAsync(marketplace, cancellationToken);
-        var summary = new KzCatalogSummary(products.Count, 0, 0, 0);
-        foreach (var product in products)
-        {
-            switch (product.Status.Trim().ToLowerInvariant())
-            {
-                case "selling":
-                case "active":
-                case "visible":
-                case "on_display":
-                    summary = summary with { Selling = summary.Selling + 1 };
-                    break;
-                case "archived":
-                case "archive":
-                case "deleted":
-                case "off":
-                    summary = summary with { Archived = summary.Archived + 1 };
-                    break;
-                default:
-                    summary = summary with { Ready = summary.Ready + 1 };
-                    break;
-            }
-        }
-
-        return summary;
+        return BuildCatalogSummary(products);
     }
 
     public async Task<KzMarketplaceTestResult> TestConnectionAsync(string marketplace, CancellationToken cancellationToken)
@@ -392,6 +404,34 @@ public sealed class KzMarketplaceApiClient(
         return products;
     }
 
+    private static KzCatalogSummary BuildCatalogSummary(IReadOnlyList<OzonProductSummary> products)
+    {
+        var summary = new KzCatalogSummary(products.Count, 0, 0, 0);
+        foreach (var product in products)
+        {
+            switch (product.Status.Trim().ToLowerInvariant())
+            {
+                case "selling":
+                case "active":
+                case "visible":
+                case "on_display":
+                    summary = summary with { Selling = summary.Selling + 1 };
+                    break;
+                case "archived":
+                case "archive":
+                case "deleted":
+                case "off":
+                    summary = summary with { Archived = summary.Archived + 1 };
+                    break;
+                default:
+                    summary = summary with { Ready = summary.Ready + 1 };
+                    break;
+            }
+        }
+
+        return summary;
+    }
+
     private static string BuildFallbackProductUrl(string marketplace, string merchantId, string offerId) =>
         marketplace switch
         {
@@ -476,3 +516,10 @@ public record KzMarketplaceTestResult(bool Success, string Message);
 public record KzCatalogSummary(int Total, int Selling, int Ready, int Archived);
 
 public record KzUnsoldProductsPage(int Total, IReadOnlyList<OzonUnsoldProductRow> Items);
+
+public record KzProductsPage(
+    int Total,
+    int Selling,
+    int Ready,
+    int Archived,
+    IReadOnlyList<OzonProductSummary> Items);

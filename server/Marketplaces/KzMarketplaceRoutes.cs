@@ -120,6 +120,8 @@ public static class KzMarketplaceRoutes
 
         app.MapGet("/api/kz/{marketplace}/products", async (
             string marketplace,
+            int? skip,
+            int? take,
             AppDbContext db,
             KzMarketplaceApiClient marketplaceApi,
             KzMarketplaceCredentials credentials,
@@ -135,7 +137,11 @@ public static class KzMarketplaceRoutes
 
             try
             {
-                var result = await marketplaceApi.GetProductsAsync(marketplace, cancellationToken);
+                var result = await marketplaceApi.GetProductsPageAsync(
+                    marketplace,
+                    skip ?? 0,
+                    take ?? 200,
+                    cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)

@@ -23,14 +23,59 @@ public sealed class SatuCatalogCache(IMemoryCache cache)
             () => SatuApiClient.LoadProductsAsync(httpClient, apiKey, merchantId, cancellationToken),
             cancellationToken);
 
-    public async Task<SatuCatalogStats> GetCatalogStatsAsync(
+    public Task<SatuCatalogStats> GetCatalogStatsAsync(
         HttpClient httpClient,
         string apiKey,
         string merchantId,
+        CancellationToken cancellationToken) =>
+        GetOrLoadAsync(
+            $"satu:stats:{CacheKeySuffix(apiKey)}",
+            ProductsTtl,
+            () => SatuApiClient.GetCatalogStatsAsync(httpClient, apiKey, cancellationToken),
+            cancellationToken);
+
+    public async Task<KzProductsPage> GetProductsPageAsync(
+        HttpClient httpClient,
+        string apiKey,
+        string merchantId,
+        int skip,
+        int take,
         CancellationToken cancellationToken)
     {
-        var products = await GetProductsAsync(httpClient, apiKey, merchantId, cancellationToken);
-        return SatuAnalyticsBuilder.ComputeStatsFromProducts(products);
+        var statsKey = $"satu:stats:{CacheKeySuffix(apiKey)}";
+        cache.TryGetValue(statsKey, out SatuCatalogStats? stats);
+
+        IReadOnlyList<OzonProductSummary> items;
+        if (cache.TryGetValue(ProductsKey(apiKey), out IReadOnlyList<OzonProductSummary>? cachedProducts) &&
+            cachedProducts is not null)
+        {
+            items = cachedProducts
+                .Skip(Math.Max(0, skip))
+                .Take(Math.Clamp(take, 1, 500))
+                .ToList();
+        }
+        else
+        {
+            items = await SatuApiClient.LoadProductsRangeAsync(
+                httpClient,
+                apiKey,
+                merchantId,
+                skip,
+                take,
+                cancellationToken);
+        }
+
+        if (stats is null)
+        {
+            _ = GetCatalogStatsAsync(httpClient, apiKey, merchantId, cancellationToken);
+        }
+
+        return new KzProductsPage(
+            stats?.Total ?? Math.Max(skip + items.Count, items.Count),
+            stats?.Selling ?? 0,
+            stats?.Ready ?? 0,
+            stats?.Archived ?? 0,
+            items);
     }
 
     public Task<IReadOnlyList<System.Text.Json.JsonElement>> GetOrdersAsync(
