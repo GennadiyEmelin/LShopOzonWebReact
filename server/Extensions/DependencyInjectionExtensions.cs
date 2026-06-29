@@ -51,7 +51,7 @@ public static class DependencyInjectionExtensions
             client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(credentials.BaseUrl)
                 ? "https://api-seller.ozon.ru"
                 : credentials.BaseUrl);
-            client.Timeout = TimeSpan.FromMinutes(3);
+            client.Timeout = TimeSpan.FromMinutes(15);
         });
         services.AddScoped<JwtTokenService>();
 

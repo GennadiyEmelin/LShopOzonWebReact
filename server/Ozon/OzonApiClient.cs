@@ -98,7 +98,9 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var stocks = await GetStocksAsync(limit, cancellationToken);
         var productIds = stocks.Items.Select(item => item.ProductId).Distinct().ToArray();
         var details = await GetProductInfoAsync(productIds, cancellationToken);
-        var detailsById = details.ToDictionary(item => item.ProductId);
+        var detailsById = details
+            .GroupBy(item => item.ProductId)
+            .ToDictionary(group => group.Key, group => group.First());
 
         return stocks.Items.Select(item =>
         {
@@ -177,6 +179,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             financeOperations.AddRange(await GetAllFinanceTransactionsAsync(from, to, timeZone, cancellationToken));
         }
 
+        financeOperations = DeduplicateFinanceOperations(financeOperations);
+
         postings = await GetAllPostingsForRangeAsync(dateFrom, dateTo, timeZone, includeCancelled: true, cancellationToken);
 
         var cancelledPostingNumbers = postings
@@ -193,7 +197,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             cancellationToken);
 
         var financeOperationsForOrders = financeOperations
-            .ToDictionary(operation => operation.OperationId);
+            .GroupBy(operation => operation.OperationId)
+            .ToDictionary(group => group.Key, group => group.First());
         foreach (var operation in cancelledFinanceOperations.Values)
         {
             financeOperationsForOrders[operation.OperationId] = operation;
@@ -1967,25 +1972,35 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var data = JsonSerializer.Deserialize<OzonProductInfoListResponse>(content, JsonOptions)
             ?? throw new InvalidOperationException("Ozon API returned an empty response.");
 
-        return data.Items.Select(item =>
-        {
-            var sku = item.Sku ?? item.Sources.FirstOrDefault()?.Sku;
-            var createdAt = item.CreatedAt ?? item.Sources.FirstOrDefault()?.CreatedAt;
-            return new OzonProductSummary(
-                item.Id,
-                item.OfferId,
-                sku,
-                item.Name,
-                item.Price,
-                item.OldPrice,
-                item.MinPrice,
-                item.CurrencyCode,
-                item.Statuses?.StatusName ?? string.Empty,
-                sku is null ? string.Empty : $"https://www.ozon.kz/product/{sku}/",
-                item.PrimaryImage.FirstOrDefault() ?? item.Images.FirstOrDefault() ?? string.Empty,
-                createdAt);
-        }).ToList();
+        return data.Items
+            .GroupBy(item => item.Id)
+            .Select(group =>
+            {
+                var item = group.First();
+                var sku = item.Sku ?? item.Sources.FirstOrDefault()?.Sku;
+                var createdAt = item.CreatedAt ?? item.Sources.FirstOrDefault()?.CreatedAt;
+                return new OzonProductSummary(
+                    item.Id,
+                    item.OfferId,
+                    sku,
+                    item.Name,
+                    item.Price,
+                    item.OldPrice,
+                    item.MinPrice,
+                    item.CurrencyCode,
+                    item.Statuses?.StatusName ?? string.Empty,
+                    sku is null ? string.Empty : $"https://www.ozon.kz/product/{sku}/",
+                    item.PrimaryImage.FirstOrDefault() ?? item.Images.FirstOrDefault() ?? string.Empty,
+                    createdAt);
+            })
+            .ToList();
     }
+
+    private static List<OzonFinanceOperation> DeduplicateFinanceOperations(IEnumerable<OzonFinanceOperation> operations) =>
+        operations
+            .GroupBy(operation => operation.OperationId)
+            .Select(group => group.First())
+            .ToList();
 
     private void EnsureConfigured()
     {
