@@ -12,12 +12,18 @@
   box-sizing: border-box;
 }
 
+html {
+  overflow-x: clip;
+}
+
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  overflow-x: clip;
 }
 
 #root {
   min-height: 100vh;
+  overflow-x: clip;
 }
