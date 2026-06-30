@@ -1935,6 +1935,45 @@ function App() {
       ),
     [novinkaProductionCatalogItems, shopRegion, taskFormMode, kzTaskMarketplace],
   )
+  const taskFormProductDuplicateHint = useMemo(() => {
+    if (!selectedTaskProductId) {
+      return ''
+    }
+
+    const productsSource =
+      shopRegion === 'rf'
+        ? ozonProducts
+        : taskFormMode === 'kaspi' || taskFormMode === 'satu' || taskFormMode === 'halyk'
+          ? kzProducts[taskFormMode] ?? []
+          : kzProducts[kzTaskMarketplace] ?? []
+    const product = productsSource.find((item) => String(item.productId) === selectedTaskProductId)
+
+    if (!product || !isProductAlreadyInDraftTask(draftTaskItems, product)) {
+      return ''
+    }
+
+    return 'Товар уже есть в задаче'
+  }, [
+    selectedTaskProductId,
+    draftTaskItems,
+    shopRegion,
+    taskFormMode,
+    ozonProducts,
+    kzProducts,
+    kzTaskMarketplace,
+  ])
+  const taskFormNovinkaDuplicateHint = useMemo(() => {
+    if (!selectedTaskNovinkaOfferId) {
+      return ''
+    }
+
+    const novinka = taskFormNovinkaCatalogItems.find((item) => item.offerId === selectedTaskNovinkaOfferId)
+    if (!novinka || !isProductAlreadyInDraftTask(draftTaskItems, novinka)) {
+      return ''
+    }
+
+    return 'Товар уже есть в задаче'
+  }, [selectedTaskNovinkaOfferId, draftTaskItems, taskFormNovinkaCatalogItems])
   const editorNovinkaCatalogItems = useMemo(
     () =>
       filterNovinkaCatalogByMarketplace(
@@ -5704,6 +5743,11 @@ function App() {
       return
     }
 
+    if (isProductAlreadyInDraftTask(draftTaskItems, selectedNovinka)) {
+      setTaskFormStatus('Товар уже есть в задаче')
+      return
+    }
+
     setDraftTaskItems((current) => [
       ...current,
       {
@@ -5915,6 +5959,11 @@ function App() {
 
     if (!product || !Number.isFinite(quantity) || quantity <= 0) {
       setTaskStatus('Выберите товар и укажите количество')
+      return
+    }
+
+    if (isProductAlreadyInDraftTask(draftTaskItems, product)) {
+      setTaskFormStatus('Товар уже есть в задаче')
       return
     }
 
@@ -7559,6 +7608,9 @@ function App() {
                                       <div className="task-form-modal-preview-wrap">
                                         <TaskProductPreview product={selectedTaskProduct} />
                                         {supplyHint && <p className="task-product-supply-hint">{supplyHint}</p>}
+                                        {taskFormProductDuplicateHint && (
+                                          <p className="task-draft-duplicate-hint">{taskFormProductDuplicateHint}</p>
+                                        )}
                                       </div>
                                     ) : (
                                       <div className="task-form-modal-preview task-form-modal-preview-empty">
@@ -7604,18 +7656,23 @@ function App() {
                                     )
 
                                     return selectedTaskNovinka ? (
-                                      <NovinkaProductPreview
-                                        item={selectedTaskNovinka}
-                                        token={token}
-                                        paths={getProductionPathsForCatalogItem(
-                                          selectedTaskNovinka,
-                                          productionFilePaths,
+                                      <div className="task-form-modal-preview-wrap">
+                                        <NovinkaProductPreview
+                                          item={selectedTaskNovinka}
+                                          token={token}
+                                          paths={getProductionPathsForCatalogItem(
+                                            selectedTaskNovinka,
+                                            productionFilePaths,
+                                          )}
+                                          files={getProductionFilesForCatalogItem(
+                                            selectedTaskNovinka,
+                                            productionFiles,
+                                          )}
+                                        />
+                                        {taskFormNovinkaDuplicateHint && (
+                                          <p className="task-draft-duplicate-hint">{taskFormNovinkaDuplicateHint}</p>
                                         )}
-                                        files={getProductionFilesForCatalogItem(
-                                          selectedTaskNovinka,
-                                          productionFiles,
-                                        )}
-                                      />
+                                      </div>
                                     ) : (
                                       <div className="task-form-modal-preview task-form-modal-preview-empty">
                                         <span>Выберите новинку для превью</span>
@@ -10333,6 +10390,26 @@ function App() {
       </div>
     </main>
   )
+}
+
+function isProductAlreadyInDraftTask(
+  draftItems: DraftTaskItem[],
+  product: { ozonProductId?: number; productId?: number; offerId?: string },
+) {
+  const productId = product.ozonProductId ?? product.productId ?? 0
+  const offerId = (product.offerId ?? '').trim().toLowerCase()
+
+  return draftItems.some((item) => {
+    if (productId > 0 && item.ozonProductId === productId) {
+      return true
+    }
+
+    if (offerId && item.offerId.trim().toLowerCase() === offerId) {
+      return true
+    }
+
+    return false
+  })
 }
 
 function normalizeUserId(value?: string | null) {

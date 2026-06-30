@@ -1440,8 +1440,53 @@ small .offer-id-cell {
 }
 
 .task-draft-row {
-  grid-template-columns: minmax(320px, 1.4fr) 140px 110px 130px max-content;
-  align-items: center;
+  grid-template-columns: minmax(0, 2fr) minmax(90px, 0.75fr) 96px 124px max-content;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.modal-table.data-table {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.modal-table .task-draft-row {
+  min-width: min(100%, 720px);
+}
+
+.task-draft-product-mini {
+  min-width: 0;
+  align-items: start;
+}
+
+.task-draft-product-mini > span:last-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.task-draft-catalog-assets {
+  max-width: 100%;
+}
+
+.task-draft-catalog-assets .path-copy-block {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.task-draft-catalog-assets .path-copy-block-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.task-draft-duplicate-hint {
+  margin: 8px 0 0;
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .task-draft-row > span:last-child {
@@ -1877,8 +1922,8 @@ small .offer-id-cell {
 }
 
 .novinka-draft-row {
-  grid-template-columns: minmax(280px, 2fr) minmax(120px, 0.8fr) max-content !important;
-  min-width: 640px;
+  grid-template-columns: minmax(0, 2fr) minmax(120px, 0.9fr) max-content !important;
+  min-width: 0;
 }
 
 .novinka-external-link-btn {
