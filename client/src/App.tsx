@@ -8519,11 +8519,10 @@ function App() {
                   <div className="ozon-status">
                     <strong>Товары без единой продажи</strong>
                     <span>
-                      Сравнение каталога {analyticsMarketplaceLabel} с заказами за период{' '}
-                      {analyticsDateFrom && analyticsDateTo
-                        ? `${analyticsDateFrom} — ${analyticsDateTo}`
-                        : 'не выбран'}
-                      {shopRegion === 'rf' ? ' · дата и дни — с последней FBO-поставки на склад Ozon' : ''}
+                      Каталог {analyticsMarketplaceLabel} без продаж за последние 3 года
+                      {shopRegion === 'rf'
+                        ? ' · дата поставки и дни — с последней FBO-поставки на склад Ozon на сегодня'
+                        : ''}
                       {' · '}
                       найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'

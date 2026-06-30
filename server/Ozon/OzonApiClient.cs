@@ -328,7 +328,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .ThenByDescending(row => row.Revenue)
             .ToList();
 
-        var allTimeSoldProductKeys = await GetSoldProductKeysAsync(dateFrom, dateTo, timeZone, cancellationToken);
+        var allTimeSoldProductKeys = await GetAllTimeSoldProductKeysAsync(timeZone, cancellationToken);
         foreach (var posting in postings.Where(posting => !posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)))
         {
             foreach (var product in posting.Products)
@@ -350,13 +350,12 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
 
         var todayInTimeZone = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
-        var unsoldMetricsEnd = dateTo > todayInTimeZone ? todayInTimeZone : dateTo;
         var unsoldProducts = unsoldCandidates
             .Select(product =>
             {
                 var sku = product.Sku ?? 0;
                 var supplyDate = ResolveUnsoldProductSupplyDate(product, sku, supplyArrivalIndex);
-                var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, unsoldMetricsEnd);
+                var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, todayInTimeZone);
 
                 return new OzonUnsoldProductRow(
                     sku,
@@ -563,12 +562,12 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         return normalized is "visible" or "selling" or "active" or "продается" or "продаётся";
     }
 
-    private async Task<HashSet<string>> GetSoldProductKeysAsync(
-        DateOnly dateFrom,
-        DateOnly dateTo,
+    private async Task<HashSet<string>> GetAllTimeSoldProductKeysAsync(
         TimeZoneInfo timeZone,
         CancellationToken cancellationToken)
     {
+        var dateTo = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
+        var dateFrom = dateTo.AddYears(-3);
         var soldKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (from, to) in SplitDateRange(dateFrom, dateTo))
@@ -639,7 +638,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         long sku,
         OzonStockArrivalIndex? supplyArrivalIndex)
     {
-        if (!IsSellingStatus(product.Status) || supplyArrivalIndex is null)
+        if (supplyArrivalIndex is null)
         {
             return null;
         }
