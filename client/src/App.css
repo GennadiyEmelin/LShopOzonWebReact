@@ -2075,6 +2075,25 @@ small .offer-id-cell {
   font-size: 14px;
 }
 
+.task-item-path-editor {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.task-item-path-editor .task-item-path-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-item-path-save-btn {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+}
+
 .task-item-path-text,
 .production-path-text {
   display: block;

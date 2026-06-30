@@ -309,6 +309,7 @@ export function ProductionTaskTable({
   onComplete,
   onOpenFiles,
   onUploadTaskItemFile,
+  onSaveTaskItemFilePath,
   onDeleteFile,
   onDelete,
   onArchive,
@@ -332,6 +333,7 @@ export function ProductionTaskTable({
   onComplete: (id: string) => void
   onOpenFiles: (productName: string, files: ProductionFile[]) => void
   onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
+  onSaveTaskItemFilePath?: (taskId: string, item: ProductionTaskItem, path: string) => void | Promise<void>
   onDeleteFile?: (id: string) => void
   onDelete?: (id: string) => void
   onArchive?: (id: string) => void
@@ -604,7 +606,21 @@ export function ProductionTaskTable({
                       onUploadTaskItemFile={onUploadTaskItemFile}
                       canUpload={!completed && !cancelled && task.status === 'InProgress'}
                     />
-                    <TaskItemPathCell paths={itemPaths} />
+                    <TaskItemPathPanel
+                      item={item}
+                      itemPaths={itemPaths}
+                      canEdit={
+                        !completed &&
+                        !cancelled &&
+                        task.status === 'InProgress' &&
+                        Boolean(onSaveTaskItemFilePath)
+                      }
+                      onSavePath={
+                        onSaveTaskItemFilePath
+                          ? (path) => onSaveTaskItemFilePath(task.id, item, path)
+                          : undefined
+                      }
+                    />
                   </>
                 ) : (
                   <>
@@ -764,6 +780,79 @@ function TaskItemPathCell({ paths }: { paths: ProductionFilePath[] }) {
   return (
     <span className="task-item-path-cell">
       <TaskItemPathsButtons paths={paths} />
+    </span>
+  )
+}
+
+function TaskItemPathPanel({
+  item,
+  itemPaths,
+  canEdit,
+  onSavePath,
+}: {
+  item: ProductionTaskItem
+  itemPaths: ProductionFilePath[]
+  canEdit: boolean
+  onSavePath?: (path: string) => void | Promise<void>
+}) {
+  const [draftPath, setDraftPath] = useState(item.filePath?.trim() ?? '')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setDraftPath(item.filePath?.trim() ?? '')
+  }, [item.filePath])
+
+  if (!canEdit) {
+    return <TaskItemPathCell paths={itemPaths} />
+  }
+
+  async function handleSave() {
+    const trimmedPath = draftPath.trim()
+    if (trimmedPath.length < 3 || !onSavePath) {
+      return
+    }
+
+    setSaving(true)
+    try {
+      await onSavePath(trimmedPath)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <span className="task-item-path-cell">
+      {itemPaths.length > 0 && (
+        <div className="task-item-paths-buttons">
+          {itemPaths.map((entry) => (
+            <PathCopyBlock key={entry.id} path={entry.path} />
+          ))}
+        </div>
+      )}
+      <div className="task-item-path-editor">
+        <input
+          type="text"
+          className="task-item-path-input"
+          placeholder="C:\путь\к\файлу"
+          value={draftPath}
+          disabled={saving}
+          onChange={(event) => setDraftPath(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void handleSave()
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="task-item-path-save-btn"
+          disabled={saving || draftPath.trim().length < 3}
+          onClick={() => void handleSave()}
+        >
+          {saving ? 'Сохранение…' : item.filePath?.trim() ? 'Обновить' : 'Сохранить'}
+        </button>
+      </div>
     </span>
   )
 }

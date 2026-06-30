@@ -100,6 +100,19 @@ export async function deleteProductionCatalogFilePath(token: string, pathId: str
   return apiFetch(`/api/production/catalog/file-path/${pathId}`, token, { method: 'DELETE' })
 }
 
+export async function saveProductionTaskItemFilePath(
+  token: string,
+  taskId: string,
+  itemId: string,
+  path: string,
+) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/file-path`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+}
+
 export async function convertNovinkaCatalogToOzon(token: string, body: unknown) {
   return apiFetch('/api/production/catalog/convert-to-ozon', token, {
     method: 'PUT',

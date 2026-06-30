@@ -5360,6 +5360,23 @@ function App() {
     await loadProductionFiles(productionSearch)
   }
 
+  async function saveProductionTaskItemFilePath(
+    taskId: string,
+    item: ProductionTaskItem,
+    path: string,
+  ) {
+    const response = await productionApi.saveProductionTaskItemFilePath(token, taskId, item.id, path)
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить путь'))
+      return
+    }
+
+    setTaskStatus('Путь к файлу сохранён')
+    await loadProductionTasks()
+    await loadProductionFiles(productionSearch)
+  }
+
   async function downloadProductionFile(id: string) {
     const response = await productionApi.downloadProductionFile(token, id)
 
@@ -7888,9 +7905,10 @@ function App() {
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
                   onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
-                  />
-                )}
+                  onSaveTaskItemFilePath={saveProductionTaskItemFilePath}
+                  onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
+                />
+              )}
 
               {productionSubTab === 'cancelled' && (
                 <ProductionTaskTable
