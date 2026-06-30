@@ -5857,15 +5857,43 @@ small .offer-id-cell {
 }
 
 .production-analytics-avatar {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #d9dee7;
+  border-radius: 999px;
+  color: #667085;
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.production-analytics-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.production-analytics-user-card-main .product-image-hover-trigger {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
 }
 
 .production-analytics-avatar-large {
-  width: 56px;
-  height: 56px;
-  flex: 0 0 56px;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+}
+
+.production-analytics-detail-head .product-image-hover-trigger {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
 }
 
 .production-analytics-task-row-button {
