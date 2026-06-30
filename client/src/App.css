@@ -5672,14 +5672,23 @@ small .offer-id-cell {
 }
 
 .production-analytics-user-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  gap: 0;
   padding: 10px 12px;
   border: 1px solid #edf0f5;
   border-radius: 10px;
   background: #fcfdff;
+}
+
+.production-analytics-user-card-expanded {
+  background: #ffffff;
+}
+
+.production-analytics-user-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .production-analytics-user-card-main {
@@ -5709,6 +5718,83 @@ small .offer-id-cell {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.production-analytics-user-tasks {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #edf0f5;
+}
+
+.production-analytics-user-task {
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.production-analytics-user-task-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  padding: 12px 14px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.production-analytics-user-task-toggle:hover,
+.production-analytics-user-task-toggle.expanded {
+  background: #f1f5f9;
+}
+
+.production-analytics-user-task-toggle-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.production-analytics-user-task-toggle-main strong {
+  color: #121826;
+  font-size: 14px;
+}
+
+.production-analytics-user-task-toggle-main > span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.production-analytics-user-task-toggle-icon {
+  flex: 0 0 auto;
+  color: #667085;
+  font-size: 14px;
+}
+
+.production-analytics-user-task-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.production-analytics-user-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  color: #667085;
+  font-size: 12px;
+}
+
+.production-analytics-task-items-empty {
+  margin: 0;
+  padding: 12px;
 }
 
 .text-action-button {

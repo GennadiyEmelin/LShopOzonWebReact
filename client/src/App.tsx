@@ -87,7 +87,7 @@ import {
   ProductionTaskTable,
 } from './features/production/components/ProductionTaskTables'
 import { ProductionAnalyticsRecordEditModal } from './features/production/components/ProductionAnalyticsRecordEditModal'
-import { ProductionAnalyticsUserDetailModal } from './features/production/components/ProductionAnalyticsUserDetailModal'
+import { ProductionAnalyticsUserCard } from './features/production/components/ProductionAnalyticsUserCard'
 import { NovinkaProductPreview } from './features/production/components/NovinkaProductPreview'
 import { NovinkaSearchInput } from './features/production/components/NovinkaSearchInput'
 import { ProductCatalogFilesEditor } from './features/production/components/ProductCatalogFilesEditor'
@@ -1537,7 +1537,8 @@ function App() {
   const [productionAnalyticsAssignees, setProductionAnalyticsAssignees] = useState<ProductionAnalyticsAssignee[]>([])
   const [productionAnalyticsReport, setProductionAnalyticsReport] = useState<ProductionAnalyticsReport | null>(null)
   const [productionAnalyticsStatus, setProductionAnalyticsStatus] = useState('')
-  const [productionAnalyticsDetailUserName, setProductionAnalyticsDetailUserName] = useState<string | null>(null)
+  const [productionAnalyticsExpandedUserKey, setProductionAnalyticsExpandedUserKey] = useState<string | null>(null)
+  const [productionAnalyticsExpandedTaskId, setProductionAnalyticsExpandedTaskId] = useState<string | null>(null)
   const [productionAnalyticsEditingTask, setProductionAnalyticsEditingTask] = useState<ProductionTask | null>(null)
   const [analyticsRowSearch, setAnalyticsRowSearch] = useState('')
   const [analyticsStatusFilter, setAnalyticsStatusFilter] = useState<
@@ -8635,44 +8636,41 @@ function App() {
                           </div>
                         ) : (
                           <div className="production-analytics-cards">
-                          {sectionRows.map((row) => (
-                            <article className="production-analytics-user-card" key={`${section}-${row.userName}`}>
-                              <div className="production-analytics-user-card-main">
-                                <UserAvatarPreview
-                                  avatarUrl={row.avatarUrl}
-                                  displayName={row.userName}
-                                  className="production-analytics-avatar"
-                                />
-                                <div className="production-analytics-user-card-text">
-                                  <strong>{row.userName}</strong>
-                                  <span>{row.taskCount} задач · {row.itemCount} позиций</span>
-                                </div>
-                              </div>
-                              <div className="production-analytics-user-card-actions">
-                                <button
-                                  type="button"
-                                  className="text-action-button"
-                                  onClick={() => {
-                                    if (row.userId) {
-                                      setProductionAnalyticsUserId(row.userId)
-                                    }
-                                    setProductionAnalyticsDetailUserName(row.userName)
-                                  }}
-                                >
-                                  Подробнее
-                                </button>
-                                {row.userId && (
-                                  <button
-                                    type="button"
-                                    className="text-action-button"
-                                    onClick={() => void exportProductionAnalyticsExcel(row.userId)}
-                                  >
-                                    Excel
-                                  </button>
-                                )}
-                              </div>
-                            </article>
-                          ))}
+                          {sectionRows.map((row) => {
+                            const userKey = `${section}-${row.userName}`
+                            const userTasks = (visibleProductionAnalyticsReport?.tasks ?? []).filter(
+                              (task) => (task.assignedUserName || '—') === row.userName,
+                            )
+
+                            return (
+                              <ProductionAnalyticsUserCard
+                                key={userKey}
+                                row={row}
+                                tasks={userTasks}
+                                productionFilePaths={productionFilePaths}
+                                isExpanded={productionAnalyticsExpandedUserKey === userKey}
+                                expandedTaskId={productionAnalyticsExpandedTaskId}
+                                isAdmin={user?.role === 'Admin'}
+                                onToggleDetails={() => {
+                                  if (productionAnalyticsExpandedUserKey === userKey) {
+                                    setProductionAnalyticsExpandedUserKey(null)
+                                    setProductionAnalyticsExpandedTaskId(null)
+                                    return
+                                  }
+
+                                  setProductionAnalyticsExpandedUserKey(userKey)
+                                  setProductionAnalyticsExpandedTaskId(null)
+                                }}
+                                onToggleTask={(taskId) => {
+                                  setProductionAnalyticsExpandedTaskId((current) =>
+                                    current === taskId ? null : taskId,
+                                  )
+                                }}
+                                onExportExcel={(userId) => void exportProductionAnalyticsExcel(userId)}
+                                onEditTask={(task) => setProductionAnalyticsEditingTask(task)}
+                              />
+                            )
+                          })}
                           </div>
                         )}
                       </section>
@@ -8735,24 +8733,6 @@ function App() {
                   </div>
                     </section>
                   </div>
-                  {productionAnalyticsDetailUserName && (
-                    <ProductionAnalyticsUserDetailModal
-                      userName={productionAnalyticsDetailUserName}
-                      summaryRow={
-                        visibleProductionAnalyticsReport?.summary.find(
-                          (row) => row.userName === productionAnalyticsDetailUserName,
-                        ) ?? null
-                      }
-                      tasks={(visibleProductionAnalyticsReport?.tasks ?? []).filter(
-                        (task) => (task.assignedUserName || '—') === productionAnalyticsDetailUserName,
-                      )}
-                      productionFilePaths={productionFilePaths}
-                      isAdmin={user?.role === 'Admin'}
-                      onClose={() => setProductionAnalyticsDetailUserName(null)}
-                      onExportExcel={(userId) => void exportProductionAnalyticsExcel(userId)}
-                      onEditTask={(task) => setProductionAnalyticsEditingTask(task)}
-                    />
-                  )}
                   {productionAnalyticsEditingTask && (
                     <ProductionAnalyticsRecordEditModal
                       task={productionAnalyticsEditingTask}
