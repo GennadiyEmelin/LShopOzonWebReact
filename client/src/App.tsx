@@ -1722,8 +1722,11 @@ function App() {
   const knownChatUnreadCountsRef = useRef<Record<string, number> | null>(null)
   const knownChatMessageIdsRef = useRef<Record<string, Set<string>>>({})
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null)
+  const selectedChatTypeRef = useRef<'user' | 'group'>('user')
+  const selectedChatIdRef = useRef('')
   const selectedChatKey = `${selectedChatType}:${selectedChatId}`
   const selectedChatKeyRef = useRef('')
+  const loadChatThreadsSeqRef = useRef(0)
   const creatingGroupRef = useRef(false)
   const normalizedProductSearch = productSearch.trim().toLowerCase()
   const activeKzProducts = kzProducts[kzMarketplace]
@@ -2615,8 +2618,10 @@ function App() {
   }, [token])
 
   useEffect(() => {
+    selectedChatTypeRef.current = selectedChatType
+    selectedChatIdRef.current = selectedChatId
     selectedChatKeyRef.current = selectedChatKey
-  }, [selectedChatKey])
+  }, [selectedChatType, selectedChatId, selectedChatKey])
 
   useEffect(() => {
     if (activeTab === 'chats' && selectedChatId) {
@@ -2651,19 +2656,24 @@ function App() {
     })
 
     connection.on('ChatMessagesChanged', (senderId: string, receiverId: string | null, groupId: string | null) => {
-      loadChatThreads()
-      const activeKey = selectedChatKeyRef.current
-      const activeMatch =
-        groupId
-          ? activeKey === `group:${groupId}`
-          : user?.id === senderId || user?.id === receiverId
-      if (activeMatch && selectedChatId) {
-        loadChatMessages(selectedChatType, selectedChatId)
+      void loadChatThreads()
+      if (
+        !isActiveChatMessageEvent(
+          senderId,
+          receiverId,
+          groupId,
+          selectedChatTypeRef.current,
+          selectedChatIdRef.current,
+        )
+      ) {
+        return
       }
+
+      void loadChatMessages(selectedChatTypeRef.current, selectedChatIdRef.current)
     })
 
     connection.on('ChatThreadsChanged', () => {
-      loadChatThreads()
+      void loadChatThreads()
     })
 
     connection.start().catch(() => {
@@ -2987,7 +2997,9 @@ function App() {
     }
 
     loadChatMessages(selectedChatType, selectedChatId)
-    const intervalId = window.setInterval(() => loadChatMessages(selectedChatType, selectedChatId), 5000)
+    const intervalId = window.setInterval(() => {
+      loadChatMessages(selectedChatTypeRef.current, selectedChatIdRef.current)
+    }, 15000)
     return () => window.clearInterval(intervalId)
   }, [token, selectedChatType, selectedChatId])
 
@@ -3046,7 +3058,10 @@ function App() {
     productionTaskStatusRef.current = {}
     knownChatUnreadCountsRef.current = null
     knownChatMessageIdsRef.current = {}
+    selectedChatTypeRef.current = 'user'
+    selectedChatIdRef.current = ''
     selectedChatKeyRef.current = ''
+    loadChatThreadsSeqRef.current = 0
   }
 
   function confirmLogout() {
@@ -3759,6 +3774,7 @@ function App() {
   }
 
   async function loadChatThreads() {
+    const requestSeq = ++loadChatThreadsSeqRef.current
     const response = await fetch('/api/chat/threads', {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -3770,7 +3786,13 @@ function App() {
     }
 
     const data: ChatThread[] = await response.json()
+    if (requestSeq !== loadChatThreadsSeqRef.current) {
+      return
+    }
+
     const normalizedData = data.map(normalizeApiThread)
+    const currentType = selectedChatTypeRef.current
+    const currentId = selectedChatIdRef.current
     const previousUnreadCounts = knownChatUnreadCountsRef.current
     const nextUnreadCounts = Object.fromEntries(
       normalizedData.map((item) => [`${item.type}:${item.id}`, item.unreadCount ?? 0]),
@@ -3792,8 +3814,8 @@ function App() {
 
     knownChatUnreadCountsRef.current = nextUnreadCounts
     setChatThreads(normalizedData)
-    if (selectedChatType === 'group' && selectedChatId) {
-      const groupThread = normalizedData.find((item) => item.type === 'group' && isSameChatId(item.id, selectedChatId))
+    if (currentType === 'group' && currentId) {
+      const groupThread = normalizedData.find((item) => item.type === 'group' && isSameChatId(item.id, currentId))
       if (groupThread?.members?.length) {
         setChatGroupDetail({
           id: groupThread.id,
@@ -3803,8 +3825,18 @@ function App() {
         })
       }
     }
+
+    if (!currentId) {
+      const first = normalizedData[0]
+      if (first) {
+        setSelectedChatType(first.type)
+        setSelectedChatId(first.id)
+      }
+      return
+    }
+
     const hasCurrent = normalizedData.some(
-      (item) => isSameChatId(item.id, selectedChatId) && item.type === selectedChatType,
+      (item) => isSameChatId(item.id, currentId) && item.type === currentType,
     )
     if (!hasCurrent) {
       const first = normalizedData[0]
@@ -3841,6 +3873,9 @@ function App() {
   }
 
   function selectChatThread(type: 'user' | 'group', id: string) {
+    selectedChatTypeRef.current = type
+    selectedChatIdRef.current = id
+    selectedChatKeyRef.current = `${type}:${id}`
     setSelectedChatType(type)
     setSelectedChatId(id)
   }
@@ -4193,12 +4228,13 @@ function App() {
     )
   }
 
-  async function loadChatMessages(chatType = selectedChatType, chatId = selectedChatId) {
+  async function loadChatMessages(chatType = selectedChatTypeRef.current, chatId = selectedChatIdRef.current) {
     if (!chatId) {
       setChatMessages([])
       return
     }
 
+    const requestKey = `${chatType}:${chatId}`
     const url =
       chatType === 'group'
         ? `/api/chat/groups/${chatId}/messages`
@@ -4214,11 +4250,16 @@ function App() {
       return
     }
 
+    if (`${selectedChatTypeRef.current}:${selectedChatIdRef.current}` !== requestKey) {
+      return
+    }
+
     const data: ChatMessage[] = await response.json()
+    const normalizedData = data.map(normalizeApiChatMessage)
     const threadKey = `${chatType}:${chatId}`
     const previousMessageIds = knownChatMessageIdsRef.current[threadKey]
     if (previousMessageIds) {
-      const incomingMessages = data.filter((message) => !message.isOwn && !previousMessageIds.has(message.id))
+      const incomingMessages = normalizedData.filter((message) => !message.isOwn && !previousMessageIds.has(message.id))
       if (incomingMessages.length > 0) {
         const lastMessage = incomingMessages[incomingMessages.length - 1]
         showBrowserNotification(
@@ -4228,9 +4269,12 @@ function App() {
       }
     }
 
-    knownChatMessageIdsRef.current[threadKey] = new Set(data.map((message) => message.id))
-    setChatMessages(data)
-    await loadChatThreads()
+    if (`${selectedChatTypeRef.current}:${selectedChatIdRef.current}` !== requestKey) {
+      return
+    }
+
+    knownChatMessageIdsRef.current[threadKey] = new Set(normalizedData.map((message) => message.id))
+    setChatMessages(normalizedData)
   }
 
   async function sendChatMessage(event: FormEvent<HTMLFormElement>) {
@@ -4265,10 +4309,21 @@ function App() {
       return
     }
 
+    const created = normalizeApiChatMessage((await response.json()) as ChatMessage)
+    const threadKey = `${selectedChatType}:${selectedChatId}`
     setChatText('')
     setChatFile(null)
     setChatStatus('')
-    await loadChatMessages(selectedChatType, selectedChatId)
+    setChatMessages((current) => {
+      if (current.some((item) => item.id === created.id)) {
+        return current
+      }
+      return [...current, created]
+    })
+    const knownIds = knownChatMessageIdsRef.current[threadKey] ?? new Set<string>()
+    knownIds.add(created.id)
+    knownChatMessageIdsRef.current[threadKey] = knownIds
+    void loadChatThreads()
   }
 
   async function downloadChatAttachment(message: ChatMessage) {
@@ -10319,6 +10374,56 @@ function isSameUserId(left?: string | null, right?: string | null) {
 
 function isSameChatId(left?: string | null, right?: string | null) {
   return isSameUserId(left, right)
+}
+
+function normalizeApiChatMessage(
+  raw: ChatMessage & {
+    Id?: string
+    GroupId?: string
+    SenderId?: string
+    SenderDisplayName?: string
+    ReceiverId?: string
+    AttachmentFileName?: string
+    AttachmentContentType?: string
+    HasAttachment?: boolean
+    CreatedAt?: string
+    IsOwn?: boolean
+  },
+): ChatMessage {
+  return {
+    ...raw,
+    id: String(raw.id ?? raw.Id ?? ''),
+    groupId: raw.groupId ?? raw.GroupId ? String(raw.groupId ?? raw.GroupId) : undefined,
+    senderId: String(raw.senderId ?? raw.SenderId ?? ''),
+    senderDisplayName: raw.senderDisplayName ?? raw.SenderDisplayName,
+    receiverId: raw.receiverId ?? raw.ReceiverId ? String(raw.receiverId ?? raw.ReceiverId) : undefined,
+    attachmentFileName: raw.attachmentFileName ?? raw.AttachmentFileName ?? '',
+    attachmentContentType: raw.attachmentContentType ?? raw.AttachmentContentType ?? '',
+    hasAttachment: raw.hasAttachment ?? raw.HasAttachment ?? false,
+    createdAt: raw.createdAt ?? raw.CreatedAt ?? '',
+    isOwn: raw.isOwn ?? raw.IsOwn ?? false,
+  }
+}
+
+function isActiveChatMessageEvent(
+  senderId: string,
+  receiverId: string | null,
+  groupId: string | null,
+  chatType: 'user' | 'group',
+  chatId: string,
+) {
+  if (!chatId) {
+    return false
+  }
+
+  if (groupId) {
+    return chatType === 'group' && isSameChatId(groupId, chatId)
+  }
+
+  return (
+    chatType === 'user' &&
+    (isSameUserId(senderId, chatId) || isSameUserId(receiverId, chatId))
+  )
 }
 
 function getSupplyItemImageUrl(ozonProducts: OzonProduct[], item: DraftSupplyItem) {
