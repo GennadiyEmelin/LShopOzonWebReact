@@ -1,18 +1,24 @@
 import type {
   ProductionAnalyticsSummaryRow,
+  ProductionFilePath,
   ProductionTask,
 } from '../../../domain/types/production'
-import { getRoleLabel } from '../../../shared/constants/appRoles'
+import { stripNovinkaMarketplaceNote } from '../../../shopRegion'
 import { OfferIdCell } from '../../../shared/components/OfferIdCell'
+import { PathCopyBlock } from '../../../shared/components/PathCopyBlock'
 import { UserAvatarPreview } from '../../../shared/components/UserAvatarPreview'
+import { getRoleLabel } from '../../../shared/constants/appRoles'
 import { formatDateTime } from '../../../shared/utils/formatters'
+import { getProductionPathsForTaskItem } from '../lib/catalogUtils'
 import { getProductionTaskTypeLabel } from '../lib/taskDisplayUtils'
-import { getProductionTaskItems } from '../lib/taskUtils'
+import { getProductionTaskItems, isNovinkaTask } from '../lib/taskUtils'
+import { NovinkaExternalLinkButton } from './NovinkaExternalLinkButton'
 
 export function ProductionAnalyticsUserDetailModal({
   userName,
   summaryRow,
   tasks,
+  productionFilePaths = [],
   isAdmin,
   onClose,
   onExportExcel,
@@ -21,6 +27,7 @@ export function ProductionAnalyticsUserDetailModal({
   userName: string
   summaryRow: ProductionAnalyticsSummaryRow | null
   tasks: ProductionTask[]
+  productionFilePaths?: ProductionFilePath[]
   isAdmin?: boolean
   onClose: () => void
   onExportExcel: (userId: string) => void
@@ -64,7 +71,11 @@ export function ProductionAnalyticsUserDetailModal({
               <strong>За выбранный период задач не найдено.</strong>
             </div>
           )}
-          {tasks.map((task) => (
+          {tasks.map((task) => {
+            const novinka = isNovinkaTask(task)
+            const taskItems = getProductionTaskItems(task)
+
+            return (
             <article className="production-analytics-detail-task" key={task.id}>
               <header className="production-analytics-detail-task-head">
                 <div>
@@ -89,33 +100,68 @@ export function ProductionAnalyticsUserDetailModal({
                 </div>
               </header>
               <div className="data-table production-analytics-detail-items">
-                <div className="table-row production-analytics-detail-item-row table-head">
+                <div
+                  className={`table-row production-analytics-detail-item-row table-head${novinka ? ' production-analytics-detail-item-row-novinka' : ''}`}
+                >
                   <span>Товар</span>
                   <span>Артикул</span>
-                  <span>Ссылка</span>
-                  <span>План</span>
-                  <span>Факт</span>
+                  {novinka ? (
+                    <>
+                      <span>Путь</span>
+                      <span>Ссылка</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Ссылка</span>
+                      <span>План</span>
+                      <span>Факт</span>
+                    </>
+                  )}
                 </div>
-                {getProductionTaskItems(task).map((item) => (
-                  <div className="table-row production-analytics-detail-item-row" key={item.id ?? item.offerId}>
+                {taskItems.map((item) => {
+                  const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
+                  const productLink = stripNovinkaMarketplaceNote(item.productLink)
+
+                  return (
+                  <div
+                    className={`table-row production-analytics-detail-item-row${novinka ? ' production-analytics-detail-item-row-novinka' : ''}`}
+                    key={item.id ?? item.offerId}
+                  >
                     <span>{item.productName}</span>
                     <OfferIdCell offerId={item.offerId} />
-                    <span>
-                      {item.productLink?.trim() ? (
-                        <a href={item.productLink} target="_blank" rel="noreferrer">
-                          {item.productLink}
-                        </a>
-                      ) : (
-                        '—'
-                      )}
-                    </span>
-                    <span>{item.requiredQuantity}</span>
-                    <span>{item.actualQuantity ?? 0}</span>
+                    {novinka ? (
+                      <>
+                        <span className="production-analytics-detail-item-actions">
+                          {itemPaths.length > 0 ? (
+                            itemPaths.map((entry) => <PathCopyBlock key={entry.id} path={entry.path} />)
+                          ) : (
+                            '—'
+                          )}
+                        </span>
+                        <span className="production-analytics-detail-item-actions">
+                          {productLink ? <NovinkaExternalLinkButton url={productLink} /> : '—'}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="production-analytics-detail-item-actions">
+                          {productLink ? (
+                            <NovinkaExternalLinkButton url={productLink} />
+                          ) : (
+                            '—'
+                          )}
+                        </span>
+                        <span>{item.requiredQuantity}</span>
+                        <span>{item.actualQuantity ?? 0}</span>
+                      </>
+                    )}
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </article>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

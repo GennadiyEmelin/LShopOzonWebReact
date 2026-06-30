@@ -5981,6 +5981,26 @@ small .offer-id-cell {
   grid-template-columns: minmax(160px, 1.2fr) minmax(120px, 0.8fr) minmax(180px, 1.2fr) 70px 70px;
 }
 
+.production-analytics-detail-item-row-novinka {
+  grid-template-columns: minmax(160px, 1.4fr) minmax(120px, 0.8fr) minmax(120px, 0.7fr) minmax(96px, 0.45fr);
+}
+
+.production-analytics-detail-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.production-analytics-detail-item-row .path-copy-block {
+  margin-top: 0;
+}
+
+.production-analytics-detail-item-row .path-copy-block-text {
+  display: none;
+}
+
 .user-list-item-system {
   opacity: 0.92;
 }

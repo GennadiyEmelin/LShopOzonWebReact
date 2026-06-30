@@ -8746,6 +8746,7 @@ function App() {
                       tasks={(visibleProductionAnalyticsReport?.tasks ?? []).filter(
                         (task) => (task.assignedUserName || '—') === productionAnalyticsDetailUserName,
                       )}
+                      productionFilePaths={productionFilePaths}
                       isAdmin={user?.role === 'Admin'}
                       onClose={() => setProductionAnalyticsDetailUserName(null)}
                       onExportExcel={(userId) => void exportProductionAnalyticsExcel(userId)}
