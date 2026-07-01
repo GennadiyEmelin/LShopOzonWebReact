@@ -72,8 +72,8 @@ export function formatProductTaskSelectionHint(
   }
 
   for (const conflict of activeConflicts) {
-    const statusLabel = conflict.status === 'InProgress' ? 'в работе' : 'созданной'
-    lines.push(`Уже в ${statusLabel} задаче: ${conflict.quantity} шт.`)
+    const statusLabel = conflict.status === 'InProgress' ? 'задаче в работе' : 'созданной задаче'
+    lines.push(`Уже в ${statusLabel}: ${conflict.quantity} шт.`)
   }
 
   return lines.join(' · ')
