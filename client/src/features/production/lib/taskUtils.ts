@@ -1,4 +1,83 @@
-﻿import type { ProductionTask, ProductionTaskItem } from '../../../domain/types/production'
+﻿import type {
+  DraftTaskItem,
+  ProductionTask,
+  ProductionTaskItem,
+  ProductionTaskStatus,
+} from '../../../domain/types/production'
+
+export type ActiveTaskProductConflict = {
+  taskId: string
+  status: ProductionTaskStatus
+  quantity: number
+}
+
+export function matchesProductionCatalogProduct(
+  left: { ozonProductId?: number; productId?: number; offerId?: string },
+  right: { ozonProductId?: number; productId?: number; offerId?: string },
+) {
+  const leftProductId = left.ozonProductId ?? left.productId ?? 0
+  const rightProductId = right.ozonProductId ?? right.productId ?? 0
+  const leftOfferId = (left.offerId ?? '').trim().toLowerCase()
+  const rightOfferId = (right.offerId ?? '').trim().toLowerCase()
+
+  if (leftProductId > 0 && rightProductId > 0 && leftProductId === rightProductId) {
+    return true
+  }
+
+  return leftOfferId !== '' && leftOfferId === rightOfferId
+}
+
+export function findProductInActiveProductionTasks(
+  tasks: ProductionTask[],
+  product: { ozonProductId?: number; productId?: number; offerId?: string },
+  options?: { excludeTaskId?: string | null },
+): ActiveTaskProductConflict[] {
+  const conflicts: ActiveTaskProductConflict[] = []
+
+  for (const task of tasks) {
+    if (task.isArchived || (task.status !== 'New' && task.status !== 'InProgress')) {
+      continue
+    }
+
+    if (options?.excludeTaskId && task.id === options.excludeTaskId) {
+      continue
+    }
+
+    for (const item of getProductionTaskItems(task)) {
+      if (!matchesProductionCatalogProduct(product, item)) {
+        continue
+      }
+
+      conflicts.push({
+        taskId: task.id,
+        status: task.status,
+        quantity: item.requiredQuantity,
+      })
+    }
+  }
+
+  return conflicts
+}
+
+export function formatProductTaskSelectionHint(
+  draftItems: DraftTaskItem[],
+  activeConflicts: ActiveTaskProductConflict[],
+  product: { ozonProductId?: number; productId?: number; offerId?: string },
+) {
+  const lines: string[] = []
+  const draftItem = draftItems.find((item) => matchesProductionCatalogProduct(item, product))
+
+  if (draftItem) {
+    lines.push(`Уже добавлен в эту задачу: ${draftItem.requiredQuantity} шт.`)
+  }
+
+  for (const conflict of activeConflicts) {
+    const statusLabel = conflict.status === 'InProgress' ? 'в работе' : 'созданной'
+    lines.push(`Уже в ${statusLabel} задаче: ${conflict.quantity} шт.`)
+  }
+
+  return lines.join(' · ')
+}
 
 export function getProductionTaskTableMode(
   tasks: ProductionTask[],

@@ -58,10 +58,13 @@ import type {
 } from './domain/types/production'
 import type { OzonProduct } from './domain/types/ozon'
 import {
+  findProductInActiveProductionTasks,
+  formatProductTaskSelectionHint,
   fromDatetimeLocalValue,
   getProductionTaskItems,
   getProductionTaskSummary,
   isNovinkaTask,
+  matchesProductionCatalogProduct,
   sortProductionTasksByUrgency,
   toDatetimeLocalValue,
 } from './features/production/lib/taskUtils'
@@ -1949,14 +1952,20 @@ function App() {
           : kzProducts[kzTaskMarketplace] ?? []
     const product = productsSource.find((item) => String(item.productId) === selectedTaskProductId)
 
-    if (!product || !isProductAlreadyInDraftTask(draftTaskItems, product)) {
+    if (!product) {
       return ''
     }
 
-    return 'Товар уже есть в задаче'
+    const activeConflicts = findProductInActiveProductionTasks(productionTasks, product, {
+      excludeTaskId: editingTaskId,
+    })
+
+    return formatProductTaskSelectionHint(draftTaskItems, activeConflicts, product)
   }, [
     selectedTaskProductId,
     draftTaskItems,
+    productionTasks,
+    editingTaskId,
     shopRegion,
     taskFormMode,
     ozonProducts,
@@ -1969,12 +1978,22 @@ function App() {
     }
 
     const novinka = taskFormNovinkaCatalogItems.find((item) => item.offerId === selectedTaskNovinkaOfferId)
-    if (!novinka || !isProductAlreadyInDraftTask(draftTaskItems, novinka)) {
+    if (!novinka) {
       return ''
     }
 
-    return 'Товар уже есть в задаче'
-  }, [selectedTaskNovinkaOfferId, draftTaskItems, taskFormNovinkaCatalogItems])
+    const activeConflicts = findProductInActiveProductionTasks(productionTasks, novinka, {
+      excludeTaskId: editingTaskId,
+    })
+
+    return formatProductTaskSelectionHint(draftTaskItems, activeConflicts, novinka)
+  }, [
+    selectedTaskNovinkaOfferId,
+    draftTaskItems,
+    productionTasks,
+    editingTaskId,
+    taskFormNovinkaCatalogItems,
+  ])
   const editorNovinkaCatalogItems = useMemo(
     () =>
       filterNovinkaCatalogByMarketplace(
@@ -5745,7 +5764,7 @@ function App() {
     }
 
     if (isProductAlreadyInDraftTask(draftTaskItems, selectedNovinka)) {
-      setTaskFormStatus('Товар уже есть в задаче')
+      setTaskFormStatus('Товар уже добавлен в эту задачу')
       return
     }
 
@@ -5964,7 +5983,7 @@ function App() {
     }
 
     if (isProductAlreadyInDraftTask(draftTaskItems, product)) {
-      setTaskFormStatus('Товар уже есть в задаче')
+      setTaskFormStatus('Товар уже добавлен в эту задачу')
       return
     }
 
@@ -10376,20 +10395,7 @@ function isProductAlreadyInDraftTask(
   draftItems: DraftTaskItem[],
   product: { ozonProductId?: number; productId?: number; offerId?: string },
 ) {
-  const productId = product.ozonProductId ?? product.productId ?? 0
-  const offerId = (product.offerId ?? '').trim().toLowerCase()
-
-  return draftItems.some((item) => {
-    if (productId > 0 && item.ozonProductId === productId) {
-      return true
-    }
-
-    if (offerId && item.offerId.trim().toLowerCase() === offerId) {
-      return true
-    }
-
-    return false
-  })
+  return draftItems.some((item) => matchesProductionCatalogProduct(item, product))
 }
 
 function normalizeUserId(value?: string | null) {
