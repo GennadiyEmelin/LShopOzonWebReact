@@ -328,59 +328,11 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .ThenByDescending(row => row.Revenue)
             .ToList();
 
-        var allTimeSoldProductKeys = await GetAllTimeSoldProductKeysAsync(timeZone, cancellationToken);
-        foreach (var posting in postings.Where(posting => !posting.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)))
-        {
-            foreach (var product in posting.Products)
-            {
-                allTimeSoldProductKeys.Add(GetProductKey(product.Sku, product.OfferId));
-            }
-        }
-
-        var unsoldCandidates = productsForStatus
-            .Where(product => !allTimeSoldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
-            .ToList();
-
-        var ozonSupplyArrivalIndex = await TryBuildOzonSupplyArrivalIndexAsync(cancellationToken);
-        OzonStockArrivalIndex? supplyArrivalIndex = ozonSupplyArrivalIndex;
-        if (supplementalArrivalDates is { Count: > 0 })
-        {
-            supplyArrivalIndex = (supplyArrivalIndex ?? new OzonStockArrivalIndex([], [], []))
-                .MergeSupplemental(supplementalArrivalDates);
-        }
-
-        var todayInTimeZone = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
-        var unsoldProducts = unsoldCandidates
-            .Select(product =>
-            {
-                var sku = product.Sku ?? 0;
-                var supplyDate = ResolveUnsoldProductSupplyDate(product, sku, supplyArrivalIndex);
-                var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, todayInTimeZone);
-
-                return new OzonUnsoldProductRow(
-                    sku,
-                    product.OfferId,
-                    product.Name,
-                    product.Price,
-                    product.CurrencyCode,
-                    sku != 0 && stocksBySku.TryGetValue(sku, out var stockBySku)
-                        ? stockBySku
-                        : stocksByOfferId.GetValueOrDefault(product.OfferId, 0),
-                    product.Status,
-                    product.ImageUrl,
-                    supplyDate,
-                    daysWithoutSales);
-            })
-            .OrderByDescending(row => row.DaysWithoutSales ?? 0)
-            .ThenBy(row => row.OfferId, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.ProductName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
         return new OzonAnalyticsResult(
             productRows,
             orderRows,
             topProducts,
-            unsoldProducts,
+            [],
             orderedUnitsTotal,
             revenueTotal,
             commissionTotal,
@@ -406,6 +358,79 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             productStatusSummary.Selling,
             productStatusSummary.ReadyForSale,
             productStatusSummary.Archived,
+            DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    public async Task<OzonUnsoldProductsResult> GetUnsoldProductsAsync(
+        IReadOnlyDictionary<string, string>? supplementalArrivalDates = null,
+        TimeZoneInfo? analyticsTimeZone = null,
+        CancellationToken cancellationToken = default)
+    {
+        var timeZone = analyticsTimeZone ?? ResolveDefaultAnalyticsTimeZone();
+        var productsForStatus = await GetProductSummariesAsync(1000, cancellationToken);
+        var allTimeSoldProductKeys = await GetAllTimeSoldProductKeysAsync(timeZone, cancellationToken);
+
+        IReadOnlyList<OzonStockSummary> stocks = [];
+        try
+        {
+            stocks = await GetStockSummariesAsync(1000, cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        {
+            stocks = [];
+        }
+
+        var stocksBySku = stocks
+            .Where(stock => stock.Sku is not null)
+            .GroupBy(stock => stock.Sku!.Value)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.FboPresent + stock.FbsPresent));
+        var stocksByOfferId = stocks
+            .Where(stock => !string.IsNullOrWhiteSpace(stock.OfferId))
+            .GroupBy(stock => stock.OfferId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.FboPresent + stock.FbsPresent), StringComparer.OrdinalIgnoreCase);
+
+        var unsoldCandidates = productsForStatus
+            .Where(product => !allTimeSoldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
+            .ToList();
+
+        var ozonSupplyArrivalIndex = await TryBuildOzonSupplyArrivalIndexAsync(cancellationToken);
+        OzonStockArrivalIndex? supplyArrivalIndex = ozonSupplyArrivalIndex;
+        if (supplementalArrivalDates is { Count: > 0 })
+        {
+            supplyArrivalIndex = (supplyArrivalIndex ?? new OzonStockArrivalIndex([], [], []))
+                .MergeSupplementalGaps(supplementalArrivalDates);
+        }
+
+        var todayInTimeZone = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
+        var items = unsoldCandidates
+            .Select(product =>
+            {
+                var sku = product.Sku ?? 0;
+                var supplyDate = ResolveUnsoldProductSupplyDate(product, sku, supplyArrivalIndex);
+                var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, todayInTimeZone);
+
+                return new OzonUnsoldProductRow(
+                    sku,
+                    product.OfferId,
+                    product.Name,
+                    product.Price,
+                    product.CurrencyCode,
+                    sku != 0 && stocksBySku.TryGetValue(sku, out var stockBySku)
+                        ? stockBySku
+                        : stocksByOfferId.GetValueOrDefault(product.OfferId, 0),
+                    product.Status,
+                    product.ImageUrl,
+                    supplyDate,
+                    daysWithoutSales);
+            })
+            .OrderByDescending(row => row.DaysWithoutSales ?? 0)
+            .ThenBy(row => row.OfferId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ProductName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new OzonUnsoldProductsResult(
+            items.Count,
+            items,
             DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
@@ -588,6 +613,32 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                     }
                 }
             }
+        }
+
+        try
+        {
+            var postings = await GetAllPostingsForRangeAsync(
+                dateFrom,
+                dateTo,
+                timeZone,
+                includeCancelled: false,
+                cancellationToken);
+            foreach (var posting in postings)
+            {
+                foreach (var product in posting.Products)
+                {
+                    if (product.Quantity <= 0)
+                    {
+                        continue;
+                    }
+
+                    soldKeys.Add(GetProductKey(product.Sku, product.OfferId));
+                }
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        {
+            // Postings are supplemental for sold detection; finance transactions remain the primary source.
         }
 
         return soldKeys;
@@ -773,7 +824,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var orderIds = new List<long>();
         var lastId = string.Empty;
 
-        for (var page = 0; page < 20; page++)
+        for (var page = 0; page < 50; page++)
         {
             var content = await PostOzonJsonAsync(
                 "/v3/supply-order/list",
@@ -804,7 +855,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 ? lastIdProperty.GetString() ?? string.Empty
                 : string.Empty;
 
-            if (string.IsNullOrWhiteSpace(nextLastId) || nextLastId == lastId || orderIds.Count == 0)
+            if (string.IsNullOrWhiteSpace(nextLastId) || nextLastId == lastId)
             {
                 break;
             }
@@ -2270,6 +2321,51 @@ public sealed class OzonStockArrivalIndex
         return new OzonStockArrivalIndex(bySku, byOfferId, byProductId);
     }
 
+    public OzonStockArrivalIndex MergeSupplementalGaps(IReadOnlyDictionary<string, string> supplementalDates)
+    {
+        var bySku = new Dictionary<long, DateOnly>(_bySku);
+        var byOfferId = new Dictionary<string, DateOnly>(_byOfferId, StringComparer.OrdinalIgnoreCase);
+        var byProductId = new Dictionary<long, DateOnly>(_byProductId);
+
+        foreach (var (key, rawDate) in supplementalDates)
+        {
+            if (!TryParseOzonDateStatic(rawDate, out var date))
+            {
+                continue;
+            }
+
+            if (key.StartsWith("sku:", StringComparison.OrdinalIgnoreCase) &&
+                long.TryParse(key["sku:".Length..], out var sku) &&
+                sku > 0 &&
+                !bySku.ContainsKey(sku))
+            {
+                bySku[sku] = date;
+                continue;
+            }
+
+            if (key.StartsWith("offer:", StringComparison.OrdinalIgnoreCase))
+            {
+                var offerId = key["offer:".Length..].Trim();
+                if (!string.IsNullOrWhiteSpace(offerId) && !byOfferId.ContainsKey(offerId))
+                {
+                    byOfferId[offerId] = date;
+                }
+
+                continue;
+            }
+
+            if (key.StartsWith("product:", StringComparison.OrdinalIgnoreCase) &&
+                long.TryParse(key["product:".Length..], out var productId) &&
+                productId > 0 &&
+                !byProductId.ContainsKey(productId))
+            {
+                byProductId[productId] = date;
+            }
+        }
+
+        return new OzonStockArrivalIndex(bySku, byOfferId, byProductId);
+    }
+
     private static void MergeDate(Dictionary<long, DateOnly> map, long key, DateOnly date)
     {
         if (!map.TryGetValue(key, out var existing) || date > existing)
@@ -2421,6 +2517,11 @@ public record OzonTopProductRow(
     decimal Revenue,
     string CurrencyCode,
     int StockTotal);
+
+public record OzonUnsoldProductsResult(
+    int Total,
+    IReadOnlyList<OzonUnsoldProductRow> Items,
+    string Timestamp);
 
 public record OzonUnsoldProductRow(
     long Sku,

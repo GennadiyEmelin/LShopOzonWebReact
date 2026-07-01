@@ -205,6 +205,29 @@ app.MapGet("/api/ozon/analytics", async (
     }
 }).RequireAuthorization();
 
+app.MapGet("/api/ozon/analytics/unsold", async (
+    OzonApiClient ozonApi,
+    AppDbContext db,
+    ClaimsPrincipal principal,
+    CancellationToken cancellationToken) =>
+{
+    if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+    {
+        return Results.Forbid();
+    }
+
+    try
+    {
+        var supplyArrivalDates = await SupplyAnalyticsHelper.BuildAcceptedSupplyArrivalDatesAsync(db);
+        var result = await ozonApi.GetUnsoldProductsAsync(supplyArrivalDates, null, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+    {
+        return Results.Problem(exception.Message);
+    }
+}).RequireAuthorization();
+
 app.MapGet("/api/ozon/analytics/snapshot", async (
     OzonApiClient ozonApi,
     AppDbContext db,

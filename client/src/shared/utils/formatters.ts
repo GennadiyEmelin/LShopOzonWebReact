@@ -57,12 +57,32 @@ export function formatDateTime(value: string) {
   })
 }
 
-export function formatDaysWithoutSales(value?: number | null) {
-  if (value === null || value === undefined) {
+export function calculateDaysSinceSupplyDate(supplyDate?: string | null) {
+  if (!supplyDate?.trim()) {
+    return null
+  }
+
+  const supplyKey = supplyDate.trim().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(supplyKey)) {
+    return null
+  }
+
+  const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow' }).format(new Date())
+  const [supplyYear, supplyMonth, supplyDay] = supplyKey.split('-').map(Number)
+  const [todayYear, todayMonth, todayDay] = todayKey.split('-').map(Number)
+  const supplyUtc = Date.UTC(supplyYear, supplyMonth - 1, supplyDay)
+  const todayUtc = Date.UTC(todayYear, todayMonth - 1, todayDay)
+
+  return Math.max(0, Math.round((todayUtc - supplyUtc) / 86_400_000))
+}
+
+export function formatDaysWithoutSales(value?: number | null, supplyDate?: string | null) {
+  const days = value ?? calculateDaysSinceSupplyDate(supplyDate)
+  if (days === null || days === undefined) {
     return '-'
   }
 
-  return `${value} дн.`
+  return `${days} дн.`
 }
 
 export function formatOzonCreatedAt(value?: string) {

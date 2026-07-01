@@ -35,6 +35,7 @@ import * as productionApi from './shared/api/productionApi'
 import {
   formatAnalyticsDate,
   formatDateTime,
+  calculateDaysSinceSupplyDate,
   formatDaysWithoutSales,
   formatFileSize,
   formatInputDate,
@@ -1517,6 +1518,9 @@ function App() {
   const [analyticsStatus, setAnalyticsStatus] = useState('')
   const [kzUnsoldProducts, setKzUnsoldProducts] = useState<OzonAnalytics['unsoldProducts']>([])
   const [kzUnsoldTotal, setKzUnsoldTotal] = useState(0)
+  const [rfUnsoldProducts, setRfUnsoldProducts] = useState<OzonAnalytics['unsoldProducts']>([])
+  const [rfUnsoldTotal, setRfUnsoldTotal] = useState(0)
+  const [rfUnsoldTimestamp, setRfUnsoldTimestamp] = useState('')
   const [analytics, setAnalytics] = useState<OzonAnalytics | null>(null)
   const [analyticsSnapshot, setAnalyticsSnapshot] = useState<OzonAnalyticsSnapshot | null>(null)
   const [homeAnalytics, setHomeAnalytics] = useState<OzonAnalytics | null>(null)
@@ -2101,15 +2105,23 @@ function App() {
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
     .sort((left, right) => right.quantity - left.quantity)
-  const unsoldAnalyticsProducts = (showKzFullAnalytics ? kzUnsoldProducts : (analytics?.unsoldProducts ?? []))
+  const unsoldAnalyticsProducts = (shopRegion === 'rf'
+    ? rfUnsoldProducts
+    : showKzFullAnalytics
+      ? kzUnsoldProducts
+      : (analytics?.unsoldProducts ?? []))
     .map((row) => ({
       ...row,
       key: row.sku ? `sku:${row.sku}` : `offer:${row.offerId}`,
     }))
-    .sort((left, right) => (right.daysWithoutSales ?? 0) - (left.daysWithoutSales ?? 0) || left.offerId.localeCompare(right.offerId, 'ru'))
+    .sort((left, right) => {
+      const leftDays = calculateDaysSinceSupplyDate(left.ozonSellingSince) ?? 0
+      const rightDays = calculateDaysSinceSupplyDate(right.ozonSellingSince) ?? 0
+      return rightDays - leftDays || left.offerId.localeCompare(right.offerId, 'ru')
+    })
   const unsoldProductStatusCounts = useMemo(() => {
     const counts = {
-      all: showKzFullAnalytics ? kzUnsoldTotal : unsoldAnalyticsProducts.length,
+      all: shopRegion === 'rf' ? rfUnsoldTotal : showKzFullAnalytics ? kzUnsoldTotal : unsoldAnalyticsProducts.length,
       selling: 0,
       ready: 0,
     }
@@ -2124,7 +2136,7 @@ function App() {
     }
 
     return counts
-  }, [unsoldAnalyticsProducts, showKzFullAnalytics, kzUnsoldTotal])
+  }, [unsoldAnalyticsProducts, showKzFullAnalytics, kzUnsoldTotal, shopRegion, rfUnsoldTotal])
   const filteredUnsoldAnalyticsProducts = useMemo(() => {
     if (unsoldProductStatusFilter === 'all') {
       return unsoldAnalyticsProducts
@@ -2874,6 +2886,19 @@ function App() {
     shopRegion,
     kzMarketplace,
   ])
+
+  useEffect(() => {
+    if (
+      !token ||
+      activeTab !== 'analytics' ||
+      analyticsSubTab !== 'noSales' ||
+      shopRegion !== 'rf'
+    ) {
+      return
+    }
+
+    void loadRfUnsoldProducts()
+  }, [activeTab, analyticsSubTab, token, shopRegion])
 
   useEffect(() => {
     if (
@@ -5158,6 +5183,30 @@ function App() {
     setAnalyticsStatus(`Без продаж ${label}: показано ${data.items.length} из ${data.total}`)
   }
 
+  async function loadRfUnsoldProducts() {
+    setAnalyticsStatus('Загружаем товары без продаж OZON...')
+
+    const response = await fetch('/api/ozon/analytics/unsold', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить товары без продаж'))
+      setRfUnsoldProducts([])
+      setRfUnsoldTotal(0)
+      setRfUnsoldTimestamp('')
+      return
+    }
+
+    const data: { total: number; items: OzonAnalytics['unsoldProducts']; timestamp: string } = await response.json()
+    setRfUnsoldProducts(data.items)
+    setRfUnsoldTotal(data.total)
+    setRfUnsoldTimestamp(data.timestamp)
+    setAnalyticsStatus(`Без продаж OZON: ${data.total} товаров · обновлено ${data.timestamp}`)
+  }
+
   async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
     const label = getKzMarketplaceLabel(marketplace)
     setAnalyticsStatus(`Загружаем заказы ${label}...`)
@@ -5236,6 +5285,11 @@ function App() {
         return
       }
 
+      if (analyticsSubTab === 'noSales' && showKzFullAnalytics) {
+        await loadKzUnsoldProducts()
+        return
+      }
+
       if (showKzFullAnalytics) {
         await loadKzAnalyticsBundle()
       }
@@ -5245,6 +5299,11 @@ function App() {
 
     if (analyticsSubTab === 'production') {
       await loadProductionAnalyticsReport()
+      return
+    }
+
+    if (analyticsSubTab === 'noSales') {
+      await loadRfUnsoldProducts()
       return
     }
 
@@ -8321,7 +8380,7 @@ function App() {
                 )}
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
-                {(analyticsSubTab === 'summary' || analyticsSubTab === 'noSales') && showFullAnalytics && (
+                {(analyticsSubTab === 'summary') && showFullAnalytics && (
                   <div className="date-filter">
                     <label>
                       <span>С</span>
@@ -8542,6 +8601,7 @@ function App() {
                       {shopRegion === 'rf'
                         ? ' · дата поставки и дни — с последней FBO-поставки на склад Ozon на сегодня'
                         : ''}
+                      {shopRegion === 'rf' && rfUnsoldTimestamp ? ` · обновлено ${rfUnsoldTimestamp}` : ''}
                       {' · '}
                       найдено: {filteredUnsoldAnalyticsProducts.length}
                       {unsoldProductStatusFilter !== 'all'
@@ -8598,7 +8658,7 @@ function App() {
                         <OfferIdCell offerId={row.offerId} />
                         <span>{row.sku || '-'}</span>
                         <span>{formatOzonCreatedAt(row.ozonSellingSince)}</span>
-                        <span>{formatDaysWithoutSales(row.daysWithoutSales)}</span>
+                        <span>{formatDaysWithoutSales(undefined, row.ozonSellingSince)}</span>
                         <span>{translateProductStatus(row.status)}</span>
                         <span>{row.stockTotal}</span>
                         <span>{formatMoney(row.price, row.currencyCode)}</span>
