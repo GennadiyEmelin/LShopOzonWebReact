@@ -26,54 +26,50 @@ public sealed class SatuProductSyncService(
         try
         {
             var offset = 0;
-            var syncedCount = 0;
-            var totalEstimate = 0;
+            var seenProductIds = new HashSet<long>();
             var reachedEnd = false;
 
             while (!reachedEnd && !cancellationToken.IsCancellationRequested)
             {
-                var batchOffsets = Enumerable.Range(0, SatuApiClient.ParallelPages)
-                    .Select(index => offset + index * SatuApiClient.PageSize)
-                    .ToArray();
-
-                var pages = await FetchPagesWithRetryAsync(apiKey, batchOffsets, cancellationToken);
-                var batchItems = new List<JsonElement>();
-                var addedInBatch = false;
-
-                foreach (var page in pages)
-                {
-                    if (page.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    addedInBatch = true;
-                    batchItems.AddRange(page);
-
-                    if (page.Count < SatuApiClient.PageSize)
-                    {
-                        reachedEnd = true;
-                    }
-                }
-
-                if (!addedInBatch)
+                var page = await FetchPageWithRetryAsync(apiKey, offset, cancellationToken);
+                if (page.Count == 0)
                 {
                     break;
                 }
 
-                syncedCount += await UpsertBatchAsync(normalizedShopId, batchItems, syncStartedAt, cancellationToken);
-                totalEstimate = Math.Max(totalEstimate, syncedCount + (reachedEnd ? 0 : SatuApiClient.PageSize));
+                var newUniqueCount = await UpsertBatchAsync(
+                    normalizedShopId,
+                    page,
+                    syncStartedAt,
+                    seenProductIds,
+                    cancellationToken);
 
-                state.SyncedProducts = syncedCount;
-                state.TotalProducts = reachedEnd ? syncedCount : Math.Max(syncedCount + SatuApiClient.PageSize, totalEstimate);
+                if (newUniqueCount == 0)
+                {
+                    break;
+                }
+
+                if (page.Count < SatuApiClient.PageSize)
+                {
+                    reachedEnd = true;
+                }
+                else
+                {
+                    offset += SatuApiClient.PageSize;
+                }
+
+                state.SyncedProducts = seenProductIds.Count;
+                state.TotalProducts = reachedEnd
+                    ? seenProductIds.Count
+                    : seenProductIds.Count + SatuApiClient.PageSize;
                 state.LastSyncStartedAt = syncStartedAt;
                 await db.SaveChangesAsync(cancellationToken);
 
-                if (!reachedEnd)
-                {
-                    offset += SatuApiClient.ParallelPages * SatuApiClient.PageSize;
-                }
+                // Satu/Prom API allows about one request per second.
+                await Task.Delay(TimeSpan.FromSeconds(1.1), cancellationToken);
             }
+
+            var syncedCount = seenProductIds.Count;
 
             if (fullSync)
             {
@@ -137,9 +133,9 @@ public sealed class SatuProductSyncService(
         return state;
     }
 
-    private async Task<List<List<JsonElement>>> FetchPagesWithRetryAsync(
+    private async Task<List<JsonElement>> FetchPageWithRetryAsync(
         string apiKey,
-        IReadOnlyList<int> offsets,
+        int offset,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
@@ -147,14 +143,11 @@ public sealed class SatuProductSyncService(
         {
             try
             {
-                var pages = await Task.WhenAll(
-                    offsets.Select(offset =>
-                        SatuApiClient.GetProductsPageAsync(
-                            httpClientFactory.CreateClient(nameof(SatuProductSyncService)),
-                            apiKey,
-                            offset,
-                            cancellationToken)));
-                return pages.ToList();
+                return await SatuApiClient.GetProductsPageAsync(
+                    httpClientFactory.CreateClient(nameof(SatuProductSyncService)),
+                    apiKey,
+                    offset,
+                    cancellationToken);
             }
             catch (HttpRequestException exception) when (attempt < MaxRetries && IsTransient(exception))
             {
@@ -186,6 +179,7 @@ public sealed class SatuProductSyncService(
         string shopId,
         IReadOnlyList<JsonElement> items,
         DateTimeOffset syncedAt,
+        HashSet<long> seenProductIds,
         CancellationToken cancellationToken)
     {
         if (items.Count == 0)
@@ -203,12 +197,18 @@ public sealed class SatuProductSyncService(
             .Where(product => product.ShopId == shopId && productIds.Contains(product.SatuProductId))
             .ToDictionaryAsync(product => product.SatuProductId, cancellationToken);
 
+        var newUniqueCount = 0;
         foreach (var item in items)
         {
             var productId = SatuApiClient.ReadLong(item, "id") ?? 0;
             if (productId <= 0)
             {
                 continue;
+            }
+
+            if (seenProductIds.Add(productId))
+            {
+                newUniqueCount++;
             }
 
             if (existing.TryGetValue(productId, out var current))
@@ -224,6 +224,6 @@ public sealed class SatuProductSyncService(
         }
 
         await db.SaveChangesAsync(cancellationToken);
-        return items.Count;
+        return newUniqueCount;
     }
 }
