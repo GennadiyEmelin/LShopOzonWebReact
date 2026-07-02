@@ -591,7 +591,7 @@ export function ProductionTaskTable({
                 actualNumber === item.actualQuantity
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
               const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
-              const isBelowMinimum =
+              const isBelowMinimum = Boolean(
                 !novinka &&
                 !completed &&
                 !cancelled &&
@@ -599,7 +599,8 @@ export function ProductionTaskTable({
                 item.enforceMinimumQuantity &&
                 actualValue !== '' &&
                 Number.isFinite(actualNumber) &&
-                actualNumber < item.requiredQuantity
+                actualNumber < item.requiredQuantity,
+              )
 
               return (
               <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
