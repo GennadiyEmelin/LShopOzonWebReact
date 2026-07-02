@@ -387,8 +387,7 @@ namespace LShopOzonWebReact.Api.Migrations
 
                     b.Property<string>("ItemsJson")
                         .IsRequired()
-                        .HasMaxLength(8000)
-                        .HasColumnType("character varying(8000)");
+                        .HasColumnType("text");
 
                     b.Property<string>("OfferId")
                         .IsRequired()

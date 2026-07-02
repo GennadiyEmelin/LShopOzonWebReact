@@ -36,7 +36,6 @@ public static class ProductionAnalyticsStore
             .ToListAsync(cancellationToken);
         var existingSet = existingSourceIds.ToHashSet();
 
-        var added = false;
         foreach (var task in completedTasks)
         {
             if (existingSet.Contains(task.Id))
@@ -45,12 +44,15 @@ public static class ProductionAnalyticsStore
             }
 
             db.ProductionAnalyticsTaskRecords.Add(await BuildRecordFromTaskAsync(db, task, cancellationToken));
-            added = true;
-        }
-
-        if (added)
-        {
-            await db.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                existingSet.Add(task.Id);
+            }
+            catch (DbUpdateException)
+            {
+                db.ChangeTracker.Clear();
+            }
         }
     }
 

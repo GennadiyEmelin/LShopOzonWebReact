@@ -85,7 +85,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(record => record.TaskType).HasMaxLength(32);
             entity.Property(record => record.AssignedUserName).HasMaxLength(80);
             entity.Property(record => record.CreatedByDisplayName).HasMaxLength(160);
-            entity.Property(record => record.ItemsJson).HasMaxLength(8000);
+            entity.Property(record => record.ItemsJson).HasColumnType("text");
         });
 
         modelBuilder.Entity<ProductionTask>(entity =>
