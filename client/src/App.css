@@ -1659,6 +1659,28 @@ small .offer-id-cell {
   margin-bottom: 12px;
 }
 
+.satu-sync-banner {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #f5f8ff;
+  border: 1px solid #d5e3ff;
+  color: #1d3b7a;
+  font-size: 14px;
+}
+
+.satu-sync-banner.satu-sync-inprogress {
+  background: #fff8eb;
+  border-color: #f5d9a8;
+  color: #7a4b00;
+}
+
+.satu-sync-banner.satu-sync-failed {
+  background: #fff1f0;
+  border-color: #f3c1bd;
+  color: #8a1f17;
+}
+
 .products-status-filters-bar {
   margin-bottom: 12px;
 }

@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
 
 namespace LShopOzonWebReact.Api.Marketplaces;
@@ -8,7 +9,10 @@ namespace LShopOzonWebReact.Api.Marketplaces;
 public sealed class KzMarketplaceApiClient(
     HttpClient httpClient,
     KzMarketplaceCredentials credentials,
-    SatuCatalogCache satuCatalogCache)
+    SatuCatalogCache satuCatalogCache,
+    SatuProductRepository satuProductRepository,
+    ISatuProductSyncCoordinator satuProductSyncCoordinator,
+    SatuAnalyticsCacheService satuAnalyticsCacheService)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -19,19 +23,16 @@ public sealed class KzMarketplaceApiClient(
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await satuCatalogCache.GetProductsAsync(
-                httpClient,
-                credentialSet.ApiKey,
-                credentialSet.MerchantId,
-                cancellationToken);
+            return await satuProductRepository.GetActiveProductsAsync(credentialSet.MerchantId, cancellationToken);
         }
 
-        return (await GetProductsPageAsync(marketplace, null, 0, int.MaxValue, cancellationToken)).Items;
+        return (await GetProductsPageAsync(marketplace, null, null, 0, int.MaxValue, cancellationToken)).Items;
     }
 
     public async Task<KzProductsPage> GetProductsPageAsync(
         string marketplace,
         string? status,
+        string? search,
         int skip,
         int take,
         CancellationToken cancellationToken)
@@ -41,14 +42,16 @@ public sealed class KzMarketplaceApiClient(
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await satuCatalogCache.GetProductsPageAsync(
-                httpClient,
-                credentialSet.ApiKey,
+            var page = await satuProductRepository.GetProductsPageAsync(
                 credentialSet.MerchantId,
                 status,
+                search,
                 skip,
                 take,
                 cancellationToken);
+
+            await EnsureSatuSyncScheduledAsync(credentialSet.MerchantId, page, cancellationToken);
+            return page;
         }
 
         var products = normalized switch
@@ -116,13 +119,43 @@ public sealed class KzMarketplaceApiClient(
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await satuCatalogCache.GetAnalyticsAsync(
+            var cached = await satuAnalyticsCacheService.TryGetAnalyticsAsync(
+                credentialSet.MerchantId,
+                from,
+                to,
+                cancellationToken);
+            if (cached is not null)
+            {
+                return cached;
+            }
+
+            var summary = await satuProductRepository.GetCatalogSummaryAsync(credentialSet.MerchantId, cancellationToken);
+            var stats = new SatuCatalogStats
+            {
+                Total = summary.Total,
+                Selling = summary.Selling,
+                Ready = summary.Ready,
+                Archived = summary.Archived
+            };
+
+            var result = await SatuAnalyticsBuilder.BuildAnalyticsAsync(
                 httpClient,
                 credentialSet.ApiKey,
                 credentialSet.MerchantId,
                 from,
                 to,
+                _ => Task.FromResult(stats),
+                ct => satuCatalogCache.GetOrdersAsync(httpClient, credentialSet.ApiKey, from, to, ct),
                 cancellationToken);
+
+            await satuAnalyticsCacheService.SaveAnalyticsAsync(
+                credentialSet.MerchantId,
+                from,
+                to,
+                result,
+                cancellationToken);
+
+            return result;
         }
 
         return CreateEmptyAnalytics();
@@ -144,15 +177,9 @@ public sealed class KzMarketplaceApiClient(
             return new KzUnsoldProductsPage(0, []);
         }
 
-        var (total, items) = await satuCatalogCache.GetUnsoldProductsPageAsync(
-            httpClient,
-            credentialSet.ApiKey,
-            credentialSet.MerchantId,
-            from,
-            to,
-            skip,
-            take,
-            cancellationToken);
+        var products = await satuProductRepository.GetActiveProductsAsync(credentialSet.MerchantId, cancellationToken);
+        var orders = await satuCatalogCache.GetOrdersAsync(httpClient, credentialSet.ApiKey, from, to, cancellationToken);
+        var (total, items) = await SatuAnalyticsBuilder.BuildUnsoldPageAsync(products, orders, skip, take);
 
         return new KzUnsoldProductsPage(total, items);
     }
@@ -166,11 +193,24 @@ public sealed class KzMarketplaceApiClient(
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            return await satuCatalogCache.GetAnalyticsSnapshotAsync(
-                httpClient,
-                credentialSet.ApiKey,
-                credentialSet.MerchantId,
-                cancellationToken);
+            var cached = await satuAnalyticsCacheService.TryGetSnapshotAsync(credentialSet.MerchantId, cancellationToken);
+            if (cached is not null)
+            {
+                return cached;
+            }
+
+            var catalogSummary = await satuProductRepository.GetCatalogSummaryAsync(credentialSet.MerchantId, cancellationToken);
+            var snapshot = new OzonAnalyticsSnapshot(
+                catalogSummary.Total,
+                catalogSummary.Selling,
+                catalogSummary.Ready,
+                catalogSummary.Archived,
+                null,
+                "KZT",
+                DateTimeOffset.UtcNow.ToString("O"));
+
+            await satuAnalyticsCacheService.SaveSnapshotAsync(credentialSet.MerchantId, snapshot, cancellationToken);
+            return snapshot;
         }
 
         var summary = await GetCatalogSummaryAsync(marketplace, cancellationToken);
@@ -224,13 +264,7 @@ public sealed class KzMarketplaceApiClient(
 
         if (normalized == MarketplaceTypes.Satu)
         {
-            var stats = await satuCatalogCache.GetCatalogStatsAsync(
-                httpClient,
-                credentialSet.ApiKey,
-                credentialSet.MerchantId,
-                cancellationToken);
-
-            return new KzCatalogSummary(stats.Total, stats.Selling, stats.Ready, stats.Archived);
+            return await satuProductRepository.GetCatalogSummaryAsync(credentialSet.MerchantId, cancellationToken);
         }
 
         var products = await GetProductsAsync(marketplace, cancellationToken);
@@ -247,17 +281,19 @@ public sealed class KzMarketplaceApiClient(
             if (MarketplaceTypes.NormalizeKzMarketplace(marketplace) == MarketplaceTypes.Satu)
             {
                 var summary = await GetCatalogSummaryAsync(marketplace, cancellationToken);
-                var ordersCount = summary.Total > 0
-                    ? (await satuCatalogCache.GetOrdersAsync(
-                        httpClient,
-                        credentialSet.ApiKey,
-                        null,
-                        null,
-                        cancellationToken)).Count
-                    : 0;
+                var localCount = summary.Total;
+                if (localCount == 0)
+                {
+                    var firstPage = await SatuApiClient.GetProductsPageAsync(httpClient, credentialSet.ApiKey, 0, cancellationToken);
+                    if (firstPage.Count == 0)
+                    {
+                        return new KzMarketplaceTestResult(true, $"{label} API отвечает. Локальный каталог пуст — запущен импорт.");
+                    }
+                }
+
                 return new KzMarketplaceTestResult(
                     true,
-                    $"{label} API отвечает. Заказов: {ordersCount}, товаров в каталоге: {summary.Total}");
+                    $"{label} API отвечает. Товаров в локальном каталоге: {localCount}");
             }
 
             var catalogProducts = await GetProductsAsync(marketplace, cancellationToken);
@@ -268,6 +304,35 @@ public sealed class KzMarketplaceApiClient(
         catch (Exception exception)
         {
             return new KzMarketplaceTestResult(false, exception.Message);
+        }
+    }
+
+    public async Task<SatuSyncStatusResponse> GetSatuSyncStatusAsync(CancellationToken cancellationToken)
+    {
+        var credentialSet = EnsureConfigured(MarketplaceTypes.Satu);
+        return await satuProductSyncCoordinator.GetStatusAsync(credentialSet.MerchantId, cancellationToken);
+    }
+
+    public void RequestSatuSync(bool fullSync)
+    {
+        var credentialSet = EnsureConfigured(MarketplaceTypes.Satu);
+        satuProductSyncCoordinator.RequestSync(credentialSet.MerchantId, fullSync);
+    }
+
+    private async Task EnsureSatuSyncScheduledAsync(
+        string shopId,
+        KzProductsPage page,
+        CancellationToken cancellationToken)
+    {
+        var status = await satuProductSyncCoordinator.GetStatusAsync(shopId, cancellationToken);
+        if (status.Status == SatuSyncStatuses.InProgress)
+        {
+            return;
+        }
+
+        if (page.Items.Count == 0 && status.LocalProductCount == 0)
+        {
+            satuProductSyncCoordinator.RequestSync(shopId, fullSync: true);
         }
     }
 

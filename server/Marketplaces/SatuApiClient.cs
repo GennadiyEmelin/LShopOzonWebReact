@@ -422,7 +422,7 @@ internal static class SatuApiClient
         return items.Select(item => item.Clone()).ToList();
     }
 
-    private static async Task<List<JsonElement>> GetProductsPageAsync(
+    internal static async Task<List<JsonElement>> GetProductsPageAsync(
         HttpClient httpClient,
         string apiKey,
         int offset,

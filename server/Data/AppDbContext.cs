@@ -19,6 +19,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<AppIntegrationSettings> AppIntegrationSettings => Set<AppIntegrationSettings>();
     public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
+    public DbSet<SatuProduct> SatuProducts => Set<SatuProduct>();
+    public DbSet<SatuSyncState> SatuSyncStates => Set<SatuSyncState>();
+    public DbSet<SatuAnalyticsCacheEntry> SatuAnalyticsCacheEntries => Set<SatuAnalyticsCacheEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -202,6 +205,46 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(log => log.EntityType).HasMaxLength(80);
             entity.Property(log => log.EntityId).HasMaxLength(120);
             entity.Property(log => log.Details).HasMaxLength(2000);
+        });
+
+        modelBuilder.Entity<SatuProduct>(entity =>
+        {
+            entity.HasIndex(product => new { product.ShopId, product.SatuProductId }).IsUnique();
+            entity.HasIndex(product => product.ShopId);
+            entity.HasIndex(product => product.IsActive);
+            entity.HasIndex(product => product.Status);
+            entity.HasIndex(product => product.CategoryId);
+            entity.HasIndex(product => product.LastSyncedAt);
+            entity.HasIndex(product => product.Name);
+            entity.HasIndex(product => product.OfferId);
+            entity.Property(product => product.ShopId).HasMaxLength(120);
+            entity.Property(product => product.OfferId).HasMaxLength(120);
+            entity.Property(product => product.Name).HasMaxLength(500);
+            entity.Property(product => product.Description).HasColumnType("text");
+            entity.Property(product => product.ImageUrlsJson).HasColumnType("text");
+            entity.Property(product => product.RawJson).HasColumnType("text");
+            entity.Property(product => product.Status).HasMaxLength(32);
+            entity.Property(product => product.ProductUrl).HasMaxLength(500);
+            entity.Property(product => product.ImageUrl).HasMaxLength(500);
+            entity.Property(product => product.CurrencyCode).HasMaxLength(8);
+            entity.Property(product => product.CategoryId).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<SatuSyncState>(entity =>
+        {
+            entity.HasKey(state => state.ShopId);
+            entity.Property(state => state.ShopId).HasMaxLength(120);
+            entity.Property(state => state.Status).HasMaxLength(32);
+            entity.Property(state => state.ErrorMessage).HasMaxLength(2000);
+        });
+
+        modelBuilder.Entity<SatuAnalyticsCacheEntry>(entity =>
+        {
+            entity.HasKey(entry => entry.CacheKey);
+            entity.HasIndex(entry => new { entry.ShopId, entry.PeriodFrom, entry.PeriodTo });
+            entity.Property(entry => entry.CacheKey).HasMaxLength(200);
+            entity.Property(entry => entry.ShopId).HasMaxLength(120);
+            entity.Property(entry => entry.PayloadJson).HasColumnType("text");
         });
     }
 }

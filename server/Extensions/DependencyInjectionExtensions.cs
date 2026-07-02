@@ -22,7 +22,16 @@ public static class DependencyInjectionExtensions
         services.AddOpenApi();
         services.AddMemoryCache();
         services.AddSingleton<SatuCatalogCache>();
-        services.AddHostedService<SatuCatalogWarmupHostedService>();
+        services.AddSingleton<SatuProductSyncCoordinator>();
+        services.AddSingleton<ISatuProductSyncCoordinator>(sp => sp.GetRequiredService<SatuProductSyncCoordinator>());
+        services.AddScoped<SatuProductRepository>();
+        services.AddHttpClient(nameof(SatuProductSyncService), client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(15);
+        });
+        services.AddScoped<SatuProductSyncService>();
+        services.AddScoped<SatuAnalyticsCacheService>();
+        services.AddHostedService<SatuProductSyncHostedService>();
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(configuration.GetConnectionString("Postgres")));
 

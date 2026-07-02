@@ -1584,6 +1584,19 @@ function App() {
     satu: '',
     halyk: '',
   })
+  const [kzSatuSyncStatus, setKzSatuSyncStatus] = useState<{
+    status: string
+    lastSyncStartedAt: string | null
+    lastSyncCompletedAt: string | null
+    totalProducts: number
+    syncedProducts: number
+    errorMessage: string | null
+    isFullSync: boolean
+    localProductCount: number
+  } | null>(null)
+  const [kzProductPage, setKzProductPage] = useState(0)
+  const kzProductPageSize = 50
+  const kzProductSearchDebounceRef = useRef<number | null>(null)
   const [kzStocksStatus, setKzStocksStatus] = useState<Record<KzMarketplace, string>>({
     kaspi: '',
     satu: '',
@@ -1766,7 +1779,12 @@ function App() {
   }, [shopRegion, kzCatalogSummary, kzMarketplace, productStatusFilter])
   const kzHasMoreProducts =
     shopRegion === 'kz' &&
+    kzMarketplace !== 'satu' &&
     (catalogProductsSource.length < kzMatchedCatalogTotal || kzProductsPageFull[kzMarketplace])
+  const kzSatuHasNextPage =
+    shopRegion === 'kz' &&
+    kzMarketplace === 'satu' &&
+    (kzProductPage + 1) * kzProductPageSize < kzMatchedCatalogTotal
   const catalogStocksStatus = shopRegion === 'rf' ? stockStatus : kzStocksStatus[kzMarketplace]
   const productionLookupProducts =
     shopRegion === 'rf'
@@ -1819,13 +1837,17 @@ function App() {
     return counts
   }, [catalogProductsSource, shopRegion, kzCatalogSummary, kzMarketplace])
   const filteredCatalogProducts = [...((
-    shopRegion === 'kz'
+    shopRegion === 'kz' && kzMarketplace === 'satu'
       ? catalogProductsSource
-      : productStatusFilter !== 'all'
-        ? catalogProductsSource.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
-        : catalogProductsSource
+      : shopRegion === 'kz'
+        ? catalogProductsSource
+        : productStatusFilter !== 'all'
+          ? catalogProductsSource.filter((item) => getProductStatusGroup(item.status) === productStatusFilter)
+          : catalogProductsSource
   ).filter((item) =>
-    normalizedProductSearch
+    shopRegion === 'kz' && kzMarketplace === 'satu'
+      ? true
+      : normalizedProductSearch
       ? [
           item.productId,
           item.offerId,
@@ -2838,8 +2860,43 @@ function App() {
     }
 
     void loadKzCatalogSummary(kzMarketplace)
-    void loadKzProducts(kzMarketplace, false, productStatusFilter)
+    setKzProductPage(0)
+    void loadKzProducts(kzMarketplace, false, productStatusFilter, null, productSearch, 0)
   }, [activeTab, kzMarketplace, productStatusFilter, token, shopRegion])
+
+  useEffect(() => {
+    if (!token || shopRegion !== 'kz' || kzMarketplace !== 'satu' || activeTab !== 'products') {
+      return
+    }
+
+    void loadKzSatuSyncStatus()
+    const timer = window.setInterval(() => {
+      void loadKzSatuSyncStatus()
+    }, 5000)
+
+    return () => window.clearInterval(timer)
+  }, [token, shopRegion, kzMarketplace, activeTab])
+
+  useEffect(() => {
+    if (!token || shopRegion !== 'kz' || kzMarketplace !== 'satu' || activeTab !== 'products') {
+      return
+    }
+
+    if (kzProductSearchDebounceRef.current) {
+      window.clearTimeout(kzProductSearchDebounceRef.current)
+    }
+
+    kzProductSearchDebounceRef.current = window.setTimeout(() => {
+      setKzProductPage(0)
+      void loadKzProducts(kzMarketplace, false, productStatusFilter, null, productSearch, 0)
+    }, 350)
+
+    return () => {
+      if (kzProductSearchDebounceRef.current) {
+        window.clearTimeout(kzProductSearchDebounceRef.current)
+      }
+    }
+  }, [productSearch, token, shopRegion, kzMarketplace, activeTab, productStatusFilter])
 
   useEffect(() => {
     if (!token || activeTab !== 'home' || !isHomeBlockEnabled('analytics') || shopRegion !== 'rf') {
@@ -2862,30 +2919,22 @@ function App() {
       return
     }
 
-    setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
-    setAnalyticsDateTo(getDefaultAnalyticsDateTo())
-    void loadKzAnalyticsBundle()
-  }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion, kzMarketplace])
-
-  useEffect(() => {
-    if (!token || activeTab !== 'analytics' || !hasFeature('analytics') || !showKzFullAnalytics) {
-      return
-    }
-
     if (!analyticsDateFrom || !analyticsDateTo) {
+      setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
+      setAnalyticsDateTo(getDefaultAnalyticsDateTo())
       return
     }
 
-    void loadKzAnalytics()
+    void loadKzAnalyticsBundle()
   }, [
-    analyticsDateFrom,
-    analyticsDateTo,
     activeTab,
     token,
     user?.role,
     user?.allowedFeatures,
     shopRegion,
     kzMarketplace,
+    analyticsDateFrom,
+    analyticsDateTo,
   ])
 
   useEffect(() => {
@@ -4649,14 +4698,95 @@ function App() {
     return data
   }
 
+  async function loadKzSatuSyncStatus() {
+    if (!token) {
+      return
+    }
+
+    try {
+      const response = await fetch('/api/kz/satu/sync-status', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        return
+      }
+
+      const data = await response.json()
+      setKzSatuSyncStatus((previous) => {
+        if (previous?.status === 'InProgress' && data.status === 'Completed') {
+          setKzProductPage(0)
+          void loadKzCatalogSummary('satu')
+          void loadKzProducts('satu', false, productStatusFilter, null, productSearch, 0)
+        } else if (
+          data.status === 'InProgress' &&
+          data.syncedProducts > (previous?.syncedProducts ?? 0)
+        ) {
+          void loadKzCatalogSummary('satu')
+          void loadKzProducts('satu', false, productStatusFilter, null, productSearch, kzProductPage)
+        }
+
+        return data
+      })
+
+      if (data.status === 'InProgress' && shopRegion === 'kz' && kzMarketplace === 'satu') {
+        setKzProductsStatus((current) => ({
+          ...current,
+          satu: `Импорт SATU: ${data.syncedProducts} из ${Math.max(data.totalProducts, data.syncedProducts)}`,
+        }))
+      }
+    } catch {
+      // ignore polling errors
+    }
+  }
+
+  async function triggerKzSatuSync(full = true) {
+    if (!token) {
+      return
+    }
+
+    const response = await fetch(`/api/kz/satu/sync?full=${full ? 'true' : 'false'}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      setKzProductsStatus((current) => ({
+        ...current,
+        satu: getApiErrorMessage(errorText, 'Не удалось запустить синхронизацию SATU'),
+      }))
+      return
+    }
+
+    const data = await response.json()
+    setKzSatuSyncStatus(data)
+    setKzProductsStatus((current) => ({
+      ...current,
+      satu: 'Синхронизация SATU запущена...',
+    }))
+  }
+
   async function loadKzProducts(
     marketplace: KzMarketplace = kzMarketplace,
     append = false,
     statusFilter: 'all' | 'selling' | 'ready' | 'archived' = productStatusFilter,
     catalogSummary: { total: number; selling: number; ready: number; archived: number } | null = null,
+    search = productSearch,
+    page = kzProductPage,
   ): Promise<{ loadedCount: number; matchedTotal: number; hasMore: boolean } | null> {
     const label = getKzMarketplaceLabel(marketplace)
-    const skip = append ? (kzProducts[marketplace]?.length ?? 0) : 0
+    const useLocalCatalog = marketplace === 'satu'
+    const pageSize = useLocalCatalog ? kzProductPageSize : 200
+    const skip = useLocalCatalog
+      ? page * pageSize
+      : append
+        ? (kzProducts[marketplace]?.length ?? 0)
+        : 0
     setKzProductsLoading(true)
     setKzProductsStatus((current) => ({
       ...current,
@@ -4667,10 +4797,13 @@ function App() {
 
     const params = new URLSearchParams({
       skip: String(skip),
-      take: '200',
+      take: String(pageSize),
     })
     if (statusFilter !== 'all') {
       params.set('status', statusFilter)
+    }
+    if (useLocalCatalog && search.trim()) {
+      params.set('search', search.trim())
     }
 
     try {
@@ -4713,13 +4846,15 @@ function App() {
 
       setKzProductsPageFull((current) => ({
         ...current,
-        [marketplace]: data.items.length >= 200,
+        [marketplace]: useLocalCatalog
+          ? skip + data.items.length < data.matchedTotal
+          : data.items.length >= pageSize,
       }))
       setKzProducts((current) => ({
         ...current,
-        [marketplace]: append ? [...(current[marketplace] ?? []), ...data.items] : data.items,
+        [marketplace]: useLocalCatalog || !append ? data.items : [...(current[marketplace] ?? []), ...data.items],
       }))
-      const loadedCount = append ? skip + data.items.length : data.items.length
+      const loadedCount = useLocalCatalog ? skip + data.items.length : append ? skip + data.items.length : data.items.length
       const summary = catalogSummary ?? kzCatalogSummary[marketplace]
       const matchedTotal =
         data.matchedTotal > loadedCount
@@ -4732,13 +4867,19 @@ function App() {
                 : statusFilter === 'archived'
                   ? summary.archived
                   : summary.total
-            : data.items.length >= 200
+            : data.items.length >= pageSize
               ? loadedCount + 1
               : loadedCount
       setKzProductsStatus((current) => ({
         ...current,
         [marketplace]:
-          matchedTotal > loadedCount
+          useLocalCatalog
+            ? data.matchedTotal > 0
+              ? `Страница ${page + 1}: показано ${data.items.length} из ${data.matchedTotal} товаров ${label}`
+              : kzSatuSyncStatus?.status === 'InProgress'
+                ? `Импорт ${label}: ${kzSatuSyncStatus.syncedProducts} из ${Math.max(kzSatuSyncStatus.totalProducts, kzSatuSyncStatus.syncedProducts)}`
+                : `Каталог ${label} пуст. Запустите синхронизацию в настройках.`
+            : matchedTotal > loadedCount
             ? `Загружено ${loadedCount} из ${matchedTotal} товаров ${label}`
             : `Загружено товаров ${label}: ${loadedCount}`,
       }))
@@ -8220,16 +8361,66 @@ function App() {
                 <KzMarketplaceTabs activeMarketplace={kzMarketplace} onChange={handleKzMarketplaceChange} />
               )}
 
+              {shopRegion === 'kz' && kzMarketplace === 'satu' && kzSatuSyncStatus && (
+                <div className={`satu-sync-banner satu-sync-${kzSatuSyncStatus.status.toLowerCase()}`}>
+                  <strong>Синхронизация SATU:</strong>{' '}
+                  {kzSatuSyncStatus.status === 'InProgress' &&
+                    `импорт ${kzSatuSyncStatus.syncedProducts} из ${Math.max(kzSatuSyncStatus.totalProducts, kzSatuSyncStatus.syncedProducts)}`}
+                  {kzSatuSyncStatus.status === 'Completed' &&
+                    `в локальной базе ${kzSatuSyncStatus.localProductCount} товаров · обновлено ${formatAnalyticsDate(kzSatuSyncStatus.lastSyncCompletedAt ?? '')}`}
+                  {kzSatuSyncStatus.status === 'Failed' &&
+                    `ошибка: ${kzSatuSyncStatus.errorMessage ?? 'неизвестная ошибка'}`}
+                  {kzSatuSyncStatus.status === 'NotStarted' &&
+                    `локальный каталог: ${kzSatuSyncStatus.localProductCount} товаров. Импорт запустится автоматически.`}
+                </div>
+              )}
+
               <div className="subtabs-placeholder products-toolbar">
                 {user?.role === 'Admin' && (
                   <button
                     type="button"
-                    onClick={() => (shopRegion === 'rf' ? void loadOzonProducts() : void loadKzProducts())}
+                    onClick={() => {
+                      if (shopRegion === 'rf') {
+                        void loadOzonProducts()
+                      } else if (kzMarketplace === 'satu') {
+                        void triggerKzSatuSync(true)
+                      } else {
+                        void loadKzProducts()
+                      }
+                    }}
                   >
                     {shopRegion === 'rf'
                       ? 'Обновить товары Ozon'
-                      : `Обновить товары ${getKzMarketplaceLabel(kzMarketplace)}`}
+                      : kzMarketplace === 'satu'
+                        ? 'Синхронизировать SATU'
+                        : `Обновить товары ${getKzMarketplaceLabel(kzMarketplace)}`}
                   </button>
+                )}
+                {shopRegion === 'kz' && kzMarketplace === 'satu' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={kzProductPage <= 0 || kzProductsLoading}
+                      onClick={() => {
+                        const nextPage = Math.max(0, kzProductPage - 1)
+                        setKzProductPage(nextPage)
+                        void loadKzProducts(kzMarketplace, false, productStatusFilter, null, productSearch, nextPage)
+                      }}
+                    >
+                      Назад
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!kzSatuHasNextPage || kzProductsLoading}
+                      onClick={() => {
+                        const nextPage = kzProductPage + 1
+                        setKzProductPage(nextPage)
+                        void loadKzProducts(kzMarketplace, false, productStatusFilter, null, productSearch, nextPage)
+                      }}
+                    >
+                      Вперёд
+                    </button>
+                  </>
                 )}
                 {shopRegion === 'kz' && kzHasMoreProducts && (
                   <>

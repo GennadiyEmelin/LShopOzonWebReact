@@ -694,6 +694,172 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.ToTable("RoleProfiles");
                 });
 
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SatuAnalyticsCacheEntry", b =>
+                {
+                    b.Property<string>("CacheKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTimeOffset>("ComputedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateOnly>("PeriodFrom")
+                        .HasColumnType("date");
+
+                    b.Property<DateOnly>("PeriodTo")
+                        .HasColumnType("date");
+
+                    b.Property<string>("ShopId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.HasKey("CacheKey");
+
+                    b.HasIndex("ShopId", "PeriodFrom", "PeriodTo");
+
+                    b.ToTable("SatuAnalyticsCacheEntries");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SatuProduct", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CategoryId")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("CurrencyCode")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("ExternalUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ImageUrl")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("ImageUrlsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("LastSyncedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("OfferId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<decimal>("OldPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("ProductUrl")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("RawJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("SatuProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ShopId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("Stock")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("IsActive");
+
+                    b.HasIndex("LastSyncedAt");
+
+                    b.HasIndex("Name");
+
+                    b.HasIndex("OfferId");
+
+                    b.HasIndex("ShopId");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("ShopId", "SatuProductId")
+                        .IsUnique();
+
+                    b.ToTable("SatuProducts");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SatuSyncState", b =>
+                {
+                    b.Property<string>("ShopId")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<bool>("IsFullSync")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("LastSyncCompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSyncStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("SyncedProducts")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TotalProducts")
+                        .HasColumnType("integer");
+
+                    b.HasKey("ShopId");
+
+                    b.ToTable("SatuSyncStates");
+                });
+
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.Supply", b =>
                 {
                     b.Property<Guid>("Id")

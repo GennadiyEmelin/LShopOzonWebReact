@@ -42,6 +42,7 @@ public static class KzMarketplaceRoutes
             UpdateKzMarketplaceIntegrationRequest request,
             AppDbContext db,
             KzMarketplaceCredentials credentials,
+            ISatuProductSyncCoordinator satuProductSyncCoordinator,
             ClaimsPrincipal principal) =>
         {
             if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsOzonEdit))
@@ -90,6 +91,11 @@ public static class KzMarketplaceRoutes
                 $"Обновлены ключи {MarketplaceTypes.GetDisplayName(normalized)}");
             await db.SaveChangesAsync();
 
+            if (normalized == MarketplaceTypes.Satu)
+            {
+                satuProductSyncCoordinator.RequestSync(merchantId, fullSync: true);
+            }
+
             return Results.Ok(new KzMarketplaceIntegrationResponse(
                 true,
                 AppPublicText.MaskSecret(merchantId),
@@ -121,6 +127,7 @@ public static class KzMarketplaceRoutes
         app.MapGet("/api/kz/{marketplace}/products", async (
             string marketplace,
             string? status,
+            string? search,
             int? skip,
             int? take,
             AppDbContext db,
@@ -141,9 +148,62 @@ public static class KzMarketplaceRoutes
                 var result = await marketplaceApi.GetProductsPageAsync(
                     marketplace,
                     status,
+                    search,
                     skip ?? 0,
                     take ?? 200,
                     cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
+        app.MapGet("/api/kz/satu/sync-status", async (
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Products, FeatureAccess.Analytics))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            try
+            {
+                var result = await marketplaceApi.GetSatuSyncStatusAsync(cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
+        app.MapPost("/api/kz/satu/sync", async (
+            bool? full,
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsOzonEdit))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            try
+            {
+                marketplaceApi.RequestSatuSync(full ?? true);
+                var result = await marketplaceApi.GetSatuSyncStatusAsync(cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
