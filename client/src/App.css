@@ -963,20 +963,24 @@
 .task-item-actual-editor {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
+  gap: 8px;
+  width: 100%;
+  max-width: 220px;
 }
 
-.task-item-actual-editor input {
-  flex: 1;
-  min-width: 0;
-  width: auto;
+.task-item-actual-editor input[data-actual-input] {
+  flex: 1 1 88px;
+  min-width: 88px;
+  max-width: none;
+  width: 100%;
 }
 
 .task-item-actual-save-btn {
   flex: 0 0 auto;
   width: auto;
   margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -1656,6 +1660,10 @@ small .offer-id-cell {
 }
 
 .products-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -2435,17 +2443,23 @@ small .offer-id-cell {
 .task-items-table {
   padding: 0 20px 14px;
   background: #fbfcfe;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .task-item-table-row {
   grid-template-columns:
-    minmax(300px, 2.4fr)
-    minmax(130px, 0.75fr)
-    minmax(70px, 0.4fr)
-    minmax(90px, 0.45fr)
-    minmax(130px, 0.55fr);
+    minmax(260px, 2.2fr)
+    minmax(120px, 0.7fr)
+    minmax(56px, 0.3fr)
+    minmax(190px, 0.85fr)
+    minmax(150px, 0.65fr);
   border-right: 1px solid #edf0f5;
   border-left: 1px solid #edf0f5;
+}
+
+.task-item-fact-cell {
+  min-width: 0;
 }
 
 .task-item-file-link {
@@ -2467,7 +2481,7 @@ small .offer-id-cell {
   border-bottom: 1px solid #edf0f5;
 }
 
-.task-item-table-row input:not(.task-item-path-input) {
+.task-item-table-row input:not(.task-item-path-input):not([data-actual-input]) {
   width: 100%;
   max-width: 120px;
 }
@@ -7290,6 +7304,73 @@ small .offer-id-cell {
     width: 100%;
   }
 
+  .task-item-table-row > span[data-label] {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: start;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .task-item-table-row > span[data-label]::before {
+    content: attr(data-label);
+    color: #677083;
+    font-size: 12px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .task-item-table-row > span[data-label='Товар']::before {
+    display: none;
+  }
+
+  .task-item-fact-cell .task-item-actual-editor {
+    max-width: none;
+    width: 100%;
+  }
+
+  .task-item-actual-editor input[data-actual-input] {
+    min-width: 0;
+    flex: 1 1 120px;
+  }
+
+  .products-toolbar button {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 120px;
+  }
+
+  .products-status-filters-bar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .analytics-status-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .analytics-status-filters button {
+    flex: 0 0 auto;
+  }
+
+  .satu-sync-banner {
+    margin: 0 0 12px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .subtabs-placeholder {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .subtabs-placeholder button {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .table-row > *,
   .users-list li > * {
     min-width: 0;
@@ -7350,6 +7431,11 @@ small .offer-id-cell {
 
   .task-item-table-row input {
     max-width: none;
+  }
+
+  .task-item-actual-save-btn {
+    width: auto;
+    min-height: 36px;
   }
 
   .inline-detail {

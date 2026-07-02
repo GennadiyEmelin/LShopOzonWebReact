@@ -604,7 +604,7 @@ export function ProductionTaskTable({
 
               return (
               <div className={`table-row task-item-table-row ${isBelowMinimum ? 'task-item-below-minimum' : ''}`} key={item.id}>
-                <span className="product-mini task-product-mini">
+                <span className="product-mini task-product-mini" data-label="Товар">
                   <TaskItemThumb
                     item={item}
                     products={products}
@@ -618,7 +618,11 @@ export function ProductionTaskTable({
                     )}
                   </span>
                 </span>
-                {!novinka && <OfferIdCell offerId={item.offerId} />}
+                {!novinka && (
+                  <span data-label="Артикул">
+                    <OfferIdCell offerId={item.offerId} />
+                  </span>
+                )}
                 {novinka ? (
                   <>
                     <span>{renderNovinkaItemLink(item)}</span>
@@ -649,8 +653,8 @@ export function ProductionTaskTable({
                   </>
                 ) : (
                   <>
-                    <span>{item.requiredQuantity}</span>
-                    <span>
+                    <span data-label="План">{item.requiredQuantity}</span>
+                    <span className="task-item-fact-cell" data-label="Факт">
                       {completed ? (
                         item.actualQuantity ?? 0
                       ) : task.status === 'InProgress' ? (
@@ -676,12 +680,14 @@ export function ProductionTaskTable({
                         '—'
                       )}
                     </span>
+                    <span data-label="Файлы">
                     <TaskItemFilesAndPathsCell
                       item={item}
                       itemFiles={itemFiles}
                       itemPaths={itemPaths}
                       onOpenFiles={onOpenFiles}
                     />
+                    </span>
                   </>
                 )}
               </div>
@@ -848,6 +854,7 @@ function TaskItemActualPanel({
       <div className="task-item-actual-editor">
         <input
           className={isBelowMinimum ? 'task-quantity-invalid' : ''}
+          data-actual-input=""
           type="number"
           min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
           placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
@@ -1104,7 +1111,7 @@ export function ProductionTaskArchiveTable({
 
               return (
               <div className="table-row task-item-table-row" key={item.id}>
-                <span className="product-mini task-product-mini">
+                <span className="product-mini task-product-mini" data-label="Товар">
                   <TaskItemThumb
                     item={item}
                     products={products}
@@ -1115,7 +1122,11 @@ export function ProductionTaskArchiveTable({
                     <strong>{item.productName}</strong>
                   </span>
                 </span>
-                {!novinka && <OfferIdCell offerId={item.offerId} />}
+                {!novinka && (
+                  <span data-label="Артикул">
+                    <OfferIdCell offerId={item.offerId} />
+                  </span>
+                )}
                 {novinka ? (
                   <>
                     <span>{renderNovinkaItemLink(item)}</span>
@@ -1131,8 +1142,8 @@ export function ProductionTaskArchiveTable({
                   </>
                 ) : (
                   <>
-                    <span>{item.requiredQuantity}</span>
-                    <span>{item.actualQuantity ?? 0}</span>
+                    <span data-label="План">{item.requiredQuantity}</span>
+                    <span data-label="Факт">{item.actualQuantity ?? 0}</span>
                   </>
                 )}
               </div>
