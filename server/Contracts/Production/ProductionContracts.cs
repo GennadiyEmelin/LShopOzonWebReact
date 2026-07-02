@@ -30,6 +30,7 @@ record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string 
 record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink);
 record UpdateProductionTaskRequest(bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
 record UpdateProductionTaskItemRequest(int RequiredQuantity);
+record UpdateProductionTaskItemActualQuantityRequest(int ActualQuantity);
 record CancelProductionTaskRequest(string Comment);
 public record ProductionAnalyticsSummaryRow(
     Guid? UserId,

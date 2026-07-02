@@ -113,6 +113,19 @@ export async function saveProductionTaskItemFilePath(
   })
 }
 
+export async function saveProductionTaskItemActualQuantity(
+  token: string,
+  taskId: string,
+  itemId: string,
+  actualQuantity: number,
+) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/actual-quantity`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actualQuantity }),
+  })
+}
+
 export async function convertNovinkaCatalogToOzon(token: string, body: unknown) {
   return apiFetch('/api/production/catalog/convert-to-ozon', token, {
     method: 'PUT',

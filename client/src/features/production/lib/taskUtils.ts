@@ -174,6 +174,29 @@ export function getProductionTaskActualTotal(task: ProductionTask) {
   return getProductionTaskItems(task).reduce((sum: number, item: ProductionTaskItem) => sum + (item.actualQuantity ?? 0), 0)
 }
 
+export function getTaskItemActualInputValue(
+  item: ProductionTaskItem,
+  actualQuantities: Record<string, string>,
+) {
+  if (actualQuantities[item.id] !== undefined) {
+    return actualQuantities[item.id]
+  }
+
+  return item.actualQuantity == null ? '' : String(item.actualQuantity)
+}
+
+export function resolveTaskItemActualQuantity(
+  item: ProductionTaskItem,
+  actualQuantities: Record<string, string>,
+) {
+  const raw = getTaskItemActualInputValue(item, actualQuantities)
+  if (raw === '') {
+    return Number.NaN
+  }
+
+  return Number(raw)
+}
+
 export function sortProductionTasksByUrgency(tasks: ProductionTask[]) {
   return [...tasks].sort((left, right) => {
     if (left.isUrgent !== right.isUrgent) {

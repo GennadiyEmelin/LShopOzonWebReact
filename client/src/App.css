@@ -960,6 +960,32 @@
   gap: 2px;
 }
 
+.task-item-actual-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-item-actual-editor input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.task-item-actual-save-btn {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.task-item-actual-save-btn.saved {
+  color: #027a48;
+  border-color: #abefc6;
+  background: #ecfdf3;
+}
+
 .task-complete-blocked {
   opacity: 0.72;
   outline: 2px solid #fecdca;

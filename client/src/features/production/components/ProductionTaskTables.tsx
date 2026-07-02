@@ -23,6 +23,7 @@ import {
   getProductionTaskSummary,
   getProductionTaskTableLabels,
   getProductionTaskTableMode,
+  getTaskItemActualInputValue,
   isNovinkaTask,
   translateProductionTaskStatus,
 } from '../lib/taskUtils'
@@ -310,6 +311,7 @@ export function ProductionTaskTable({
   onOpenFiles,
   onUploadTaskItemFile,
   onSaveTaskItemFilePath,
+  onSaveTaskItemActualQuantity,
   onDeleteFile,
   onDelete,
   onArchive,
@@ -334,6 +336,11 @@ export function ProductionTaskTable({
   onOpenFiles: (productName: string, files: ProductionFile[]) => void
   onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
   onSaveTaskItemFilePath?: (taskId: string, item: ProductionTaskItem, path: string) => void | Promise<void>
+  onSaveTaskItemActualQuantity?: (
+    taskId: string,
+    item: ProductionTaskItem,
+    actualQuantity: number,
+  ) => void | Promise<void>
   onDeleteFile?: (id: string) => void
   onDelete?: (id: string) => void
   onArchive?: (id: string) => void
@@ -380,9 +387,19 @@ export function ProductionTaskTable({
             if (!item.enforceMinimumQuantity) {
               return false
             }
-            const actualValue = actualQuantities[item.id] ?? ''
+            const actualValue = getTaskItemActualInputValue(item, actualQuantities)
             const actualNumber = Number(actualValue)
             return actualValue !== '' && Number.isFinite(actualNumber) && actualNumber < item.requiredQuantity
+          })
+        const hasMissingActuals =
+          !novinka &&
+          task.status === 'InProgress' &&
+          !completed &&
+          !cancelled &&
+          taskItems.some((item) => {
+            const value = getTaskItemActualInputValue(item, actualQuantities)
+            const actualNumber = Number(value)
+            return value === '' || !Number.isFinite(actualNumber) || actualNumber < 0
           })
         const hasMissingNovinkaFiles =
           novinka &&
@@ -485,12 +502,14 @@ export function ProductionTaskTable({
             {!completed && !cancelled && task.status === 'InProgress' && (
               <button
                 type="button"
-                className={hasMinimumViolations || hasMissingNovinkaRequirements ? 'task-complete-blocked' : ''}
+                className={hasMinimumViolations || hasMissingNovinkaRequirements || hasMissingActuals ? 'task-complete-blocked' : ''}
                 title={
                   hasMissingNovinkaFiles
                     ? 'Добавьте файлы производства по каждому товару'
                     : hasMissingNovinkaPaths
                       ? 'Укажите путь к файлу по каждому товару'
+                    : hasMissingActuals
+                      ? 'Сохраните фактическое количество по каждому товару'
                     : hasMinimumViolations
                       ? 'Исправьте количество: факт не может быть меньше плана'
                       : undefined
@@ -563,8 +582,13 @@ export function ProductionTaskTable({
               )}
             </div>
             {taskItems.map((item) => {
-              const actualValue = actualQuantities[item.id] ?? ''
+              const actualValue = getTaskItemActualInputValue(item, actualQuantities)
               const actualNumber = Number(actualValue)
+              const isSaved =
+                item.actualQuantity != null &&
+                actualValue !== '' &&
+                Number.isFinite(actualNumber) &&
+                actualNumber === item.actualQuantity
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
               const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
               const isBelowMinimum =
@@ -629,29 +653,24 @@ export function ProductionTaskTable({
                       {completed ? (
                         item.actualQuantity ?? 0
                       ) : task.status === 'InProgress' ? (
-                        <span className="task-actual-input-wrap">
-                          <input
-                            className={isBelowMinimum ? 'task-quantity-invalid' : ''}
-                            type="number"
-                            min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
-                            placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
-                            value={actualValue}
-                            onChange={(event) =>
-                              setActualQuantities((current) => ({
-                                ...current,
-                                [item.id]: event.target.value,
-                              }))
-                            }
-                          />
-                          {isBelowMinimum && (
-                            <small className="task-minimum-error">
-                              Нельзя меньше {item.requiredQuantity}
-                            </small>
-                          )}
-                          {item.enforceMinimumQuantity && actualValue === '' && (
-                            <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
-                          )}
-                        </span>
+                        <TaskItemActualPanel
+                          item={item}
+                          actualValue={actualValue}
+                          isBelowMinimum={isBelowMinimum}
+                          isSaved={isSaved}
+                          canSave={Boolean(onSaveTaskItemActualQuantity)}
+                          onValueChange={(value) =>
+                            setActualQuantities((current) => ({
+                              ...current,
+                              [item.id]: value,
+                            }))
+                          }
+                          onSave={
+                            onSaveTaskItemActualQuantity
+                              ? (actualQuantity) => onSaveTaskItemActualQuantity(task.id, item, actualQuantity)
+                              : undefined
+                          }
+                        />
                       ) : (
                         '—'
                       )}
@@ -780,6 +799,77 @@ function TaskItemPathCell({ paths }: { paths: ProductionFilePath[] }) {
   return (
     <span className="task-item-path-cell">
       <TaskItemPathsButtons paths={paths} />
+    </span>
+  )
+}
+
+function TaskItemActualPanel({
+  item,
+  actualValue,
+  isBelowMinimum,
+  isSaved,
+  canSave,
+  onValueChange,
+  onSave,
+}: {
+  item: ProductionTaskItem
+  actualValue: string
+  isBelowMinimum: boolean
+  isSaved: boolean
+  canSave: boolean
+  onValueChange: (value: string) => void
+  onSave?: (actualQuantity: number) => void | Promise<void>
+}) {
+  const [saving, setSaving] = useState(false)
+  const actualNumber = Number(actualValue)
+  const canSubmit =
+    canSave &&
+    actualValue !== '' &&
+    Number.isFinite(actualNumber) &&
+    actualNumber >= 0 &&
+    !isSaved
+
+  async function handleSave() {
+    if (!canSubmit || !onSave) {
+      return
+    }
+
+    setSaving(true)
+    try {
+      await onSave(actualNumber)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <span className="task-actual-input-wrap">
+      <div className="task-item-actual-editor">
+        <input
+          className={isBelowMinimum ? 'task-quantity-invalid' : ''}
+          type="number"
+          min={item.enforceMinimumQuantity ? item.requiredQuantity : 0}
+          placeholder={item.enforceMinimumQuantity ? `от ${item.requiredQuantity}` : 'Факт'}
+          value={actualValue}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        {canSave && (
+          <button
+            type="button"
+            className={`task-item-actual-save-btn ${isSaved ? 'saved' : ''}`}
+            disabled={!canSubmit || saving}
+            onClick={() => void handleSave()}
+          >
+            {saving ? '...' : isSaved ? 'Сохранено' : 'Сохранить'}
+          </button>
+        )}
+      </div>
+      {isBelowMinimum && (
+        <small className="task-minimum-error">Нельзя меньше {item.requiredQuantity}</small>
+      )}
+      {item.enforceMinimumQuantity && actualValue === '' && (
+        <small className="task-minimum-hint">Минимум: {item.requiredQuantity}</small>
+      )}
     </span>
   )
 }

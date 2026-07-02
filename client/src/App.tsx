@@ -66,6 +66,7 @@ import {
   getProductionTaskSummary,
   isNovinkaTask,
   matchesProductionCatalogProduct,
+  resolveTaskItemActualQuantity,
   sortProductionTasksByUrgency,
   toDatetimeLocalValue,
 } from './features/production/lib/taskUtils'
@@ -5550,6 +5551,31 @@ function App() {
     await loadProductionFiles(productionSearch)
   }
 
+  async function saveProductionTaskItemActualQuantity(
+    taskId: string,
+    item: ProductionTaskItem,
+    actualQuantity: number,
+  ) {
+    const response = await productionApi.saveProductionTaskItemActualQuantity(
+      token,
+      taskId,
+      item.id,
+      actualQuantity,
+    )
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить факт'))
+      return
+    }
+
+    setActualQuantities((current) => ({
+      ...current,
+      [item.id]: String(actualQuantity),
+    }))
+    setTaskStatus(`Факт сохранён: ${item.productName} — ${actualQuantity} шт.`)
+    await loadProductionTasks()
+  }
+
   async function downloadProductionFile(id: string) {
     const response = await productionApi.downloadProductionFile(token, id)
 
@@ -6319,19 +6345,19 @@ function App() {
 
     const completedItems = taskItems.map((item) => ({
       id: item.id,
-      actualQuantity: Number(actualQuantities[item.id]),
+      actualQuantity: resolveTaskItemActualQuantity(item, actualQuantities),
     }))
 
     if (
       completedItems.length === 0 ||
       completedItems.some((item) => !Number.isFinite(item.actualQuantity) || item.actualQuantity < 0)
     ) {
-      setTaskStatus('Укажите фактическое количество по каждому товару')
+      setTaskStatus('Сохраните фактическое количество по каждому товару')
       return
     }
 
     for (const item of taskItems) {
-      const actualQuantity = Number(actualQuantities[item.id])
+      const actualQuantity = resolveTaskItemActualQuantity(item, actualQuantities)
       if (item.enforceMinimumQuantity && actualQuantity < item.requiredQuantity) {
         setTaskStatus(`По «${item.productName}» факт не может быть меньше ${item.requiredQuantity}`)
         return
@@ -8097,6 +8123,7 @@ function App() {
                   onOpenFiles={openProductionFilesModal}
                   onUploadTaskItemFile={uploadProductionFileForTaskItem}
                   onSaveTaskItemFilePath={saveProductionTaskItemFilePath}
+                  onSaveTaskItemActualQuantity={saveProductionTaskItemActualQuantity}
                   onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                 />
               )}

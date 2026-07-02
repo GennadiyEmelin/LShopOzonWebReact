@@ -425,6 +425,90 @@ public static class ProductionEndpoints
                 taskItem.FilePath));
         }).RequireAuthorization();
 
+        app.MapPut("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/actual-quantity", async (
+            Guid taskId,
+            Guid itemId,
+            UpdateProductionTaskItemActualQuantityRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Production))
+            {
+                return Results.Forbid();
+            }
+
+            if (request.ActualQuantity < 0)
+            {
+                return Results.BadRequest("Фактическое количество не может быть меньше нуля.");
+            }
+
+            var task = await db.ProductionTasks
+                .Include(entry => entry.Items)
+                .FirstOrDefaultAsync(entry => entry.Id == taskId);
+            if (task is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (task.Status != ProductionTaskStatuses.InProgress)
+            {
+                return Results.BadRequest("Факт можно сохранить только для задачи в работе.");
+            }
+
+            if (ProductionTaskResponses.NormalizeTaskType(task.TaskType) == ProductionTaskTypes.Novinka)
+            {
+                return Results.BadRequest("Для задач новинок фактическое количество не требуется.");
+            }
+
+            ProductionTaskItem? taskItem;
+            if (task.Items.Count == 0 && task.Id == itemId)
+            {
+                task.ActualQuantity = request.ActualQuantity;
+                taskItem = new ProductionTaskItem
+                {
+                    Id = task.Id,
+                    OzonProductId = task.OzonProductId,
+                    OfferId = task.OfferId,
+                    ProductName = task.ProductName,
+                    RequiredQuantity = task.RequiredQuantity,
+                    ActualQuantity = request.ActualQuantity
+                };
+            }
+            else
+            {
+                taskItem = task.Items.FirstOrDefault(item => item.Id == itemId);
+                if (taskItem is null)
+                {
+                    return Results.NotFound();
+                }
+
+                taskItem.ActualQuantity = request.ActualQuantity;
+                task.ActualQuantity = task.Items.Sum(item => item.ActualQuantity ?? 0);
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Факт по товару в задаче",
+                "ProductionTaskItem",
+                taskItem.Id.ToString(),
+                $"{taskItem.ProductName}: {request.ActualQuantity} шт.");
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
+
+            return Results.Ok(new ProductionTaskItemListItem(
+                taskItem.Id,
+                taskItem.OzonProductId,
+                taskItem.OfferId,
+                taskItem.ProductName,
+                taskItem.ProductLink,
+                taskItem.RequiredQuantity,
+                taskItem.ActualQuantity,
+                taskItem.EnforceMinimumQuantity,
+                taskItem.FilePath));
+        }).RequireAuthorization();
+
         app.MapDelete("/api/production/tasks/{taskId:guid}/items/{itemId:guid}/file-path", async (
             Guid taskId,
             Guid itemId,
@@ -1305,6 +1389,12 @@ public static class ProductionEndpoints
                     {
                         return Results.BadRequest(
                             $"Фактическое количество по «{taskItem.ProductName}» не может быть меньше {taskItem.RequiredQuantity}.");
+                    }
+
+                    if (taskItem.ActualQuantity is null)
+                    {
+                        return Results.BadRequest(
+                            $"Сохраните фактическое количество по «{taskItem.ProductName}» перед завершением задачи.");
                     }
                 }
 
