@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace LShopOzonWebReact.Api.Marketplaces;
 
@@ -40,33 +41,48 @@ public sealed class SatuProductSyncCoordinator(IServiceScopeFactory scopeFactory
         var repository = scope.ServiceProvider.GetRequiredService<SatuProductRepository>();
         var normalizedShopId = shopId.Trim();
 
-        var state = await db.SatuSyncStates
-            .AsNoTracking()
-            .FirstOrDefaultAsync(entry => entry.ShopId == normalizedShopId, cancellationToken);
-
-        var localCount = await repository.GetActiveProductCountAsync(normalizedShopId, cancellationToken);
-
-        if (state is null)
+        try
         {
+            var state = await db.SatuSyncStates
+                .AsNoTracking()
+                .FirstOrDefaultAsync(entry => entry.ShopId == normalizedShopId, cancellationToken);
+
+            var localCount = await repository.GetActiveProductCountAsync(normalizedShopId, cancellationToken);
+
+            if (state is null)
+            {
+                return new SatuSyncStatusResponse(
+                    SatuSyncStatuses.NotStarted,
+                    null,
+                    null,
+                    0,
+                    0,
+                    null,
+                    false,
+                    localCount);
+            }
+
             return new SatuSyncStatusResponse(
-                SatuSyncStatuses.NotStarted,
-                null,
-                null,
-                0,
-                0,
-                null,
-                false,
+                state.Status,
+                state.LastSyncStartedAt,
+                state.LastSyncCompletedAt,
+                state.TotalProducts,
+                state.SyncedProducts,
+                state.ErrorMessage,
+                state.IsFullSync,
                 localCount);
         }
-
-        return new SatuSyncStatusResponse(
-            state.Status,
-            state.LastSyncStartedAt,
-            state.LastSyncCompletedAt,
-            state.TotalProducts,
-            state.SyncedProducts,
-            state.ErrorMessage,
-            state.IsFullSync,
-            localCount);
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return new SatuSyncStatusResponse(
+                SatuSyncStatuses.Failed,
+                null,
+                null,
+                0,
+                0,
+                "Таблицы каталога SATU ещё не созданы. Перезапустите приложение или обратитесь к администратору.",
+                false,
+                0);
+        }
     }
 }

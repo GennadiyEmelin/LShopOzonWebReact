@@ -1,9 +1,13 @@
+using LShopOzonWebReact.Api.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace LShopOzonWebReact.Api.Migrations
 {
+    [DbContext(typeof(AppDbContext))]
+    [Migration("20260702120000_SatuProductCatalog")]
     /// <inheritdoc />
     public partial class SatuProductCatalog : Migration
     {
