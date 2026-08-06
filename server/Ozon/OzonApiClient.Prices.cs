@@ -383,3 +383,104 @@ public record OzonProductPriceInfo(
     string CurrencyCode,
     decimal? VolumeWeight,
     string RawCommissionsJson);
+
+public partial class OzonApiClient
+{
+    /// <summary>
+    /// Названия категорий из дерева Ozon: id → человекочитаемое имя.
+    ///
+    /// Нужно, чтобы в ручном режиме калькулятора был выбор «Кружки», а не
+    /// «Категория 17027899». Если метод недоступен, возвращаем пустой словарь —
+    /// справочник просто останется с номерами, ничего не сломается.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<long, string>> GetCategoryNamesAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureConfigured();
+
+        var names = new Dictionary<long, string>();
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/description-category/tree");
+            request.Headers.Add("Client-Id", _credentials.ClientId);
+            request.Headers.Add("Api-Key", _credentials.ApiKey);
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(new { language = "RU" }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return names;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(content);
+
+            CollectCategoryNames(document.RootElement, names, string.Empty);
+        }
+        catch (Exception)
+        {
+            // Названия — украшение, а не данные расчёта. Молча возвращаем что есть.
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// Обходит дерево рекурсивно. Структуру ответа не знаем наверняка,
+    /// поэтому ищем по именам полей, а не по фиксированному пути.
+    /// </summary>
+    private static void CollectCategoryNames(
+        JsonElement element,
+        Dictionary<long, string> names,
+        string parentPath)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+            {
+                CollectCategoryNames(child, names, parentPath);
+            }
+
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        var currentName = element.TryGetProperty("category_name", out var nameElement)
+            ? nameElement.GetString() ?? string.Empty
+            : element.TryGetProperty("type_name", out var typeName)
+                ? typeName.GetString() ?? string.Empty
+                : string.Empty;
+
+        // Полный путь читается лучше: «Посуда / Кружки» вместо просто «Кружки».
+        var fullPath = string.IsNullOrWhiteSpace(currentName)
+            ? parentPath
+            : string.IsNullOrWhiteSpace(parentPath)
+                ? currentName
+                : $"{parentPath} / {currentName}";
+
+        if (element.TryGetProperty("description_category_id", out var idElement)
+            && ReadOptionalNumber(element, "description_category_id") is { } rawId
+            && rawId > 0
+            && !string.IsNullOrWhiteSpace(fullPath))
+        {
+            names[(long)rawId] = fullPath.Length > 500 ? fullPath[..500] : fullPath;
+            _ = idElement;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
+            {
+                CollectCategoryNames(property.Value, names, fullPath);
+            }
+        }
+    }
+}

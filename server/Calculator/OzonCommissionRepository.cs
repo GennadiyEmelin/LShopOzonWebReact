@@ -84,7 +84,9 @@ public class OzonCommissionRepository(AppDbContext db)
     /// Пересобирает справочник «категория → комиссия» по собственному каталогу.
     /// Строки с IsManualOverride не трогаются: их задал человек.
     /// </summary>
-    public async Task<int> RebuildCategoryAggregateAsync(CancellationToken cancellationToken)
+    public async Task<int> RebuildCategoryAggregateAsync(
+        IReadOnlyDictionary<long, string> categoryNames,
+        CancellationToken cancellationToken)
     {
         var aggregates = await db.OzonCommissionSnapshots
             .AsNoTracking()
@@ -124,11 +126,24 @@ public class OzonCommissionRepository(AppDbContext db)
             }
             else if (category.IsManualOverride)
             {
-                // Значение задано вручную — обновляем только размер выборки.
+                // Значение задано вручную — обновляем только размер выборки и название.
+                if (categoryNames.TryGetValue(item.CategoryId, out var manualName)
+                    && !string.IsNullOrWhiteSpace(manualName))
+                {
+                    category.CategoryName = manualName;
+                }
+
                 category.SampleSize = item.Count;
                 category.UpdatedAt = now;
                 updated++;
                 continue;
+            }
+
+            // Название могло появиться позже — заполняем, если пришло.
+            if (categoryNames.TryGetValue(item.CategoryId, out var categoryName)
+                && !string.IsNullOrWhiteSpace(categoryName))
+            {
+                category.CategoryName = categoryName;
             }
 
             category.AvgSalesPercentFbo = Math.Round(item.AvgFbo, 2);

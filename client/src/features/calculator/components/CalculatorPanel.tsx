@@ -508,12 +508,16 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                     })
                   }}
                 >
-                  <option value="">— выбрать или ввести комиссию вручную —</option>
+                  <option value="">
+                  Не выбрано — можно просто вписать комиссию в поле ниже
+                </option>
                   {categories.map((category) => (
                     <option key={category.categoryId} value={category.categoryId}>
-                      {category.categoryName || `Категория ${category.categoryId}`}
-                      {` · ${scheme === 'fbo' ? category.salesPercentFbo : category.salesPercentFbs} %`}
-                      {category.isManualOverride ? ' (вручную)' : ` (по ${category.sampleSize} тов.)`}
+                      {category.categoryName || `Без названия (id ${category.categoryId})`}
+                      {` — комиссия ${scheme === 'fbo' ? category.salesPercentFbo : category.salesPercentFbs} %`}
+                      {category.isManualOverride
+                        ? ', задана вручную'
+                        : `, посчитана по ${category.sampleSize} вашим товарам`}
                     </option>
                   ))}
                 </select>

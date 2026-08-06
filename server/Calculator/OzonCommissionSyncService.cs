@@ -1,4 +1,4 @@
-using LShopOzonWebReact.Api.Data;
+﻿using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
 using Microsoft.EntityFrameworkCore;
@@ -71,7 +71,15 @@ public class OzonCommissionSyncService(
                 await db.SaveChangesAsync(cancellationToken);
             }
 
-            var categories = await repository.RebuildCategoryAggregateAsync(cancellationToken);
+            // Названия категорий — отдельный вызов. Если недоступен,
+            // справочник останется с номерами, но расчёт не пострадает.
+            var categoryNames = await ozonApiClient.GetCategoryNamesAsync(cancellationToken);
+            if (categoryNames.Count == 0)
+            {
+                logger.LogWarning("Названия категорий Ozon получить не удалось — останутся номера");
+            }
+
+            var categories = await repository.RebuildCategoryAggregateAsync(categoryNames, cancellationToken);
 
             state.Status = OzonCommissionSyncStatuses.Completed;
             state.LastSyncCompletedAt = DateTimeOffset.UtcNow;
