@@ -25,8 +25,8 @@ type CalculatorPanelProps = {
 
 const defaultSettings: CalculatorSettings = {
   acquiringPercent: 1.5,
-  taxMode: 'usn_income',
-  taxPercent: 6,
+  taxMode: 'none',
+  taxPercent: 0,
   buyoutRatePercent: 90,
   logisticsRatePerLiter: 0,
   logisticsBaseAmount: 0,

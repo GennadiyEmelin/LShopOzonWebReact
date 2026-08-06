@@ -29,9 +29,13 @@ public class CalculatorSettings
     /// <summary>Эквайринг, %. Используется, если Ozon не вернул его по товару.</summary>
     public decimal AcquiringPercent { get; set; } = 1.5m;
 
-    public string TaxMode { get; set; } = CalculatorTaxModes.UsnIncome;
+    /// <summary>
+    /// По умолчанию налог не учитываем: ставка и режим зависят от страны
+    /// и формы регистрации продавца, угадывать их нельзя.
+    /// </summary>
+    public string TaxMode { get; set; } = CalculatorTaxModes.None;
 
-    public decimal TaxPercent { get; set; } = 6m;
+    public decimal TaxPercent { get; set; }
 
     /// <summary>
     /// Процент выкупа. Обратная логистика применяется к невыкупленной доле:
