@@ -14,6 +14,10 @@ export type CalculatorSettings = {
   advertisingPercent: number
   extraCostFixed: number
   defaultScheme: CalculatorScheme
+  /** Задержка выплаты от конца недельного периода, недель. */
+  payoutDelayWeeks: number
+  /** День недели выплаты: 0 = воскресенье, 3 = среда. */
+  payoutDayOfWeek: number
   updatedAt: string
 }
 

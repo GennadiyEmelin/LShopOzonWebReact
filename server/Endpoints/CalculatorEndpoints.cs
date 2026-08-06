@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using LShopOzonWebReact.Api.Calculator;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Models;
@@ -62,6 +62,8 @@ public static class CalculatorEndpoints
                     AdvertisingPercent = request.AdvertisingPercent,
                     ExtraCostFixed = request.ExtraCostFixed,
                     DefaultScheme = NormalizeScheme(request.DefaultScheme),
+                    PayoutDelayWeeks = Math.Clamp(request.PayoutDelayWeeks, 0, 12),
+                    PayoutDayOfWeek = Math.Clamp(request.PayoutDayOfWeek, 0, 6),
                 },
                 cancellationToken);
 
@@ -443,6 +445,8 @@ public static class CalculatorEndpoints
             settings.AdvertisingPercent,
             settings.ExtraCostFixed,
             settings.DefaultScheme,
+            settings.PayoutDelayWeeks,
+            settings.PayoutDayOfWeek,
             settings.UpdatedAt);
 }
 
@@ -457,7 +461,9 @@ public record CalculatorSettingsRequest(
     decimal LogisticsBaseAmount,
     decimal AdvertisingPercent,
     decimal ExtraCostFixed,
-    string? DefaultScheme);
+    string? DefaultScheme,
+    int PayoutDelayWeeks,
+    int PayoutDayOfWeek);
 
 public record CalculatorSettingsResponse(
     decimal AcquiringPercent,
@@ -469,6 +475,8 @@ public record CalculatorSettingsResponse(
     decimal AdvertisingPercent,
     decimal ExtraCostFixed,
     string DefaultScheme,
+    int PayoutDelayWeeks,
+    int PayoutDayOfWeek,
     DateTimeOffset UpdatedAt);
 
 /// <summary>

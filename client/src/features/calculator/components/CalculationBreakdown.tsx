@@ -67,9 +67,11 @@ export function CalculationBreakdown({ result, showRange, currency }: Calculatio
           </strong>
         </div>
         <div className="calc-metric">
-          <span>ROI</span>
+          <span title="Сколько прибыли приносит каждый вложенный тенге себестоимости">
+            Отдача на вложения
+          </span>
           <strong className={scenario.roiPercent >= 0 ? 'calc-profit' : 'calc-loss'}>
-            {scenario.roiPercent === 0 ? '—' : formatPercent(scenario.roiPercent)}
+            {scenario.roiPercent === 0 ? 'нужна себестоимость' : formatPercent(scenario.roiPercent)}
           </strong>
         </div>
         <div className="calc-metric">

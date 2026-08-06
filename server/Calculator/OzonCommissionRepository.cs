@@ -1,4 +1,4 @@
-using LShopOzonWebReact.Api.Data;
+﻿using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Models;
 using LShopOzonWebReact.Api.Ozon;
 using Microsoft.EntityFrameworkCore;
@@ -214,6 +214,8 @@ public class OzonCommissionRepository(AppDbContext db)
         settings.AdvertisingPercent = incoming.AdvertisingPercent;
         settings.ExtraCostFixed = incoming.ExtraCostFixed;
         settings.DefaultScheme = incoming.DefaultScheme;
+        settings.PayoutDelayWeeks = incoming.PayoutDelayWeeks;
+        settings.PayoutDayOfWeek = incoming.PayoutDayOfWeek;
         settings.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);

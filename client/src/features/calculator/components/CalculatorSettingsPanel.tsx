@@ -11,6 +11,14 @@ type CalculatorSettingsPanelProps = {
   currency: string
 }
 
+const payoutDays = [
+  { value: 1, label: 'понедельник' },
+  { value: 2, label: 'вторник' },
+  { value: 3, label: 'среда' },
+  { value: 4, label: 'четверг' },
+  { value: 5, label: 'пятница' },
+]
+
 const taxModes: { value: CalculatorTaxMode; label: string }[] = [
   { value: 'usn_income', label: 'УСН «Доходы» — налог с оборота' },
   { value: 'usn_income_minus_expenses', label: 'УСН «Доходы минус расходы»' },
@@ -140,6 +148,46 @@ export function CalculatorSettingsPanel({
             onChange={(event) => update({ logisticsRatePerLiter: Number(event.target.value) })}
           />
           <small>Только для ручного режима</small>
+        </label>
+      </div>
+
+      <div className="calc-settings-head" style={{ marginTop: 18 }}>
+        <h3>График выплат</h3>
+        <p>
+          Ozon не отдаёт плановую дату по API, а графики у кабинетов разные.
+          В РФ стандартный — среда через 3 недели после конца недельного периода.
+        </p>
+      </div>
+
+      <div className="calc-settings-grid">
+        <label>
+          <span>Задержка выплаты, недель</span>
+          <input
+            type="number"
+            step="1"
+            min="0"
+            max="12"
+            value={settings.payoutDelayWeeks}
+            disabled={!canEdit}
+            onChange={(event) => update({ payoutDelayWeeks: Number(event.target.value) })}
+          />
+          <small>Считается от конца недельного периода</small>
+        </label>
+
+        <label>
+          <span>День выплаты</span>
+          <select
+            value={settings.payoutDayOfWeek}
+            disabled={!canEdit}
+            onChange={(event) => update({ payoutDayOfWeek: Number(event.target.value) })}
+          >
+            {payoutDays.map((day) => (
+              <option key={day.value} value={day.value}>
+                {day.label}
+              </option>
+            ))}
+          </select>
+          <small>Если даты разъезжаются с кабинетом — поправьте здесь</small>
         </label>
       </div>
 

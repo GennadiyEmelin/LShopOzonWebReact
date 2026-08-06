@@ -293,6 +293,12 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Property<decimal>("LogisticsRatePerLiter")
                         .HasColumnType("numeric");
 
+                    b.Property<int>("PayoutDayOfWeek")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("PayoutDelayWeeks")
+                        .HasColumnType("integer");
+
                     b.Property<string>("TaxMode")
                         .IsRequired()
                         .HasMaxLength(48)

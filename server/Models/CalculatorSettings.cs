@@ -1,4 +1,4 @@
-namespace LShopOzonWebReact.Api.Models;
+﻿namespace LShopOzonWebReact.Api.Models;
 
 public static class CalculatorTaxModes
 {
@@ -53,6 +53,16 @@ public class CalculatorSettings
 
     /// <summary>Схема по умолчанию в интерфейсе.</summary>
     public string DefaultScheme { get; set; } = CalculatorSchemes.Fbo;
+
+    /// <summary>
+    /// Задержка выплаты от конца расчётного периода, недель.
+    /// У российского и казахстанского кабинетов графики разные,
+    /// а Ozon плановую дату по API не отдаёт — поэтому настройка, а не константа.
+    /// </summary>
+    public int PayoutDelayWeeks { get; set; } = 3;
+
+    /// <summary>День недели, в который Ozon переводит деньги. 0 = воскресенье, 3 = среда.</summary>
+    public int PayoutDayOfWeek { get; set; } = 3;
 
     public DateTimeOffset UpdatedAt { get; set; }
 }

@@ -1,5 +1,6 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Claims;
+using LShopOzonWebReact.Api.Calculator;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Ozon;
 using LShopOzonWebReact.Api.Security;
@@ -14,6 +15,7 @@ public static class FinanceEndpoints
             string? dateFrom,
             string? dateTo,
             OzonApiClient ozonApi,
+            OzonCommissionRepository repository,
             AppDbContext db,
             ClaimsPrincipal principal,
             CancellationToken cancellationToken) =>
@@ -42,7 +44,17 @@ public static class FinanceEndpoints
 
             try
             {
-                var report = await ozonApi.GetPayoutReportAsync(from, to, cancellationToken);
+                // График выплат берём из настроек: у РФ и KZ он разный,
+                // а Ozon плановую дату по API не отдаёт.
+                var settings = await repository.GetSettingsAsync(cancellationToken);
+                var payoutDay = (DayOfWeek)Math.Clamp(settings.PayoutDayOfWeek, 0, 6);
+
+                var report = await ozonApi.GetPayoutReportAsync(
+                    from,
+                    to,
+                    settings.PayoutDelayWeeks,
+                    payoutDay,
+                    cancellationToken);
                 return Results.Ok(report);
             }
             catch (InvalidOperationException exception)

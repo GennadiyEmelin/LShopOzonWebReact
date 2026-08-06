@@ -18,29 +18,23 @@ public partial class OzonApiClient
     private const int CashFlowPageSize = 100;
 
     /// <summary>
-    /// Стандартный график выплат Ozon: расчёт идёт по неделям, деньги уходят
-    /// по средам с задержкой в три недели.
+    /// Плановая дата выплаты: первый нужный день недели строго после конца
+    /// периода плюс заданная задержка.
     ///
-    /// Плановой даты в API нет, поэтому считаем сами. Правило сверено с кабинетом
-    /// на пяти периодах подряд — совпало во всех: например, неделя 06–12.07
-    /// выплачена в среду 05.08, а 20–26.07 запланирована на 19.08.
+    /// Ozon плановую дату по API не отдаёт, а графики у кабинетов разные:
+    /// в РФ это среда через 3 недели (сверено, 5 совпадений из 5),
+    /// в KZ задержка короче и день недели плавает. Поэтому параметры
+    /// вынесены в настройки, а не зашиты в код.
     /// </summary>
-    private const int PayoutDelayWeeks = 3;
-
-    private static readonly DayOfWeek PayoutDayOfWeek = DayOfWeek.Wednesday;
-
-    /// <summary>
-    /// Первая среда строго после конца периода плюс три недели.
-    /// </summary>
-    private static DateOnly CalculatePayoutDate(DateOnly periodEnd)
+    private static DateOnly CalculatePayoutDate(DateOnly periodEnd, int delayWeeks, DayOfWeek payoutDay)
     {
-        var daysUntilPayday = ((int)PayoutDayOfWeek - (int)periodEnd.DayOfWeek + 7) % 7;
+        var daysUntilPayday = ((int)payoutDay - (int)periodEnd.DayOfWeek + 7) % 7;
         if (daysUntilPayday == 0)
         {
             daysUntilPayday = 7;
         }
 
-        return periodEnd.AddDays(daysUntilPayday + PayoutDelayWeeks * 7);
+        return periodEnd.AddDays(daysUntilPayday + Math.Max(0, delayWeeks) * 7);
     }
 
     /// <summary>
@@ -61,6 +55,8 @@ public partial class OzonApiClient
     public async Task<OzonPayoutReport> GetPayoutReportAsync(
         DateOnly dateFrom,
         DateOnly dateTo,
+        int payoutDelayWeeks,
+        DayOfWeek payoutDayOfWeek,
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
@@ -145,7 +141,7 @@ public partial class OzonApiClient
                 Math.Abs(flow.ServicesAmount),
                 paid,
                 pending,
-                CalculatePayoutDate(flow.PeriodEnd),
+                CalculatePayoutDate(flow.PeriodEnd, payoutDelayWeeks, payoutDayOfWeek),
                 detail?.BeginBalance ?? 0m,
                 detail?.EndBalance ?? 0m,
                 detail?.ServiceItems ?? Array.Empty<OzonPayoutServiceItem>()));

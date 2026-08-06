@@ -33,6 +33,8 @@ const defaultSettings: CalculatorSettings = {
   advertisingPercent: 0,
   extraCostFixed: 0,
   defaultScheme: 'fbo',
+  payoutDelayWeeks: 3,
+  payoutDayOfWeek: 3,
   updatedAt: '',
 }
 
@@ -682,9 +684,10 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                       <button
                         type="button"
                         className="secondary"
+                        title="Подставит эту цену в поле расчёта выше. В Ozon ничего не изменится."
                         onClick={() => setPrice(requiredPrice)}
                       >
-                        Подставить
+                        Подставить в расчёт
                       </button>
                     </>
                   )}
