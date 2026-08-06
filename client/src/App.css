@@ -10614,25 +10614,6 @@ small .offer-id-cell {
   background: transparent;
 }
 
-.calc-scheme-switch {
-  display: inline-flex;
-  border: 1px solid #cfd6e3;
-  border-radius: 8px;
-  overflow: hidden;
-}
-.calc-scheme-switch button {
-  border: none;
-  padding: 9px 16px;
-  background: #ffffff;
-  color: #344054;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-}
-.calc-scheme-switch button.active {
-  background: #2563eb;
-  color: #ffffff;
-}
 
 .calc-sync-bar {
   display: flex;
@@ -11156,4 +11137,199 @@ small .offer-id-cell {
 .fin-details-item strong {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+
+/* ---- Кнопки калькулятора и финансов в стиле приложения ---- */
+
+.calc-panel button,
+.fin-panel button {
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 14px;
+  color: #ffffff;
+  background: #0f766e;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.calc-panel button:hover,
+.fin-panel button:hover {
+  background: #0b5f59;
+}
+.calc-panel button:disabled,
+.fin-panel button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.calc-panel button.secondary,
+.fin-panel button.secondary {
+  border: 1px solid #cfd6e3;
+  color: #1f2a44;
+  background: #ffffff;
+}
+.calc-panel button.secondary:hover,
+.fin-panel button.secondary:hover {
+  border-color: #0f766e;
+  color: #0f766e;
+  background: #ffffff;
+}
+
+/* Переключатели режима и схемы — как .inner-tabs */
+.calc-mode-tabs button,
+.calc-scheme-switch button {
+  border: 1px solid #cfd6e3;
+  border-radius: 8px;
+  padding: 9px 14px;
+  color: #344054;
+  background: #ffffff;
+}
+.calc-mode-tabs button:hover,
+.calc-scheme-switch button:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+  background: #ffffff;
+}
+.calc-mode-tabs button.active,
+.calc-scheme-switch button.active {
+  border-color: #2563eb;
+  color: #ffffff;
+  background: #2563eb;
+}
+.calc-mode-tabs button.active:hover,
+.calc-scheme-switch button.active:hover {
+  color: #ffffff;
+  background: #2563eb;
+}
+.calc-scheme-switch {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* Товары в списке — не кнопки, сбрасываем общий стиль */
+.calc-panel .calc-product-row {
+  border: 1px solid transparent;
+  color: inherit;
+  background: transparent;
+  font-weight: 400;
+  text-align: left;
+}
+.calc-panel .calc-product-row:hover {
+  background: #f2f5fa;
+}
+.calc-panel .calc-product-row.active {
+  border-color: #2563eb;
+  background: #eff4ff;
+}
+
+/* ---- Финансы: компактная таблица без разъезда ---- */
+
+.fin-table {
+  table-layout: fixed;
+  min-width: 900px;
+}
+.fin-table th,
+.fin-table td {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.fin-table th:first-child,
+.fin-table td:first-child {
+  width: 150px;
+}
+.fin-table th:last-child,
+.fin-table td:last-child {
+  width: 130px;
+}
+.fin-summary {
+  margin-bottom: 4px;
+}
+.fin-badge {
+  white-space: nowrap;
+}
+.fin-payout-date {
+  display: block;
+  margin-top: 2px;
+  color: #98a2b3;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* ---- Финансы: блок выплат ---- */
+
+.fin-payouts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.fin-payouts-block {
+  border: 1px solid #e4e8f0;
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  background: #ffffff;
+}
+.fin-payouts-block h3 {
+  margin: 0 0 12px;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.fin-payouts-empty {
+  color: #98a2b3;
+  font-size: 13px;
+}
+.fin-payout-line {
+  padding: 8px 0;
+  border-bottom: 1px solid #f4f6fa;
+}
+.fin-payout-line:last-child {
+  border-bottom: none;
+}
+.fin-payout-sum {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #101828;
+}
+.fin-payout-pending .fin-payout-sum {
+  color: #b54708;
+}
+.fin-payout-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.fin-payout-period {
+  color: #667085;
+  font-size: 12px;
+}
+.fin-payouts-balance .fin-balance-value {
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #101828;
+  margin-bottom: 4px;
+}
+
+.fin-details-toggle {
+  border: 1px solid #e4e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+.fin-details-toggle > summary {
+  padding: 12px 16px;
+  color: #344054;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+.fin-details-toggle .fin-table-wrap {
+  border: 0;
+  border-top: 1px solid #edf0f5;
+  border-radius: 0;
 }

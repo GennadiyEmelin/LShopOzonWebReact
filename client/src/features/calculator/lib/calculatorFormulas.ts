@@ -264,7 +264,27 @@ export function calculatePriceForMargin(
   return round2(numerator / denominator)
 }
 
-export function formatMoney(value: number, currency = '₽') {
+/**
+ * Символ валюты по коду из Ozon API.
+ * Магазин работает в KZT, поэтому тенге — значение по умолчанию.
+ */
+export function currencySymbol(code?: string | null) {
+  switch ((code ?? '').toUpperCase()) {
+    case 'RUB':
+      return '₽'
+    case 'USD':
+      return '$'
+    case 'EUR':
+      return '€'
+    case 'BYN':
+      return 'Br'
+    case 'KZT':
+    default:
+      return '₸'
+  }
+}
+
+export function formatMoney(value: number, currency = '₸') {
   return `${value.toLocaleString('ru-RU', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,

@@ -19,6 +19,8 @@ type PayoutPeriod = {
   paidOut: number
   /** Начислено к выплате — деньги, которые ещё придут. */
   pendingPayout: number
+  /** Дата выплаты по стандартному графику: среда через 3 недели после конца периода. */
+  estimatedPayoutDate: string | null
   beginBalance: number
   endBalance: number
   serviceItems: PayoutServiceItem[]
@@ -41,6 +43,13 @@ type FinancesPanelProps = {
 
 function money(value: number, currency: string) {
   return `${Math.round(value).toLocaleString('ru-RU')} ${currency}`
+}
+
+function shortDate(value: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long' })
 }
 
 export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
@@ -91,116 +100,127 @@ export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
   }
 
   const currency = report.currencyCode
+  const pending = report.periods.filter((period) => period.pendingPayout > 0)
+  const paid = report.periods.filter((period) => period.paidOut > 0)
 
   return (
     <div className="fin-panel">
-      <div className="fin-summary">
-        <div className="fin-card fin-card-pending">
-          <span>Ожидается к выплате</span>
-          <strong>{money(report.pendingTotal, currency)}</strong>
-          <small>начислено, но ещё не перечислено</small>
+      {/* Главное — сколько ещё придёт и когда */}
+      <div className="fin-payouts">
+        <div className="fin-payouts-block">
+          <h3>Ожидают выплаты</h3>
+          {pending.length === 0 ? (
+            <div className="fin-payouts-empty">Нет начислений, ожидающих перечисления.</div>
+          ) : (
+            pending.map((period) => (
+              <div className="fin-payout-line fin-payout-pending" key={`p-${period.periodBegin}`}>
+                <div className="fin-payout-sum">{money(period.pendingPayout, currency)}</div>
+                <div className="fin-payout-meta">
+                  <span className="fin-badge fin-badge-pending">
+                    выплата {shortDate(period.estimatedPayoutDate)}
+                  </span>
+                  <span className="fin-payout-period">за период {period.label}</span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
-        <div className="fin-card fin-card-paid">
-          <span>Выплачено за период</span>
-          <strong>{money(report.paidTotal, currency)}</strong>
-          <small>фактически пришло на счёт</small>
+        <div className="fin-payouts-block">
+          <h3>Уже выплачено</h3>
+          {paid.length === 0 ? (
+            <div className="fin-payouts-empty">В выбранном периоде выплат не было.</div>
+          ) : (
+            paid.slice(0, 5).map((period) => (
+              <div className="fin-payout-line" key={`d-${period.periodBegin}`}>
+                <div className="fin-payout-sum">{money(period.paidOut, currency)}</div>
+                <div className="fin-payout-meta">
+                  <span className="fin-badge fin-badge-paid">выплачено</span>
+                  <span className="fin-payout-period">в период {period.label}</span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
-        <div className="fin-card">
-          <span>Баланс на конец</span>
-          <strong>
+        <div className="fin-payouts-block fin-payouts-balance">
+          <h3>Баланс Ozon</h3>
+          <div className="fin-balance-value">
             {report.currentBalance === null ? '—' : money(report.currentBalance, currency)}
-          </strong>
-          <small>по последнему периоду</small>
+          </div>
+          <span className="fin-payouts-empty">на конец последнего периода</span>
         </div>
       </div>
 
-      <div className="fin-table-wrap">
-        <table className="fin-table">
-          <thead>
-            <tr>
-              <th>Период</th>
-              <th className="fin-num">Продажи</th>
-              <th className="fin-num">Комиссия</th>
-              <th className="fin-num">Логистика</th>
-              <th className="fin-num">Услуги</th>
-              <th className="fin-num">Выплачено</th>
-              <th className="fin-num">К выплате</th>
-              <th className="fin-num">Баланс</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.periods.map((period) => {
-              const isOpen = expanded === period.periodBegin
-              const hasDetails = period.serviceItems.length > 0
+      {/* Детализация по неделям */}
+      <details className="fin-details-toggle" open>
+        <summary>Разбивка по неделям</summary>
 
-              return (
-                <Fragment key={period.periodBegin}>
-                  <tr
-                    className={`${period.pendingPayout > 0 ? 'fin-row-pending' : ''} ${
-                      hasDetails ? 'fin-row-clickable' : ''
-                    }`}
-                    onClick={() => hasDetails && setExpanded(isOpen ? null : period.periodBegin)}
-                  >
-                    <td>
-                      {hasDetails && <span className="fin-caret">{isOpen ? '▾' : '▸'}</span>}
-                      {period.label}
-                    </td>
-                    <td className="fin-num">{money(period.ordersAmount, currency)}</td>
-                    <td className="fin-num fin-negative">−{money(period.commission, currency)}</td>
-                    <td className="fin-num fin-negative">−{money(period.logistics, currency)}</td>
-                    <td className="fin-num fin-negative">−{money(period.services, currency)}</td>
-                    <td className="fin-num">
-                      {period.paidOut > 0 ? (
-                        <span className="fin-badge fin-badge-paid">
-                          {money(period.paidOut, currency)}
-                        </span>
-                      ) : (
-                        <span className="fin-dash">—</span>
-                      )}
-                    </td>
-                    <td className="fin-num">
-                      {period.pendingPayout > 0 ? (
-                        <span className="fin-badge fin-badge-pending">
-                          {money(period.pendingPayout, currency)}
-                        </span>
-                      ) : (
-                        <span className="fin-dash">—</span>
-                      )}
-                    </td>
-                    <td className="fin-num fin-total">{money(period.endBalance, currency)}</td>
-                  </tr>
+        <div className="fin-table-wrap">
+          <table className="fin-table">
+            <thead>
+              <tr>
+                <th>Период</th>
+                <th className="fin-num">Продажи</th>
+                <th className="fin-num">Комиссия</th>
+                <th className="fin-num">Логистика</th>
+                <th className="fin-num">Услуги</th>
+                <th className="fin-num">Баланс</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.periods.map((period) => {
+                const isOpen = expanded === period.periodBegin
+                const hasDetails = period.serviceItems.length > 0
 
-                  {isOpen && (
-                    <tr className="fin-details-row">
-                      <td colSpan={8}>
-                        <div className="fin-details">
-                          {period.serviceItems.map((item, index) => (
-                            <div className="fin-details-item" key={`${item.name}-${index}`}>
-                              <span>{item.name}</span>
-                              <strong className={item.amount < 0 ? 'fin-negative' : 'fin-positive'}>
-                                {item.amount < 0 ? '−' : '+'}
-                                {money(Math.abs(item.amount), currency)}
-                              </strong>
-                            </div>
-                          ))}
-                        </div>
+                return (
+                  <Fragment key={period.periodBegin}>
+                    <tr
+                      className={`${period.pendingPayout > 0 ? 'fin-row-pending' : ''} ${
+                        hasDetails ? 'fin-row-clickable' : ''
+                      }`}
+                      onClick={() => hasDetails && setExpanded(isOpen ? null : period.periodBegin)}
+                    >
+                      <td>
+                        {hasDetails && <span className="fin-caret">{isOpen ? '▾' : '▸'}</span>}
+                        {period.label}
                       </td>
+                      <td className="fin-num">{money(period.ordersAmount, currency)}</td>
+                      <td className="fin-num fin-negative">−{money(period.commission, currency)}</td>
+                      <td className="fin-num fin-negative">−{money(period.logistics, currency)}</td>
+                      <td className="fin-num fin-negative">−{money(period.services, currency)}</td>
+                      <td className="fin-num fin-total">{money(period.endBalance, currency)}</td>
                     </tr>
-                  )}
-                </Fragment>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+
+                    {isOpen && (
+                      <tr className="fin-details-row">
+                        <td colSpan={6}>
+                          <div className="fin-details">
+                            {period.serviceItems.map((item, index) => (
+                              <div className="fin-details-item" key={`${item.name}-${index}`}>
+                                <span>{item.name}</span>
+                                <strong className={item.amount < 0 ? 'fin-negative' : 'fin-positive'}>
+                                  {item.amount < 0 ? '−' : '+'}
+                                  {money(Math.abs(item.amount), currency)}
+                                </strong>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </details>
 
       <p className="fin-note">
-        Периоды приходят из Ozon как есть — недельные, с отдельным разрезом на границе месяца.
-        «К выплате» — сумма, которую Ozon начислил, но ещё не перечислил; она закрывает предыдущие
-        периоды и приходит примерно через неделю. «Выплачено» — деньги, фактически ушедшие на счёт
-        в этом периоде. Строки с раскрытием показывают, за что именно списаны услуги.
+        Стандартный график Ozon: расчёт по неделям, выплата по средам с задержкой в три недели.
+        Например, за неделю 6–12 июля деньги пришли в среду 5 августа. Даты в API не приходят —
+        считаются по этому правилу, сверено с кабинетом на пяти периодах подряд.
       </p>
     </div>
   )

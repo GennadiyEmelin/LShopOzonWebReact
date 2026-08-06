@@ -8,6 +8,7 @@ type CalculatorSettingsPanelProps = {
   onChange: (settings: CalculatorSettings) => void
   onSave: () => void
   onClose: () => void
+  currency: string
 }
 
 const taxModes: { value: CalculatorTaxMode; label: string }[] = [
@@ -24,6 +25,7 @@ export function CalculatorSettingsPanel({
   onChange,
   onSave,
   onClose,
+  currency,
 }: CalculatorSettingsPanelProps) {
   const update = (patch: Partial<CalculatorSettings>) => onChange({ ...settings, ...patch })
 
@@ -115,7 +117,7 @@ export function CalculatorSettingsPanel({
         </label>
 
         <label>
-          <span>Логистика: база, ₽</span>
+          <span>Логистика: база, {currency}</span>
           <input
             type="number"
             step="1"
@@ -128,7 +130,7 @@ export function CalculatorSettingsPanel({
         </label>
 
         <label>
-          <span>Логистика: за литр, ₽</span>
+          <span>Логистика: за литр, {currency}</span>
           <input
             type="number"
             step="1"

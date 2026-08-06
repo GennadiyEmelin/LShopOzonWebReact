@@ -5,13 +5,15 @@ type CalculationBreakdownProps = {
   result: CalculationResult
   /** Показывать вилку логистики: два сценария вместо одного. */
   showRange: boolean
+  /** Символ валюты магазина: ₸ для Казахстана, ₽ для России. */
+  currency: string
 }
 
 /**
  * Разложение цены по статьям расходов.
  * Каждая строка подписана источником — чтобы не гадать, откуда взялась цифра.
  */
-export function CalculationBreakdown({ result, showRange }: CalculationBreakdownProps) {
+export function CalculationBreakdown({ result, showRange, currency }: CalculationBreakdownProps) {
   const scenario = result.worst
   const hasRange = showRange && result.worst.profit !== result.best.profit
 
@@ -19,14 +21,14 @@ export function CalculationBreakdown({ result, showRange }: CalculationBreakdown
     <div className="calc-breakdown">
       <div className="calc-breakdown-row calc-breakdown-price">
         <span className="calc-breakdown-label">Цена продажи</span>
-        <span className="calc-breakdown-amount">{formatMoney(result.price)}</span>
+        <span className="calc-breakdown-amount">{formatMoney(result.price, currency)}</span>
         <span className="calc-breakdown-source" />
       </div>
 
       {scenario.lines.map((line) => (
         <div className="calc-breakdown-row" key={line.key}>
           <span className="calc-breakdown-label">{line.label}</span>
-          <span className="calc-breakdown-amount calc-negative">{formatMoney(line.amount)}</span>
+          <span className="calc-breakdown-amount calc-negative">{formatMoney(line.amount, currency)}</span>
           <span className="calc-breakdown-source" title={`Источник: ${line.source}`}>
             {line.source}
           </span>
@@ -35,7 +37,7 @@ export function CalculationBreakdown({ result, showRange }: CalculationBreakdown
 
       <div className="calc-breakdown-row calc-breakdown-payout">
         <span className="calc-breakdown-label">Выплата от Ozon</span>
-        <span className="calc-breakdown-amount">{formatMoney(scenario.ozonPayout)}</span>
+        <span className="calc-breakdown-amount">{formatMoney(scenario.ozonPayout, currency)}</span>
         <span className="calc-breakdown-source" />
       </div>
 
@@ -47,8 +49,8 @@ export function CalculationBreakdown({ result, showRange }: CalculationBreakdown
         <span className="calc-breakdown-label">Чистая прибыль</span>
         <span className="calc-breakdown-amount">
           {hasRange
-            ? `${formatMoney(scenario.profit)} — ${formatMoney(result.best.profit)}`
-            : formatMoney(scenario.profit)}
+            ? `${formatMoney(scenario.profit, currency)} — ${formatMoney(result.best.profit, currency)}`
+            : formatMoney(scenario.profit, currency)}
         </span>
         <span className="calc-breakdown-source">
           {hasRange ? 'вилка логистики Ozon' : ''}
@@ -73,7 +75,7 @@ export function CalculationBreakdown({ result, showRange }: CalculationBreakdown
         <div className="calc-metric">
           <span>Точка безубыточности</span>
           <strong>
-            {result.breakEvenPrice === null ? 'недостижима' : formatMoney(result.breakEvenPrice)}
+            {result.breakEvenPrice === null ? 'недостижима' : formatMoney(result.breakEvenPrice, currency)}
           </strong>
         </div>
       </div>

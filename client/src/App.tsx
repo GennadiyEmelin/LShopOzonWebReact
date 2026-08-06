@@ -1337,11 +1337,12 @@ const supplySubTabs = ['create', 'editor', 'all', 'archive', 'analytics', 'expen
 const analyticsSubTabs = ['summary', 'topProducts', 'noSales', 'production', 'internal', 'calculator', 'finances'] as const
 
 /**
- * Начало «всего периода» для кнопки быстрого выбора дат.
- * Ozon хранит финансовые операции ограниченный срок, поэтому уходить
- * дальше смысла нет — только лишние запросы в пустоту.
+ * Начало «всего периода» — дата старта продаж.
+ *
+ * Дальше не уходим намеренно: аналитика Ozon режется на окна по 28 дней,
+ * и по каждому идёт отдельный запрос. Чем длиннее диапазон, тем дольше грузится.
  */
-const ALL_PERIOD_START = '2024-01-01'
+const ALL_PERIOD_START = '2026-05-01'
 const productionSubTabs = ['products', 'tasks', 'inProgress', 'readyToShip', 'cancelled', 'completed', 'archive'] as const
 type SupplySubTab = (typeof supplySubTabs)[number]
 type AnalyticsSubTab = (typeof analyticsSubTabs)[number]
@@ -2788,6 +2789,12 @@ function App() {
   const [draftNovinkaItems, setDraftNovinkaItems] = useState<DraftNovinkaItem[]>([])
   const [novinkaProductName, setNovinkaProductName] = useState('')
   const [novinkaProductLink, setNovinkaProductLink] = useState('')
+
+  // Ручной ввод нового товара в задаче упаковки: товара ещё нет в продаже,
+  // поэтому ни артикула, ни product_id у него нет — только название и ссылка.
+  const [packagingNewName, setPackagingNewName] = useState('')
+  const [packagingNewLink, setPackagingNewLink] = useState('')
+  const [packagingNewQuantity, setPackagingNewQuantity] = useState('')
   const [novinkaTaskMarketplace, setNovinkaTaskMarketplace] = useState<NovinkaMarketplace>(() =>
     readShopRegion() === 'rf' ? 'ozon' : readKzMarketplace(),
   )
@@ -8054,6 +8061,9 @@ function App() {
     setSelectedTaskNovinkaOfferId('')
     setTaskQuantity('')
     setTaskNovinkaQuantity('')
+    setPackagingNewName('')
+    setPackagingNewLink('')
+    setPackagingNewQuantity('')
     setTaskDueAt('')
     setTaskEditorKind('production')
     setEditingTaskId(null)
@@ -8516,6 +8526,61 @@ function App() {
     setSelectedTaskProductId('')
     setTaskQuantity('')
     setTaskStatus('Товар добавлен в задачу')
+  }
+
+  /**
+   * Добавляет в задачу упаковки товар, которого ещё нет в продаже.
+   * Бэкенд принимает такую позицию по связке «название + ссылка»,
+   * когда ozonProductId и артикул пустые.
+   */
+  function addDraftPackagingNewItem() {
+    const productName = packagingNewName.trim()
+    const productLink = packagingNewLink.trim()
+    const quantity = Number(packagingNewQuantity)
+
+    if (!productName) {
+      setTaskFormStatus('Укажите наименование нового товара')
+      return
+    }
+
+    if (!productLink) {
+      setTaskFormStatus('Укажите ссылку на товар — без неё задачу не сохранить')
+      return
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setTaskFormStatus('Укажите количество товара')
+      return
+    }
+
+    const alreadyAdded = draftTaskItems.some(
+      (item) => item.productName.trim().toLowerCase() === productName.toLowerCase(),
+    )
+    if (alreadyAdded) {
+      setTaskFormStatus('Товар с таким названием уже добавлен в задачу')
+      return
+    }
+
+    setDraftTaskItems((current) => [
+      ...current,
+      {
+        tempId: createTempId(),
+        ozonProductId: 0,
+        offerId: '',
+        productName,
+        productLink,
+        imageUrl: '',
+        requiredQuantity: quantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+      },
+    ])
+
+    setPackagingNewName('')
+    setPackagingNewLink('')
+    setPackagingNewQuantity('')
+    setTaskFormStatus('')
+    setTaskStatus('Новый товар добавлен в задачу')
   }
 
   async function saveNovinkaTaskFromDraft() {
@@ -10639,6 +10704,57 @@ function App() {
                                 </div>
                               </div>
 
+                              {taskFormMode === 'packaging' && (
+                              <div className="supply-form-block supply-form-block-novinka task-novinka-create-block">
+                                <strong>Новый товар</strong>
+                                <span className="product-type-editor-hint">
+                                  Товара ещё нет в продаже — укажите наименование и ссылку.
+                                </span>
+                                <div className="novinka-task-fields">
+                                  <label className="novinka-task-field">
+                                    <span>Наименование товара</span>
+                                    <input
+                                      className="novinka-task-input"
+                                      placeholder="Введите название"
+                                      value={packagingNewName}
+                                      onChange={(event) => setPackagingNewName(event.target.value)}
+                                    />
+                                  </label>
+                                  <label className="novinka-task-field">
+                                    <span>Ссылка на товар</span>
+                                    <input
+                                      className="novinka-task-input"
+                                      placeholder="https://..."
+                                      value={packagingNewLink}
+                                      onChange={(event) => setPackagingNewLink(event.target.value)}
+                                    />
+                                  </label>
+                                  <label className="novinka-task-field">
+                                    <span>Количество</span>
+                                    <input
+                                      className="novinka-task-input"
+                                      inputMode="numeric"
+                                      pattern="[0-9]*"
+                                      placeholder="Кол-во"
+                                      value={packagingNewQuantity}
+                                      onChange={(event) =>
+                                        setPackagingNewQuantity(event.target.value.replace(/\D/g, ''))
+                                      }
+                                    />
+                                  </label>
+                                </div>
+                                <div className="novinka-task-compose-actions">
+                                  <button
+                                    type="button"
+                                    className="task-form-modal-btn novinka-add-btn"
+                                    onClick={addDraftPackagingNewItem}
+                                  >
+                                    Добавить
+                                  </button>
+                                </div>
+                              </div>
+                              )}
+
                               {taskFormMode !== 'packaging' && (
                               <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
                                 <strong>
@@ -11817,16 +11933,19 @@ function App() {
                         onChange={(event) => setAnalyticsDateTo(event.target.value)}
                       />
                     </label>
-                    <button
-                      type="button"
-                      className="date-filter-preset"
-                      onClick={() => {
-                        setAnalyticsDateFrom(ALL_PERIOD_START)
-                        setAnalyticsDateTo(new Date().toISOString().slice(0, 10))
-                      }}
-                    >
-                      За весь период
-                    </button>
+                    {analyticsSubTab !== 'finances' && (
+                      <button
+                        type="button"
+                        className="date-filter-preset"
+                        onClick={() => {
+                          setAnalyticsDateFrom(ALL_PERIOD_START)
+                          setAnalyticsDateTo(new Date().toISOString().slice(0, 10))
+                        }}
+                        title="С начала продаж — 1 мая 2026"
+                      >
+                        За весь период
+                      </button>
+                    )}
                   </div>
                 )}
                 {analyticsSubTab === 'production' && (

@@ -3,6 +3,7 @@ import { apiFetch, parseApiErrorMessage } from '../../../shared/api/client'
 import {
   calculate,
   calculatePriceForMargin,
+  currencySymbol,
   formatMoney,
 } from '../lib/calculatorFormulas'
 import type {
@@ -310,6 +311,9 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
     }
   }, [mode, scheme, price, selectedProduct, costPriceOverride, manual, settings])
 
+  // Валюта берётся из тарифов Ozon по товару; в ручном режиме — тенге.
+  const currency = currencySymbol(selectedProduct?.currencyCode)
+
   const result = useMemo(() => calculate(input), [input])
   const requiredPrice = useMemo(
     () => calculatePriceForMargin(input, targetMargin),
@@ -405,6 +409,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
           onChange={setSettingsDraft}
           onSave={handleSaveSettings}
           onClose={() => setShowSettings(false)}
+          currency={currency}
         />
       )}
 
@@ -444,7 +449,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                   >
                     <span className="calc-product-name">{product.productName || product.offerId}</span>
                     <span className="calc-product-meta">
-                      {product.offerId} · {formatMoney(product.currentPrice)} ·{' '}
+                      {product.offerId} · {formatMoney(product.currentPrice, currencySymbol(product.currencyCode))} ·{' '}
                       {scheme === 'fbo' ? product.salesPercentFbo : product.salesPercentFbs} %
                     </span>
                   </button>
@@ -454,7 +459,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
               {selectedProduct && (
                 <>
                   <label className="calc-field">
-                    <span>Цена продажи, ₽</span>
+                    <span>Цена продажи, {currency}</span>
                     <input
                       type="number"
                       step="1"
@@ -465,7 +470,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                   </label>
 
                   <label className="calc-field">
-                    <span>Себестоимость, ₽</span>
+                    <span>Себестоимость, {currency}</span>
                     <input
                       type="number"
                       step="1"
@@ -519,7 +524,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
 
               <div className="calc-field-grid">
                 <label className="calc-field">
-                  <span>Цена продажи, ₽</span>
+                  <span>Цена продажи, {currency}</span>
                   <input
                     type="number"
                     step="1"
@@ -542,7 +547,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                 </label>
 
                 <label className="calc-field">
-                  <span>Себестоимость, ₽</span>
+                  <span>Себестоимость, {currency}</span>
                   <input
                     type="number"
                     step="1"
@@ -553,7 +558,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                 </label>
 
                 <label className="calc-field">
-                  <span>Последняя миля, ₽</span>
+                  <span>Последняя миля, {currency}</span>
                   <input
                     type="number"
                     step="1"
@@ -566,7 +571,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                 </label>
 
                 <label className="calc-field">
-                  <span>Обратная логистика, ₽</span>
+                  <span>Обратная логистика, {currency}</span>
                   <input
                     type="number"
                     step="1"
@@ -577,7 +582,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                 </label>
 
                 <label className="calc-field">
-                  <span>{scheme === 'fbo' ? 'Фулфилмент, ₽' : 'Первая миля, ₽'}</span>
+                  <span>{scheme === 'fbo' ? `Фулфилмент, ${currency}` : `Первая миля, ${currency}`}</span>
                   <input
                     type="number"
                     step="1"
@@ -628,7 +633,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                     />
                   </label>
                   <label className="calc-field">
-                    <span>Логистика, ₽</span>
+                    <span>Логистика, {currency}</span>
                     <input
                       type="number"
                       step="1"
@@ -651,7 +656,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
             <div className="calc-product-empty">Выберите товар слева.</div>
           ) : (
             <>
-              <CalculationBreakdown result={result} showRange={mode === 'catalog'} />
+              <CalculationBreakdown result={result} showRange={mode === 'catalog'} currency={currency} />
 
               <div className="calc-reverse">
                 <div className="calc-reverse-head">
@@ -673,7 +678,7 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
                     </span>
                   ) : (
                     <>
-                      <strong>{formatMoney(requiredPrice)}</strong>
+                      <strong>{formatMoney(requiredPrice, currency)}</strong>
                       <button
                         type="button"
                         className="secondary"

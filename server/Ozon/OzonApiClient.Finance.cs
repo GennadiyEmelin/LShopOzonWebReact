@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -16,6 +16,32 @@ namespace LShopOzonWebReact.Api.Ozon;
 public partial class OzonApiClient
 {
     private const int CashFlowPageSize = 100;
+
+    /// <summary>
+    /// Стандартный график выплат Ozon: расчёт идёт по неделям, деньги уходят
+    /// по средам с задержкой в три недели.
+    ///
+    /// Плановой даты в API нет, поэтому считаем сами. Правило сверено с кабинетом
+    /// на пяти периодах подряд — совпало во всех: например, неделя 06–12.07
+    /// выплачена в среду 05.08, а 20–26.07 запланирована на 19.08.
+    /// </summary>
+    private const int PayoutDelayWeeks = 3;
+
+    private static readonly DayOfWeek PayoutDayOfWeek = DayOfWeek.Wednesday;
+
+    /// <summary>
+    /// Первая среда строго после конца периода плюс три недели.
+    /// </summary>
+    private static DateOnly CalculatePayoutDate(DateOnly periodEnd)
+    {
+        var daysUntilPayday = ((int)PayoutDayOfWeek - (int)periodEnd.DayOfWeek + 7) % 7;
+        if (daysUntilPayday == 0)
+        {
+            daysUntilPayday = 7;
+        }
+
+        return periodEnd.AddDays(daysUntilPayday + PayoutDelayWeeks * 7);
+    }
 
     /// <summary>
     /// Человекочитаемые названия услуг. Ozon отдаёт машинные имена;
@@ -119,6 +145,7 @@ public partial class OzonApiClient
                 Math.Abs(flow.ServicesAmount),
                 paid,
                 pending,
+                CalculatePayoutDate(flow.PeriodEnd),
                 detail?.BeginBalance ?? 0m,
                 detail?.EndBalance ?? 0m,
                 detail?.ServiceItems ?? Array.Empty<OzonPayoutServiceItem>()));
@@ -362,6 +389,8 @@ public record OzonPayoutPeriod(
     decimal PaidOut,
     /// <summary>Начислено к выплате — деньги, которые ещё придут.</summary>
     decimal PendingPayout,
+    /// <summary>Ориентировочная дата выплаты. Расчётная: API её не отдаёт.</summary>
+    DateOnly? EstimatedPayoutDate,
     decimal BeginBalance,
     decimal EndBalance,
     IReadOnlyList<OzonPayoutServiceItem> ServiceItems);
