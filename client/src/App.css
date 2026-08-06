@@ -11340,3 +11340,111 @@ small .offer-id-cell {
 .fin-table th.fin-num {
   text-align: right;
 }
+
+
+/* Детализация периода: один столбец, а не грид через весь экран.
+   В три колонки цифры отрывались от названий и читались плохо. */
+.fin-details-row td .fin-details {
+  display: block;
+  max-width: 560px;
+  padding: 14px 16px 16px 46px;
+}
+.fin-details-title {
+  margin-bottom: 10px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.fin-details-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px dashed #e4e8f0;
+  font-size: 13px;
+}
+.fin-details-line span {
+  color: #475467;
+}
+.fin-details-line b {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.fin-details-plus b {
+  color: #067647;
+}
+.fin-details-sum {
+  margin-top: 6px;
+  border-bottom: none;
+  border-top: 2px solid #101828;
+  padding-top: 10px;
+  font-size: 15px;
+}
+.fin-details-sum span {
+  color: #101828;
+  font-weight: 700;
+}
+
+
+/* Детализация периода в стиле кабинета Ozon: группы с долей, внизу итог */
+.fin-group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid #f0f3f8;
+  font-size: 14px;
+}
+.fin-group span {
+  color: #1f2a44;
+}
+.fin-group b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+  text-align: right;
+}
+.fin-group b i {
+  display: block;
+  margin-top: 2px;
+  color: #98a2b3;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+.fin-group-plus b {
+  color: #067647;
+}
+.fin-group-items {
+  padding: 4px 0 6px 20px;
+  border-bottom: 1px solid #f0f3f8;
+}
+.fin-group-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+  color: #667085;
+  font-size: 12px;
+}
+.fin-group-item b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.fin-group-total {
+  margin-top: 4px;
+  border-bottom: none;
+  border-top: 2px solid #101828;
+  padding-top: 12px;
+  font-size: 16px;
+}
+.fin-group-total span,
+.fin-group-total b {
+  font-weight: 800;
+}

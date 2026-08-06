@@ -45,6 +45,12 @@ function money(value: number, currency: string) {
   return `${Math.round(value).toLocaleString('ru-RU')} ${currency}`
 }
 
+/** Доля расхода от суммы продаж — как проценты в кабинете Ozon. */
+function share(amount: number, sales: number) {
+  if (!sales) return ''
+  return ` ${((Math.abs(amount) / sales) * 100).toFixed(1).replace('.', ',')} %`
+}
+
 function shortDate(value: string | null) {
   if (!value) return '—'
   const date = new Date(value)
@@ -196,15 +202,71 @@ export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
                       <tr className="fin-details-row">
                         <td colSpan={6}>
                           <div className="fin-details">
-                            {period.serviceItems.map((item, index) => (
-                              <div className="fin-details-item" key={`${item.name}-${index}`}>
-                                <span>{item.name}</span>
-                                <strong className={item.amount < 0 ? 'fin-negative' : 'fin-positive'}>
-                                  {item.amount < 0 ? '−' : '+'}
-                                  {money(Math.abs(item.amount), currency)}
-                                </strong>
+                            {/* Структура как в кабинете Ozon: группы с долей от продаж,
+                                затем расшифровка услуг, внизу итог за период. */}
+                            <div className="fin-group fin-group-plus">
+                              <span>Продажи</span>
+                              <b>{money(period.ordersAmount, currency)}</b>
+                            </div>
+
+                            {period.returnsAmount !== 0 && (
+                              <div className="fin-group">
+                                <span>Возвраты</span>
+                                <b>{money(period.returnsAmount, currency)}</b>
                               </div>
-                            ))}
+                            )}
+
+                            <div className="fin-group">
+                              <span>Вознаграждение Ozon</span>
+                              <b className="fin-negative">
+                                −{money(period.commission, currency)}
+                                <i>{share(period.commission, period.ordersAmount)}</i>
+                              </b>
+                            </div>
+
+                            <div className="fin-group">
+                              <span>Услуги доставки</span>
+                              <b className="fin-negative">
+                                −{money(period.logistics, currency)}
+                                <i>{share(period.logistics, period.ordersAmount)}</i>
+                              </b>
+                            </div>
+
+                            <div className="fin-group">
+                              <span>Услуги и продвижение</span>
+                              <b className="fin-negative">
+                                −{money(period.services, currency)}
+                                <i>{share(period.services, period.ordersAmount)}</i>
+                              </b>
+                            </div>
+
+                            {period.serviceItems.length > 0 && (
+                              <div className="fin-group-items">
+                                {period.serviceItems.map((item, index) => (
+                                  <div className="fin-group-item" key={`${item.name}-${index}`}>
+                                    <span>{item.name}</span>
+                                    <b className={item.amount < 0 ? 'fin-negative' : 'fin-positive'}>
+                                      {item.amount < 0 ? '−' : '+'}
+                                      {money(Math.abs(item.amount), currency)}
+                                    </b>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="fin-group fin-group-total">
+                              <span>Всего за период</span>
+                              <b>
+                                {money(
+                                  period.ordersAmount +
+                                    period.returnsAmount -
+                                    period.commission -
+                                    period.logistics -
+                                    period.services,
+                                  currency,
+                                )}
+                              </b>
+                            </div>
                           </div>
                         </td>
                       </tr>

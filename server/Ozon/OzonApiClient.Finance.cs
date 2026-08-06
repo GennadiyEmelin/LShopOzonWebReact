@@ -18,6 +18,16 @@ public partial class OzonApiClient
     private const int CashFlowPageSize = 100;
 
     /// <summary>
+    /// Это не отдельная услуга, а то же самое вознаграждение за продажу,
+    /// что приходит в commission_amount. Ozon дублирует его в блоке services.
+    ///
+    /// Сверено с кабинетом за 20–26 июля: продажи 81 769, вознаграждение 8 236,
+    /// доставка 24 834, продвижение 4 741, к выплате 43 958. Если не исключить
+    /// этот дубль, итог занижается ровно на сумму комиссии.
+    /// </summary>
+    private const string CommissionDuplicateService = "MarketplaceServiceProductPlacementKZ";
+
+    /// <summary>
     /// Плановая дата выплаты: первый нужный день недели строго после конца
     /// периода плюс заданная задержка.
     ///
@@ -38,18 +48,18 @@ public partial class OzonApiClient
     }
 
     /// <summary>
-    /// Человекочитаемые названия услуг. Ozon отдаёт машинные имена;
-    /// неизвестные показываем как есть, чтобы ничего не потерялось.
+    /// Перевод только для имён, смысл которых очевиден из самого названия.
+    ///
+    /// Остальные показываем как есть: придуманный перевод уже один раз ввёл
+    /// в заблуждение — MarketplaceServiceProductPlacementKZ был подписан как
+    /// «Размещение товаров», хотя платного размещения в кабинете нет.
+    /// Сырое имя хотя бы можно найти поиском в кабинете и в документации.
     /// </summary>
     private static readonly Dictionary<string, string> ServiceNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ["MarketplaceServiceItemDirectFlowLogisticSum"] = "Логистика до покупателя",
         ["MarketplaceServiceItemReturnFlowLogistic"] = "Обратная логистика",
-        ["MarketplaceServicePromotionWithCostPerOrder"] = "Продвижение за заказ",
-        ["MarketplaceServiceProductPlacementKZ"] = "Размещение товаров",
         ["OperationCashToTheSellersAccount"] = "Перевод на счёт продавца",
-        ["MarketplaceServiceItemFulfillment"] = "Фулфилмент",
-        ["MarketplaceServiceItemDeliveryToCustomer"] = "Доставка покупателю",
     };
 
     public async Task<OzonPayoutReport> GetPayoutReportAsync(
@@ -138,7 +148,10 @@ public partial class OzonApiClient
                 flow.ReturnsAmount,
                 Math.Abs(flow.CommissionAmount),
                 Math.Abs(flow.ItemDeliveryAndReturnAmount),
-                Math.Abs(flow.ServicesAmount),
+                // Из услуг вычитаем дубль комиссии, иначе она уходит в расходы дважды.
+                // Скобки обязательны: без них «-» связывает сильнее «??»,
+                // и при отсутствии детализации услуги обнулялись бы целиком.
+                Math.Max(0m, Math.Abs(flow.ServicesAmount) - (detail?.CommissionDuplicate ?? 0m)),
                 paid,
                 pending,
                 CalculatePayoutDate(flow.PeriodEnd, payoutDelayWeeks, payoutDayOfWeek),
@@ -239,9 +252,32 @@ public partial class OzonApiClient
             }
         }
 
+        var commissionDuplicate = 0m;
+        if (element.TryGetProperty("services", out var servicesBlock)
+            && servicesBlock.ValueKind == JsonValueKind.Object
+            && servicesBlock.TryGetProperty("items", out var servicesItems)
+            && servicesItems.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in servicesItems.EnumerateArray())
+            {
+                var name = item.TryGetProperty("name", out var nameElement)
+                    ? nameElement.GetString() ?? string.Empty
+                    : string.Empty;
+
+                if (string.Equals(name, CommissionDuplicateService, StringComparison.OrdinalIgnoreCase))
+                {
+                    commissionDuplicate += Math.Abs(ReadDecimal(item, "price"));
+                }
+            }
+        }
+
         var serviceItems = new List<OzonPayoutServiceItem>();
+        // Ozon раскладывает расходы по четырём блокам. Собираем все,
+        // иначе в детализации видно только услуги, а логистики нет.
         CollectServiceItems(element, "services", serviceItems);
         CollectServiceItems(element, "others", serviceItems);
+        CollectNestedServiceItems(element, "delivery", "delivery_services", serviceItems);
+        CollectNestedServiceItems(element, "return", "return_services", serviceItems);
 
         return new CashFlowDetailEntry(
             begin,
@@ -249,7 +285,24 @@ public partial class OzonApiClient
             ReadDecimal(element, "end_balance_amount"),
             ReadDecimal(element, "invoice_transfer"),
             payments,
+            commissionDuplicate,
             serviceItems);
+    }
+
+    /// <summary>
+    /// Логистика лежит на уровень глубже: delivery.delivery_services.items
+    /// и return.return_services.items.
+    /// </summary>
+    private static void CollectNestedServiceItems(
+        JsonElement parent,
+        string outerName,
+        string innerName,
+        List<OzonPayoutServiceItem> target)
+    {
+        if (parent.TryGetProperty(outerName, out var outer) && outer.ValueKind == JsonValueKind.Object)
+        {
+            CollectServiceItems(outer, innerName, target);
+        }
     }
 
     private static void CollectServiceItems(
@@ -272,6 +325,11 @@ public partial class OzonApiClient
                 : string.Empty;
 
             if (string.IsNullOrWhiteSpace(rawName))
+            {
+                continue;
+            }
+
+            if (string.Equals(rawName, CommissionDuplicateService, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -365,6 +423,7 @@ public partial class OzonApiClient
         decimal EndBalance,
         decimal InvoiceTransfer,
         decimal Payments,
+        decimal CommissionDuplicate,
         IReadOnlyList<OzonPayoutServiceItem> ServiceItems);
 }
 
