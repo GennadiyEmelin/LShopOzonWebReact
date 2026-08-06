@@ -33,7 +33,7 @@ const defaultSettings: CalculatorSettings = {
   advertisingPercent: 0,
   extraCostFixed: 0,
   defaultScheme: 'fbo',
-  payoutDelayWeeks: 3,
+  payoutDelayWeeks: 0,
   payoutDayOfWeek: 3,
   updatedAt: '',
 }
@@ -279,8 +279,9 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
         advertisingPercent: settings.advertisingPercent,
         costPrice: costPriceOverride ?? selectedProduct.costPrice,
         extraCostFixed: settings.extraCostFixed,
-        taxMode: settings.taxMode,
-        taxPercent: settings.taxPercent,
+        // Налог не считаем — см. комментарий в CalculatorEndpoints.
+        taxMode: 'none',
+        taxPercent: 0,
         buyoutRatePercent: settings.buyoutRatePercent,
       }
     }
@@ -307,8 +308,8 @@ export function CalculatorPanel({ token, canEdit }: CalculatorPanelProps) {
       advertisingPercent: settings.advertisingPercent,
       costPrice: manual.costPrice,
       extraCostFixed: settings.extraCostFixed,
-      taxMode: settings.taxMode,
-      taxPercent: settings.taxPercent,
+      taxMode: 'none',
+      taxPercent: 0,
       buyoutRatePercent: settings.buyoutRatePercent,
     }
   }, [mode, scheme, price, selectedProduct, costPriceOverride, manual, settings])

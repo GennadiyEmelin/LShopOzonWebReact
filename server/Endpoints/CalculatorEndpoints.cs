@@ -306,8 +306,11 @@ public static class CalculatorEndpoints
             AcquiringPercent = request.AcquiringPercent ?? settings.AcquiringPercent,
             AdvertisingPercent = request.AdvertisingPercent ?? settings.AdvertisingPercent,
             ExtraCostFixed = request.ExtraCostFixed ?? settings.ExtraCostFixed,
-            TaxMode = NormalizeTaxMode(request.TaxMode ?? settings.TaxMode),
-            TaxPercent = request.TaxPercent ?? settings.TaxPercent,
+            // Налог из расчёта убран: ставка зависит от страны и формы
+            // регистрации продавца, угадывать её нельзя. В базе может лежать
+            // старое значение — намеренно его игнорируем.
+            TaxMode = CalculatorTaxModes.None,
+            TaxPercent = 0m,
             BuyoutRatePercent = request.BuyoutRatePercent ?? settings.BuyoutRatePercent,
             CostPrice = request.CostPrice ?? 0m,
         };

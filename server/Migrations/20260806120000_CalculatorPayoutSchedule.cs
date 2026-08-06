@@ -1,4 +1,4 @@
-using LShopOzonWebReact.Api.Data;
+﻿using LShopOzonWebReact.Api.Data;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
@@ -22,7 +22,7 @@ namespace LShopOzonWebReact.Api.Migrations
                 table: "CalculatorSettings",
                 type: "integer",
                 nullable: false,
-                defaultValue: 3);
+                defaultValue: 0);
 
             migrationBuilder.AddColumn<int>(
                 name: "PayoutDayOfWeek",
@@ -30,6 +30,9 @@ namespace LShopOzonWebReact.Api.Migrations
                 type: "integer",
                 nullable: false,
                 defaultValue: 3);
+
+            // Существующая строка настроек тоже должна получить казахстанский график.
+            migrationBuilder.Sql("UPDATE \"CalculatorSettings\" SET \"PayoutDelayWeeks\" = 0, \"PayoutDayOfWeek\" = 3;");
         }
 
         /// <inheritdoc />

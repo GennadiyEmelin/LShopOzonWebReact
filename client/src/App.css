@@ -11333,3 +11333,10 @@ small .offer-id-cell {
   border-top: 1px solid #edf0f5;
   border-radius: 0;
 }
+
+
+/* Заголовок числовой колонки — по правому краю, как и значения.
+   Без этого .fin-table th перебивал .fin-num и таблица выглядела съехавшей. */
+.fin-table th.fin-num {
+  text-align: right;
+}

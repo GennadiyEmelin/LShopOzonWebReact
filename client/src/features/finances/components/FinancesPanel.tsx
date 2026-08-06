@@ -119,7 +119,7 @@ export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
                   <span className="fin-badge fin-badge-pending">
                     выплата {shortDate(period.estimatedPayoutDate)}
                   </span>
-                  <span className="fin-payout-period">за период {period.label}</span>
+                  <span className="fin-payout-period">начислено в периоде {period.label}</span>
                 </div>
               </div>
             ))
@@ -218,9 +218,9 @@ export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
       </details>
 
       <p className="fin-note">
-        Стандартный график Ozon: расчёт по неделям, выплата по средам с задержкой в три недели.
-        Например, за неделю 6–12 июля деньги пришли в среду 5 августа. Даты в API не приходят —
-        считаются по этому правилу, сверено с кабинетом на пяти периодах подряд.
+        Ozon считает недельными периодами и переводит деньги по средам. Плановой даты в API нет —
+        она вычисляется как первая среда после конца периода, в котором Ozon выставил документ.
+        Если даты разойдутся с кабинетом, поправьте задержку в настройках калькулятора.
       </p>
     </div>
   )
