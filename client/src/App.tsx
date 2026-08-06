@@ -2793,8 +2793,12 @@ function App() {
   // Ручной ввод нового товара в задаче упаковки: товара ещё нет в продаже,
   // поэтому ни артикула, ни product_id у него нет — только название и ссылка.
   const [packagingNewName, setPackagingNewName] = useState('')
-  const [packagingNewLink, setPackagingNewLink] = useState('')
   const [packagingNewQuantity, setPackagingNewQuantity] = useState('')
+  const [packagingNewPreview, setPackagingNewPreview] = useState<File | null>(null)
+
+  // Превью хранится до сохранения задачи: id позиции появляется только
+  // после ответа сервера, а загрузка файла требует именно его.
+  const [draftPreviewFiles, setDraftPreviewFiles] = useState<Record<string, File>>({})
   const [novinkaTaskMarketplace, setNovinkaTaskMarketplace] = useState<NovinkaMarketplace>(() =>
     readShopRegion() === 'rf' ? 'ozon' : readKzMarketplace(),
   )
@@ -8062,8 +8066,9 @@ function App() {
     setTaskQuantity('')
     setTaskNovinkaQuantity('')
     setPackagingNewName('')
-    setPackagingNewLink('')
     setPackagingNewQuantity('')
+    setPackagingNewPreview(null)
+    setDraftPreviewFiles({})
     setTaskDueAt('')
     setTaskEditorKind('production')
     setEditingTaskId(null)
@@ -8535,16 +8540,10 @@ function App() {
    */
   function addDraftPackagingNewItem() {
     const productName = packagingNewName.trim()
-    const productLink = packagingNewLink.trim()
     const quantity = Number(packagingNewQuantity)
 
     if (!productName) {
       setTaskFormStatus('Укажите наименование нового товара')
-      return
-    }
-
-    if (!productLink) {
-      setTaskFormStatus('Укажите ссылку на товар — без неё задачу не сохранить')
       return
     }
 
@@ -8561,24 +8560,33 @@ function App() {
       return
     }
 
+    // Свой артикул вида NV-…: без него бэкенд требует ссылку на товар,
+    // а её у нового товара может и не быть.
+    const tempId = createTempId()
+    const offerId = `NV-${(globalThis.crypto?.randomUUID?.() ?? tempId).replace(/-/g, '')}`
+
     setDraftTaskItems((current) => [
       ...current,
       {
-        tempId: createTempId(),
+        tempId,
         ozonProductId: 0,
-        offerId: '',
+        offerId,
         productName,
-        productLink,
-        imageUrl: '',
+        productLink: '',
+        imageUrl: packagingNewPreview ? URL.createObjectURL(packagingNewPreview) : '',
         requiredQuantity: quantity,
         enforceMinimumQuantity: false,
         isNovinka: true,
       },
     ])
 
+    if (packagingNewPreview) {
+      setDraftPreviewFiles((current) => ({ ...current, [tempId]: packagingNewPreview }))
+    }
+
     setPackagingNewName('')
-    setPackagingNewLink('')
     setPackagingNewQuantity('')
+    setPackagingNewPreview(null)
     setTaskFormStatus('')
     setTaskStatus('Новый товар добавлен в задачу')
   }
@@ -8781,6 +8789,33 @@ function App() {
       const savedTask: ProductionTask | null = response.status === 204 ? null : await response.json()
       if (!wasEdit && savedTask?.id && user?.id) {
         markTaskNotificationsSeen('new', [savedTask.id])
+      }
+
+      // Превью новых товаров грузим после сохранения: до ответа сервера
+      // у позиций нет идентификаторов, а файл привязывается именно к ним.
+      if (savedTask?.items?.length && Object.keys(draftPreviewFiles).length > 0) {
+        for (const draft of draftTaskItems) {
+          const file = draftPreviewFiles[draft.tempId]
+          if (!file) continue
+
+          const savedItem = savedTask.items.find(
+            (item) => item.offerId === draft.offerId || item.productName === draft.productName,
+          )
+          if (!savedItem) continue
+
+          const formData = new FormData()
+          formData.append('taskItemId', savedItem.id)
+          formData.append('ozonProductId', '0')
+          formData.append('offerId', savedItem.offerId)
+          formData.append('productName', savedItem.productName)
+          formData.append('productLink', '')
+          formData.append('notes', '')
+          formData.append('file', file)
+
+          await productionApi.uploadProductionFile(token, formData)
+        }
+
+        void loadProductionFiles(productionSearch)
       }
 
       setTaskFormSaving(false)
@@ -10708,10 +10743,11 @@ function App() {
                               <div className="supply-form-block supply-form-block-novinka task-novinka-create-block">
                                 <strong>Новый товар</strong>
                                 <span className="product-type-editor-hint">
-                                  Товара ещё нет в продаже — укажите наименование и ссылку.
+                                  Товара ещё нет в продаже. Название и количество обязательны,
+                                  фото можно добавить позже.
                                 </span>
-                                <div className="novinka-task-fields">
-                                  <label className="novinka-task-field">
+                                <div className="new-product-form">
+                                  <label className="new-product-field">
                                     <span>Наименование товара</span>
                                     <input
                                       className="novinka-task-input"
@@ -10720,16 +10756,8 @@ function App() {
                                       onChange={(event) => setPackagingNewName(event.target.value)}
                                     />
                                   </label>
-                                  <label className="novinka-task-field">
-                                    <span>Ссылка на товар</span>
-                                    <input
-                                      className="novinka-task-input"
-                                      placeholder="https://..."
-                                      value={packagingNewLink}
-                                      onChange={(event) => setPackagingNewLink(event.target.value)}
-                                    />
-                                  </label>
-                                  <label className="novinka-task-field">
+
+                                  <label className="new-product-field new-product-qty">
                                     <span>Количество</span>
                                     <input
                                       className="novinka-task-input"
@@ -10742,14 +10770,52 @@ function App() {
                                       }
                                     />
                                   </label>
-                                </div>
-                                <div className="novinka-task-compose-actions">
+
+                                  <div className="new-product-preview">
+                                    <span>Превью — не обязательно</span>
+                                    <div className="new-product-preview-row">
+                                      {packagingNewPreview ? (
+                                        <img
+                                          className="new-product-thumb"
+                                          src={URL.createObjectURL(packagingNewPreview)}
+                                          alt=""
+                                        />
+                                      ) : (
+                                        <div className="new-product-thumb new-product-thumb-empty">
+                                          нет фото
+                                        </div>
+                                      )}
+
+                                      <div className="new-product-preview-actions">
+                                        <label className="new-product-file-btn">
+                                          {packagingNewPreview ? 'Заменить' : 'Выбрать файл'}
+                                          <input
+                                            type="file"
+                                            accept="image/*"
+                                            onChange={(event) =>
+                                              setPackagingNewPreview(event.target.files?.[0] ?? null)
+                                            }
+                                          />
+                                        </label>
+                                        {packagingNewPreview && (
+                                          <button
+                                            type="button"
+                                            className="new-product-file-clear"
+                                            onClick={() => setPackagingNewPreview(null)}
+                                          >
+                                            Убрать
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+
                                   <button
                                     type="button"
-                                    className="task-form-modal-btn novinka-add-btn"
+                                    className="task-form-modal-btn new-product-add"
                                     onClick={addDraftPackagingNewItem}
                                   >
-                                    Добавить
+                                    Добавить в задачу
                                   </button>
                                 </div>
                               </div>
