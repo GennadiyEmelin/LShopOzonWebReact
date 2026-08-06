@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Text.Json;
 using LShopOzonWebReact.Api.Ozon;
 
@@ -24,43 +25,24 @@ internal static class SatuApiClient
         CancellationToken cancellationToken)
     {
         var result = new List<OzonProductSummary>();
-        var offset = 0;
+        long? lastId = null;
 
         while (true)
         {
-            var offsets = Enumerable.Range(0, ParallelPages)
-                .Select(index => offset + index * PageSize)
-                .ToArray();
-
-            var pages = await Task.WhenAll(
-                offsets.Select(pageOffset =>
-                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
-
-            var reachedEnd = false;
-            var addedInBatch = false;
-
-            foreach (var page in pages)
-            {
-                if (page.Count == 0)
-                {
-                    continue;
-                }
-
-                addedInBatch = true;
-                result.AddRange(page.Select(item => ToProductSummary(item, merchantId, result.Count + 1)));
-
-                if (page.Count < PageSize)
-                {
-                    reachedEnd = true;
-                }
-            }
-
-            if (reachedEnd || !addedInBatch)
+            var page = await GetProductsPageAfterIdAsync(httpClient, apiKey, lastId, cancellationToken);
+            if (page.Count == 0)
             {
                 break;
             }
 
-            offset += ParallelPages * PageSize;
+            result.AddRange(page.Select(item => ToProductSummary(item, merchantId, result.Count + 1)));
+
+            if (page.Count < PageSize || !TryReadLastProductId(page, out var nextLastId) || nextLastId == lastId)
+            {
+                break;
+            }
+
+            lastId = nextLastId;
         }
 
         return result;
@@ -72,59 +54,39 @@ internal static class SatuApiClient
         CancellationToken cancellationToken)
     {
         var stats = new SatuCatalogStats();
-        var offset = 0;
+        long? lastId = null;
 
         while (true)
         {
-            var offsets = Enumerable.Range(0, ParallelPages)
-                .Select(index => offset + index * PageSize)
-                .ToArray();
-
-            var pages = await Task.WhenAll(
-                offsets.Select(pageOffset =>
-                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
-
-            var reachedEnd = false;
-            var addedInBatch = false;
-
-            foreach (var page in pages)
-            {
-                if (page.Count == 0)
-                {
-                    continue;
-                }
-
-                addedInBatch = true;
-
-                foreach (var item in page)
-                {
-                    stats.Total++;
-                    switch (NormalizeCatalogStatus(item))
-                    {
-                        case "selling":
-                            stats.Selling++;
-                            break;
-                        case "ready":
-                            stats.Ready++;
-                            break;
-                        case "archived":
-                            stats.Archived++;
-                            break;
-                    }
-                }
-
-                if (page.Count < PageSize)
-                {
-                    reachedEnd = true;
-                }
-            }
-
-            if (reachedEnd || !addedInBatch)
+            var page = await GetProductsPageAfterIdAsync(httpClient, apiKey, lastId, cancellationToken);
+            if (page.Count == 0)
             {
                 break;
             }
 
-            offset += ParallelPages * PageSize;
+            foreach (var item in page)
+            {
+                stats.Total++;
+                switch (NormalizeCatalogStatus(item))
+                {
+                    case "selling":
+                        stats.Selling++;
+                        break;
+                    case "ready":
+                        stats.Ready++;
+                        break;
+                    case "archived":
+                        stats.Archived++;
+                        break;
+                }
+            }
+
+            if (page.Count < PageSize || !TryReadLastProductId(page, out var nextLastId) || nextLastId == lastId)
+            {
+                break;
+            }
+
+            lastId = nextLastId;
         }
 
         return stats;
@@ -146,41 +108,30 @@ internal static class SatuApiClient
             return [];
         }
 
-        var startOffset = skip / PageSize * PageSize;
-        var endOffset = (skip + take - 1) / PageSize * PageSize;
-        var offsets = new List<int>();
-        for (var pageOffset = startOffset; pageOffset <= endOffset; pageOffset += PageSize)
-        {
-            offsets.Add(pageOffset);
-        }
-
         var collected = new List<OzonProductSummary>();
-        var fallbackIndex = skip + 1;
+        var fallbackIndex = 1;
+        long? lastId = null;
 
-        for (var batchStart = 0; batchStart < offsets.Count; batchStart += ParallelPages)
+        while (collected.Count < skip + take)
         {
-            var batchOffsets = offsets.Skip(batchStart).Take(ParallelPages).ToArray();
-            var pages = await Task.WhenAll(
-                batchOffsets.Select(pageOffset =>
-                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
-
-            foreach (var page in pages)
+            var page = await GetProductsPageAfterIdAsync(httpClient, apiKey, lastId, cancellationToken);
+            if (page.Count == 0)
             {
-                foreach (var item in page)
-                {
-                    collected.Add(ToProductSummary(item, merchantId, fallbackIndex++));
-                }
+                break;
             }
-        }
 
-        var sliceStart = skip - startOffset;
-        if (sliceStart >= collected.Count)
-        {
-            return [];
+            collected.AddRange(page.Select(item => ToProductSummary(item, merchantId, fallbackIndex++)));
+
+            if (page.Count < PageSize || !TryReadLastProductId(page, out var nextLastId) || nextLastId == lastId)
+            {
+                break;
+            }
+
+            lastId = nextLastId;
         }
 
         return collected
-            .Skip(sliceStart)
+            .Skip(skip)
             .Take(take)
             .ToList();
     }
@@ -221,53 +172,33 @@ internal static class SatuApiClient
         }
 
         var matched = new List<OzonProductSummary>();
-        var offset = 0;
         var fallbackIndex = 1;
         var targetCount = skip + take;
+        long? lastId = null;
 
         while (matched.Count < targetCount)
         {
-            var batchOffsets = Enumerable.Range(0, ParallelPages)
-                .Select(index => offset + index * PageSize)
-                .ToArray();
-
-            var pages = await Task.WhenAll(
-                batchOffsets.Select(pageOffset =>
-                    GetProductsPageAsync(httpClient, apiKey, pageOffset, cancellationToken)));
-
-            var reachedEnd = false;
-            var addedInBatch = false;
-
-            foreach (var page in pages)
-            {
-                if (page.Count == 0)
-                {
-                    continue;
-                }
-
-                addedInBatch = true;
-
-                foreach (var item in page)
-                {
-                    var summary = ToProductSummary(item, merchantId, fallbackIndex++);
-                    if (MatchesStatusGroup(summary.Status, statusGroup))
-                    {
-                        matched.Add(summary);
-                    }
-                }
-
-                if (page.Count < PageSize)
-                {
-                    reachedEnd = true;
-                }
-            }
-
-            if (reachedEnd || !addedInBatch)
+            var page = await GetProductsPageAfterIdAsync(httpClient, apiKey, lastId, cancellationToken);
+            if (page.Count == 0)
             {
                 break;
             }
 
-            offset += ParallelPages * PageSize;
+            foreach (var item in page)
+            {
+                var summary = ToProductSummary(item, merchantId, fallbackIndex++);
+                if (MatchesStatusGroup(summary.Status, statusGroup))
+                {
+                    matched.Add(summary);
+                }
+            }
+
+            if (page.Count < PageSize || !TryReadLastProductId(page, out var nextLastId) || nextLastId == lastId)
+            {
+                break;
+            }
+
+            lastId = nextLastId;
         }
 
         return matched
@@ -400,7 +331,7 @@ internal static class SatuApiClient
 
         if (from is not null)
         {
-            query += $"&date_from={from.Value:yyyy-MM-dd}T00:00:00Z";
+            query += $"&date_from={from.Value:yyyy-MM-dd}";
         }
 
         var content = await GetJsonAsync(httpClient, query, apiKey, cancellationToken);
@@ -411,6 +342,7 @@ internal static class SatuApiClient
     {
         using var document = JsonDocument.Parse(content);
         var root = document.RootElement;
+        ThrowIfSatuError(root, "orders/list");
         var items = root.ValueKind switch
         {
             JsonValueKind.Array => root.EnumerateArray(),
@@ -422,17 +354,46 @@ internal static class SatuApiClient
         return items.Select(item => item.Clone()).ToList();
     }
 
+    private static void ThrowIfSatuError(JsonElement root, string relativePath)
+    {
+        if (root.ValueKind == JsonValueKind.Object &&
+            root.TryGetProperty("error", out var error) &&
+            error.ValueKind == JsonValueKind.String)
+        {
+            throw new InvalidOperationException($"Satu API ({relativePath}) вернул ошибку: {error.GetString()}");
+        }
+    }
+
     internal static async Task<List<JsonElement>> GetProductsPageAsync(
         HttpClient httpClient,
         string apiKey,
         int offset,
+        CancellationToken cancellationToken) =>
+        await GetProductsPageAfterIdAsync(httpClient, apiKey, offset > 0 ? offset : null, cancellationToken);
+
+    internal static async Task<List<JsonElement>> GetProductsPageAfterIdAsync(
+        HttpClient httpClient,
+        string apiKey,
+        long? lastId,
         CancellationToken cancellationToken)
     {
-        var query = offset > 0
-            ? $"products/list?limit={PageSize}&offset={offset}"
+        var query = lastId is > 0
+            ? $"products/list?limit={PageSize}&last_id={lastId}"
             : $"products/list?limit={PageSize}";
         var content = await GetJsonAsync(httpClient, query, apiKey, cancellationToken);
         return ExtractProductElements(content);
+    }
+
+    internal static bool TryReadLastProductId(IReadOnlyList<JsonElement> products, out long productId)
+    {
+        productId = 0;
+        if (products.Count == 0)
+        {
+            return false;
+        }
+
+        productId = ReadLong(products[^1], "id") ?? 0;
+        return productId > 0;
     }
 
     internal static async Task<string> GetJsonAsync(
@@ -636,14 +597,55 @@ internal static class SatuApiClient
                 return number;
             }
 
+            if (value.ValueKind == JsonValueKind.Object)
+            {
+                var nested = ReadDecimal(value, "amount", "value", "price");
+                if (nested != 0)
+                {
+                    return nested;
+                }
+            }
+
             if (value.ValueKind == JsonValueKind.String &&
-                decimal.TryParse(value.GetString(), out var parsed))
+                TryParseMoney(value.GetString(), out var parsed))
             {
                 return parsed;
             }
         }
 
         return 0;
+    }
+
+    private static bool TryParseMoney(string? value, out decimal parsed)
+    {
+        parsed = 0;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = new string(value
+            .Where(character => char.IsDigit(character) || character is '-' or '+' or '.' or ',')
+            .ToArray());
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (normalized.Contains(',') && !normalized.Contains('.'))
+        {
+            normalized = normalized.Replace(',', '.');
+        }
+        else
+        {
+            normalized = normalized.Replace(",", string.Empty);
+        }
+
+        return decimal.TryParse(
+            normalized,
+            NumberStyles.Number | NumberStyles.AllowLeadingSign,
+            CultureInfo.InvariantCulture,
+            out parsed);
     }
 }
 

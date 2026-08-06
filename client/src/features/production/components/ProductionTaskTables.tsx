@@ -8,7 +8,6 @@ import type {
 import { stripNovinkaMarketplaceNote } from '../../../shopRegion'
 import { LinkHoverPreview } from '../../../shared/components/LinkPreview'
 import { OfferIdCell } from '../../../shared/components/OfferIdCell'
-import { PathCopyBlock } from '../../../shared/components/PathCopyBlock'
 import { ProductImageHoverPreview, ProductThumb } from '../../../shared/components/ProductMedia'
 import { formatDateTime } from '../../../shared/utils/formatters'
 import {
@@ -42,6 +41,40 @@ function renderNovinkaItemLink(item: ProductionTaskItem) {
   }
 
   return <NovinkaExternalLinkButton url={productLink} />
+}
+
+function ProductionItemSummaryHint({ item }: { item: ProductionTaskItem }) {
+  const summary = item.productionSummary
+  if (
+    !summary ||
+    (summary.createdQuantity <= 0 && summary.inProgressQuantity <= 0 && summary.completedQuantity <= 0)
+  ) {
+    return null
+  }
+
+  const parts = [
+    summary.inProgressQuantity > 0 ? `в работе ${summary.inProgressQuantity} шт.` : '',
+    summary.createdQuantity > 0 ? `в созданных ${summary.createdQuantity} шт.` : '',
+    summary.completedQuantity > 0 ? `в выполненных ${summary.completedQuantity} шт.` : '',
+  ].filter(Boolean)
+
+  if (parts.length === 0) {
+    return null
+  }
+
+  return (
+    <small className="production-item-summary-hint">
+      Уже в производстве: {parts.join(' · ')}
+    </small>
+  )
+}
+
+function getPreviewFiles(files: ProductionFile[]) {
+  return files.filter((file) => file.contentType.startsWith('image/'))
+}
+
+function normalizeUserName(value?: string | null) {
+  return (value ?? '').trim().toLowerCase()
 }
 
 function useProductionFilePreviewUrl(fileId: string, token: string, enabled: boolean) {
@@ -156,48 +189,31 @@ function ProductionFilePreviewCell({
 function TaskItemFilesPanel({
   item,
   itemFiles,
-  token,
-  onDeleteFile,
   onOpenFiles,
   onUploadTaskItemFile,
   canUpload,
 }: {
   item: ProductionTaskItem
   itemFiles: ProductionFile[]
-  token: string
-  onDeleteFile?: (id: string) => void
   onOpenFiles?: (productName: string, files: ProductionFile[]) => void
-  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
+  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File, taskType?: ProductionTask['taskType']) => void
   canUpload: boolean
 }) {
   const uploadInputId = `task-item-upload-${item.id}`
+  const previewFiles = getPreviewFiles(itemFiles)
 
   return (
     <span className="task-item-files">
-      {itemFiles.length > 0 ? (
-        <div className="task-item-file-list">
-          {itemFiles.map((file) => (
-            <ProductionFilePreviewCell
-              key={file.id}
-              file={file}
-              token={token}
-              compact
-              onDelete={onDeleteFile}
-            />
-          ))}
-        </div>
-      ) : (
-        !canUpload && '—'
-      )}
-      {(itemFiles.length > 0 || canUpload) && (
+      {previewFiles.length === 0 && !canUpload && '—'}
+      {(previewFiles.length > 0 || canUpload) && (
         <div className="task-item-files-actions">
-          {itemFiles.length > 0 && onOpenFiles && (
+          {previewFiles.length > 0 && onOpenFiles && (
             <button
               type="button"
               className="production-files-trigger"
-              onClick={() => onOpenFiles(item.productName, itemFiles)}
+              onClick={() => onOpenFiles(item.productName, previewFiles)}
             >
-              Все ({itemFiles.length})
+              Превью ({previewFiles.length})
             </button>
           )}
           {canUpload && onUploadTaskItemFile && (
@@ -205,6 +221,7 @@ function TaskItemFilesPanel({
               <input
                 id={uploadInputId}
                 type="file"
+                accept="image/*"
                 className="task-item-file-input"
                 onChange={(event) => {
                   const file = event.target.files?.[0]
@@ -219,7 +236,7 @@ function TaskItemFilesPanel({
                 className="task-item-upload-btn"
                 onClick={() => document.getElementById(uploadInputId)?.click()}
               >
-                {itemFiles.length > 0 ? 'Добавить' : 'Загрузить файл'}
+                {previewFiles.length > 0 ? 'Обновить превью' : 'Загрузить превью'}
               </button>
             </>
           )}
@@ -253,7 +270,7 @@ export function ProductionFilesModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-title-row">
-          <h3>Файлы производства</h3>
+          <h3>Превью товара</h3>
           <button type="button" onClick={onClose}>
             Закрыть
           </button>
@@ -261,7 +278,7 @@ export function ProductionFilesModal({
         <p className="production-files-modal-product">{productName}</p>
         <div className="data-table modal-table">
           <div className="table-row file-row table-head">
-            <span>Файл</span>
+              <span>Превью</span>
             <span>Дата</span>
             <span>Действия</span>
           </div>
@@ -285,7 +302,7 @@ export function ProductionFilesModal({
           ))}
           {files.length === 0 && (
             <div className="empty-state">
-              <strong>Для этого товара еще нет файлов производства.</strong>
+              <strong>Для этого товара еще нет превью.</strong>
             </div>
           )}
         </div>
@@ -303,16 +320,23 @@ export function ProductionTaskTable({
   actualQuantities,
   setActualQuantities,
   currentUserId,
+  currentUserName,
+  currentUserAliases = [],
   isAdmin,
   canCancelTasks = false,
+  canManageTaskDeadline = false,
+  canStartTask,
   onStart,
   onCancelRequest,
   onComplete,
   onOpenFiles,
   onUploadTaskItemFile,
   onSaveTaskItemFilePath,
+  onDeleteTaskItemFilePath,
   onSaveTaskItemActualQuantity,
-  onDeleteFile,
+  onSaveTaskItemRequiredQuantity,
+  onCreateProductionFromNovinkaItem,
+  onTransferNovinkaItem,
   onDelete,
   onArchive,
   onRestore,
@@ -328,20 +352,35 @@ export function ProductionTaskTable({
   actualQuantities: Record<string, string>
   setActualQuantities: Dispatch<SetStateAction<Record<string, string>>>
   currentUserId?: string
+  currentUserName?: string
+  currentUserAliases?: string[]
   isAdmin?: boolean
   canCancelTasks?: boolean
+  canManageTaskDeadline?: boolean
+  canStartTask?: (task: ProductionTask) => boolean
   onStart: (id: string) => void
   onCancelRequest: (id: string) => void
   onComplete: (id: string) => void
   onOpenFiles: (productName: string, files: ProductionFile[]) => void
-  onUploadTaskItemFile?: (item: ProductionTaskItem, file: File) => void
+  onUploadTaskItemFile?: (
+    item: ProductionTaskItem,
+    file: File,
+    taskType?: ProductionTask['taskType'],
+  ) => void
   onSaveTaskItemFilePath?: (taskId: string, item: ProductionTaskItem, path: string) => void | Promise<void>
+  onDeleteTaskItemFilePath?: (taskId: string, item: ProductionTaskItem) => void | Promise<void>
   onSaveTaskItemActualQuantity?: (
     taskId: string,
     item: ProductionTaskItem,
     actualQuantity: number,
   ) => void | Promise<void>
-  onDeleteFile?: (id: string) => void
+  onSaveTaskItemRequiredQuantity?: (
+    taskId: string,
+    item: ProductionTaskItem,
+    requiredQuantity: number,
+  ) => void | Promise<void>
+  onCreateProductionFromNovinkaItem?: (task: ProductionTask, item: ProductionTaskItem) => void
+  onTransferNovinkaItem?: (task: ProductionTask, item: ProductionTaskItem) => void
   onDelete?: (id: string) => void
   onArchive?: (id: string) => void
   onRestore?: (id: string) => void
@@ -377,7 +416,19 @@ export function ProductionTaskTable({
         const isStaleNew =
           task.status === 'New' &&
           Date.now() - new Date(task.createdAt).getTime() > 4 * 60 * 60 * 1000
+        const isOverdue =
+          canManageTaskDeadline &&
+          Boolean(task.dueAt) &&
+          (task.status === 'New' || task.status === 'InProgress') &&
+          Date.now() > new Date(task.dueAt as string).getTime()
         const isCreator = Boolean(currentUserId && task.createdByUserId === currentUserId)
+        const assignedUserName = normalizeUserName(task.assignedUserName)
+        const currentUserNames = [currentUserName, ...currentUserAliases]
+          .map(normalizeUserName)
+          .filter(Boolean)
+        const isAssignedToCurrent = Boolean(
+          assignedUserName && currentUserNames.some((name) => name === assignedUserName),
+        )
         const hasMinimumViolations =
           !novinka &&
           task.status === 'InProgress' &&
@@ -406,18 +457,22 @@ export function ProductionTaskTable({
           task.status === 'InProgress' &&
           !completed &&
           !cancelled &&
-          taskItems.some((item) => getProductionFilesForTaskItem(item, productionFiles).length === 0)
+          taskItems.some((item) => getPreviewFiles(getProductionFilesForTaskItem(item, productionFiles)).length === 0)
         const hasMissingNovinkaPaths =
           novinka &&
           task.status === 'InProgress' &&
           !completed &&
           !cancelled &&
-          taskItems.some((item) => getProductionPathsForTaskItem(item, productionFilePaths).length === 0)
+          taskItems.some(
+            (item) =>
+              !item.filePath?.trim() &&
+              getProductionPathsForTaskItem(item, productionFilePaths).length === 0,
+          )
         const hasMissingNovinkaRequirements = hasMissingNovinkaFiles || hasMissingNovinkaPaths
 
         return (
         <details
-          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''} ${novinka && task.status === 'InProgress' ? 'task-novinka' : ''} ${novinka ? 'task-details-novinka' : ''}`}
+          className={`task-details-row ${task.isUrgent ? 'task-urgent' : ''} ${isStaleNew ? 'task-stale-new' : ''} ${isOverdue ? 'task-overdue' : ''} ${novinka && task.status === 'InProgress' ? 'task-novinka' : ''} ${novinka ? 'task-details-novinka' : ''}`}
           key={task.id}
         >
           <summary className={`table-row task-row ${novinka ? 'task-row-novinka' : ''}`}>
@@ -429,6 +484,8 @@ export function ProductionTaskTable({
               {task.status === 'Cancelled' && task.cancelledAt
                 ? `Отменена: ${formatDateTime(task.cancelledAt)}${task.cancelledByDisplayName ? ` · ${task.cancelledByDisplayName}` : ''}`
                 : `Создана: ${formatDateTime(task.createdAt)}`}
+              {canManageTaskDeadline && task.dueAt ? ` · До: ${formatDateTime(task.dueAt)}` : ''}
+              {isOverdue ? ' · Просрочена' : ''}
             </small>
           </span>
           <span
@@ -482,7 +539,7 @@ export function ProductionTaskTable({
                 Редактировать
               </button>
             )}
-            {!completed && !cancelled && task.status === 'New' && (
+            {!completed && !cancelled && task.status === 'New' && (canStartTask ? canStartTask(task) : true) && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
                 onStart(task.id)
@@ -505,7 +562,7 @@ export function ProductionTaskTable({
                 className={hasMinimumViolations || hasMissingNovinkaRequirements || hasMissingActuals ? 'task-complete-blocked' : ''}
                 title={
                   hasMissingNovinkaFiles
-                    ? 'Добавьте файлы производства по каждому товару'
+                    ? 'Добавьте превью по каждому товару'
                     : hasMissingNovinkaPaths
                       ? 'Укажите путь к файлу по каждому товару'
                     : hasMissingActuals
@@ -563,15 +620,17 @@ export function ProductionTaskTable({
               )}
             </div>
           )}
-          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
+          <div className={`task-items-table ${novinka ? 'task-items-table-novinka task-items-table-novinka-actions' : ''}`}>
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
               {!novinka && <span>Артикул</span>}
               {novinka ? (
                 <>
                   <span>Ссылка</span>
-                  <span>Файлы</span>
+                  <span>Количество</span>
+                  <span>Превью</span>
                   <span>Путь к файлу</span>
+                  <span>Действия</span>
                 </>
               ) : (
                 <>
@@ -590,7 +649,26 @@ export function ProductionTaskTable({
                 Number.isFinite(actualNumber) &&
                 actualNumber === item.actualQuantity
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+              const itemPreviewFiles = getPreviewFiles(itemFiles)
               const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
+              const hasSavedItemPath = Boolean(item.filePath?.trim() || itemPaths.length > 0)
+              const canSendNovinkaItemToProduction = Boolean(
+                novinka &&
+                task.status === 'InProgress' &&
+                !completed &&
+                !cancelled &&
+                onCreateProductionFromNovinkaItem &&
+                itemPreviewFiles.length > 0 &&
+                hasSavedItemPath,
+              )
+              const canTransferNovinkaItem = Boolean(
+                novinka &&
+                task.status === 'InProgress' &&
+                !completed &&
+                !cancelled &&
+                isAssignedToCurrent &&
+                onTransferNovinkaItem,
+              )
               const isBelowMinimum = Boolean(
                 !novinka &&
                 !completed &&
@@ -626,13 +704,27 @@ export function ProductionTaskTable({
                 {novinka ? (
                   <>
                     <span>{renderNovinkaItemLink(item)}</span>
-                    <TaskItemFilesPanel
+                    <span data-label="Количество">
+                      {task.status === 'InProgress' && !completed && !cancelled && onSaveTaskItemRequiredQuantity ? (
+                        <TaskItemRequiredPanel
+                          item={item}
+                          onSave={(requiredQuantity) =>
+                            onSaveTaskItemRequiredQuantity(task.id, item, requiredQuantity)
+                          }
+                        />
+                      ) : (
+                        item.requiredQuantity
+                      )}
+                    </span>
+                  <TaskItemFilesPanel
                       item={item}
-                      itemFiles={itemFiles}
-                      token={token}
-                      onDeleteFile={onDeleteFile}
+                      itemFiles={itemPreviewFiles}
                       onOpenFiles={onOpenFiles}
-                      onUploadTaskItemFile={onUploadTaskItemFile}
+                      onUploadTaskItemFile={
+                        onUploadTaskItemFile
+                          ? (uploadItem, file) => onUploadTaskItemFile(uploadItem, file, task.taskType)
+                          : undefined
+                      }
                       canUpload={!completed && !cancelled && task.status === 'InProgress'}
                     />
                     <TaskItemPathPanel
@@ -649,11 +741,51 @@ export function ProductionTaskTable({
                           ? (path) => onSaveTaskItemFilePath(task.id, item, path)
                           : undefined
                       }
+                      onDeletePath={
+                        onDeleteTaskItemFilePath
+                          ? () => onDeleteTaskItemFilePath(task.id, item)
+                          : undefined
+                      }
                     />
+                    <span className="task-item-actions-cell task-item-actions-stack">
+                      {canSendNovinkaItemToProduction && (
+                          <button
+                            type="button"
+                            className="task-create-production-button"
+                            onClick={() => onCreateProductionFromNovinkaItem?.(task, item)}
+                          >
+                            В производство
+                          </button>
+                        )}
+                      {canTransferNovinkaItem && (
+                          <button
+                            type="button"
+                            className="task-transfer-item-button"
+                            onClick={() => onTransferNovinkaItem?.(task, item)}
+                          >
+                            Передать
+                          </button>
+                        )}
+                      {!canSendNovinkaItemToProduction && !canTransferNovinkaItem && (
+                          <small className="task-item-readiness-hint">Нужны путь и превью</small>
+                        )}
+                      <ProductionItemSummaryHint item={item} />
+                    </span>
                   </>
                 ) : (
                   <>
-                    <span data-label="План">{item.requiredQuantity}</span>
+                    <span data-label="План">
+                      {task.status === 'InProgress' && !completed && !cancelled && onSaveTaskItemRequiredQuantity ? (
+                        <TaskItemRequiredPanel
+                          item={item}
+                          onSave={(requiredQuantity) =>
+                            onSaveTaskItemRequiredQuantity(task.id, item, requiredQuantity)
+                          }
+                        />
+                      ) : (
+                        item.requiredQuantity
+                      )}
+                    </span>
                     <span className="task-item-fact-cell" data-label="Факт">
                       {completed ? (
                         item.actualQuantity ?? 0
@@ -757,7 +889,24 @@ function TaskItemThumb({
 
   return <ProductThumb name={item.productName} />
 }
-function TaskItemPathsButtons({ paths }: { paths: ProductionFilePath[] }) {
+function TaskItemPathsButtons({
+  paths,
+  onDeletePath,
+}: {
+  paths: ProductionFilePath[]
+  onDeletePath?: () => void | Promise<void>
+}) {
+  const [openedPath, setOpenedPath] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  function copyPath(path: string) {
+    void navigator.clipboard.writeText(path).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
   if (paths.length === 0) {
     return (
       <button type="button" className="production-files-trigger path-missing-button" disabled>
@@ -769,8 +918,62 @@ function TaskItemPathsButtons({ paths }: { paths: ProductionFilePath[] }) {
   return (
     <div className="task-item-paths-buttons">
       {paths.map((entry) => (
-        <PathCopyBlock key={entry.id} path={entry.path} />
+        <button
+          key={entry.id}
+          type="button"
+          className="production-files-trigger task-item-path-trigger"
+          onClick={() => {
+            setOpenedPath(entry.path)
+            setCopied(false)
+          }}
+        >
+          Путь
+        </button>
       ))}
+      {openedPath && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setOpenedPath(null)}>
+          <div
+            className="modal-card production-path-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-title-row">
+              <h3>Путь к файлу</h3>
+              <button type="button" onClick={() => setOpenedPath(null)}>
+                Закрыть
+              </button>
+            </div>
+            <div className="production-path-modal-body">
+              <span>Путь</span>
+              <code>{openedPath}</code>
+            </div>
+            <div className="production-path-modal-actions">
+              {onDeletePath && (
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={deleting}
+                  onClick={async () => {
+                    setDeleting(true)
+                    try {
+                      await onDeletePath()
+                      setOpenedPath(null)
+                    } finally {
+                      setDeleting(false)
+                    }
+                  }}
+                >
+                  {deleting ? 'Удаление…' : 'Удалить путь'}
+                </button>
+              )}
+              <button type="button" onClick={() => copyPath(openedPath)}>
+                {copied ? 'Скопировано' : 'Скопировать путь'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -794,7 +997,7 @@ function TaskItemFilesAndPathsCell({
           className="production-files-trigger"
           onClick={() => onOpenFiles(item.productName, itemFiles)}
         >
-          Файлы ({itemFiles.length})
+          Превью ({itemFiles.length})
         </button>
       ) : null}
       <TaskItemPathsButtons paths={itemPaths} />
@@ -806,6 +1009,54 @@ function TaskItemPathCell({ paths }: { paths: ProductionFilePath[] }) {
   return (
     <span className="task-item-path-cell">
       <TaskItemPathsButtons paths={paths} />
+    </span>
+  )
+}
+
+function TaskItemRequiredPanel({
+  item,
+  onSave,
+}: {
+  item: ProductionTaskItem
+  onSave: (requiredQuantity: number) => void | Promise<void>
+}) {
+  const [value, setValue] = useState(String(item.requiredQuantity))
+  const [saving, setSaving] = useState(false)
+  const requiredNumber = Number(value)
+  const canSubmit =
+    value !== '' &&
+    Number.isFinite(requiredNumber) &&
+    requiredNumber > 0 &&
+    requiredNumber !== item.requiredQuantity
+
+  useEffect(() => {
+    setValue(String(item.requiredQuantity))
+  }, [item.requiredQuantity])
+
+  async function handleSave() {
+    if (!canSubmit) {
+      return
+    }
+
+    setSaving(true)
+    try {
+      await onSave(requiredNumber)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <span className="task-required-editor">
+      <input
+        type="number"
+        min="1"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+      />
+      <button type="button" disabled={!canSubmit || saving} onClick={() => void handleSave()}>
+        {saving ? '...' : 'Сохранить'}
+      </button>
     </span>
   )
 }
@@ -887,11 +1138,13 @@ function TaskItemPathPanel({
   itemPaths,
   canEdit,
   onSavePath,
+  onDeletePath,
 }: {
   item: ProductionTaskItem
   itemPaths: ProductionFilePath[]
   canEdit: boolean
   onSavePath?: (path: string) => void | Promise<void>
+  onDeletePath?: () => void | Promise<void>
 }) {
   const [draftPath, setDraftPath] = useState(item.filePath?.trim() ?? '')
   const [saving, setSaving] = useState(false)
@@ -921,11 +1174,7 @@ function TaskItemPathPanel({
   return (
     <span className="task-item-path-cell">
       {itemPaths.length > 0 && (
-        <div className="task-item-paths-buttons">
-          {itemPaths.map((entry) => (
-            <PathCopyBlock key={entry.id} path={entry.path} />
-          ))}
-        </div>
+        <TaskItemPathsButtons paths={itemPaths} onDeletePath={onDeletePath} />
       )}
       <div className="task-item-path-editor">
         <input
@@ -962,9 +1211,10 @@ export function ProductionTaskArchiveTable({
   productionFilePaths = [],
   token = '',
   onOpenFiles,
-  onDeleteFile,
   onArchive,
   onDelete,
+  onCreateProductionFromNovinka,
+  onPackItem,
   archiveView = false,
   emptyText = 'В архиве задач пока нет.',
 }: {
@@ -974,9 +1224,10 @@ export function ProductionTaskArchiveTable({
   productionFilePaths?: ProductionFilePath[]
   token?: string
   onOpenFiles?: (productName: string, files: ProductionFile[]) => void
-  onDeleteFile?: (id: string) => void
   onArchive?: (id: string) => void
   onDelete?: (id: string) => void
+  onCreateProductionFromNovinka?: (task: ProductionTask) => void
+  onPackItem?: (task: ProductionTask, item: ProductionTaskItem) => void
   archiveView?: boolean
   emptyText?: string
   tableContext?: 'ozon' | 'novinka' | 'mixed'
@@ -1063,6 +1314,15 @@ export function ProductionTaskArchiveTable({
                 : '-'}
           </span>
           <span className="task-actions">
+            {!archiveView && novinka && task.status === 'Completed' && onCreateProductionFromNovinka && (
+              <button type="button" className="task-create-production-button" onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onCreateProductionFromNovinka(task)
+              }}>
+                В производство
+              </button>
+            )}
             {onArchive && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
@@ -1088,25 +1348,27 @@ export function ProductionTaskArchiveTable({
               <p>{task.cancellationComment}</p>
             </div>
           )}
-          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : ''}`}>
+          <div className={`task-items-table ${novinka ? 'task-items-table-novinka' : onPackItem && !archiveView ? 'task-items-table-pack-actions' : ''}`}>
             <div className="table-row task-item-table-row table-head">
               <span>Товар</span>
               {!novinka && <span>Артикул</span>}
               {novinka ? (
                 <>
                   <span>Ссылка</span>
-                  <span>Файлы</span>
+                  <span>Превью</span>
                   <span>Путь к файлу</span>
                 </>
               ) : (
                 <>
                   <span>План</span>
                   <span>Факт</span>
+                  {onPackItem && !archiveView && <span>Действия</span>}
                 </>
               )}
             </div>
             {taskItems.map((item) => {
               const itemFiles = getProductionFilesForTaskItem(item, productionFiles)
+              const itemPreviewFiles = getPreviewFiles(itemFiles)
               const itemPaths = getProductionPathsForTaskItem(item, productionFilePaths)
 
               return (
@@ -1132,9 +1394,7 @@ export function ProductionTaskArchiveTable({
                     <span>{renderNovinkaItemLink(item)}</span>
                     <TaskItemFilesPanel
                       item={item}
-                      itemFiles={itemFiles}
-                      token={token}
-                      onDeleteFile={onDeleteFile}
+                      itemFiles={itemPreviewFiles}
                       onOpenFiles={onOpenFiles}
                       canUpload={false}
                     />
@@ -1144,6 +1404,23 @@ export function ProductionTaskArchiveTable({
                   <>
                     <span data-label="План">{item.requiredQuantity}</span>
                     <span data-label="Факт">{item.actualQuantity ?? 0}</span>
+                    {onPackItem && !archiveView && (
+                      <span className="task-item-actions-cell" data-label="Действия">
+                        {item.packedAt ? (
+                          <small className="task-item-packed-hint">
+                            Упаковано{item.packedByDisplayName ? ` · ${item.packedByDisplayName}` : ''}
+                          </small>
+                        ) : (
+                          <button
+                            type="button"
+                            className="task-pack-item-button"
+                            onClick={() => onPackItem(task, item)}
+                          >
+                            Упаковать
+                          </button>
+                        )}
+                      </span>
+                    )}
                   </>
                 )}
               </div>

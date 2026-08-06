@@ -72,13 +72,17 @@ export function getProductionTaskTypeLabel(task: ProductionTask, productionFiles
   }
 
   if (!isNovinkaTask(task)) {
-    return 'Ozon'
+    if (task.taskType === 'Packaging') {
+      return 'Упаковка'
+    }
+
+    return 'Производство'
   }
 
   const marketplace = resolveNovinkaMarketplaceForTask(task, productionFiles)
   if (marketplace && marketplace !== 'ozon') {
-    return `Новинка · ${getNovinkaMarketplaceLabel(marketplace)}`
+    return `Дизайн · ${getNovinkaMarketplaceLabel(marketplace)}`
   }
 
-  return 'Новинка'
+  return 'Дизайн'
 }

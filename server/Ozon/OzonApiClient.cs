@@ -1,4 +1,5 @@
-using System.Globalization;
+﻿using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -6,13 +7,21 @@ using Microsoft.Extensions.Options;
 
 namespace LShopOzonWebReact.Api.Ozon;
 
-public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credentials)
+public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credentials)
 {
     private readonly OzonRuntimeCredentials _credentials = credentials;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const int MaxAnalyticsChunkDays = 28;
 
     public async Task<OzonProductListResult> GetProductListAsync(int limit, CancellationToken cancellationToken)
+    {
+        return await GetProductListPageAsync(limit, string.Empty, cancellationToken);
+    }
+
+    private async Task<OzonProductListResult> GetProductListPageAsync(
+        int limit,
+        string lastId,
+        CancellationToken cancellationToken)
     {
         EnsureConfigured();
 
@@ -21,7 +30,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         request.Headers.Add("Api-Key", _credentials.ApiKey);
         request.Content = JsonContent.Create(new OzonProductListRequest(
             new OzonProductListFilter("ALL"),
-            string.Empty,
+            lastId,
             Math.Clamp(limit, 1, 1000)));
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -43,6 +52,14 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
     public async Task<OzonStockListResult> GetStocksAsync(int limit, CancellationToken cancellationToken)
     {
+        return await GetStocksPageAsync(limit, string.Empty, cancellationToken);
+    }
+
+    private async Task<OzonStockListResult> GetStocksPageAsync(
+        int limit,
+        string lastId,
+        CancellationToken cancellationToken)
+    {
         EnsureConfigured();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v4/product/info/stocks");
@@ -50,7 +67,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         request.Headers.Add("Api-Key", _credentials.ApiKey);
         request.Content = JsonContent.Create(new OzonStockListRequest(
             new OzonProductListFilter("ALL"),
-            string.Empty,
+            lastId,
             Math.Clamp(limit, 1, 1000)));
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -82,6 +99,27 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         return await GetProductInfoAsync(ids, cancellationToken);
     }
 
+    private async Task<IReadOnlyList<OzonProductSummary>> GetAllProductSummariesAsync(CancellationToken cancellationToken)
+    {
+        var ids = new List<long>();
+        var lastId = string.Empty;
+
+        while (true)
+        {
+            var page = await GetProductListPageAsync(1000, lastId, cancellationToken);
+            ids.AddRange(page.Items.Select(item => item.ProductId));
+
+            if (string.IsNullOrWhiteSpace(page.LastId) || page.LastId == lastId || ids.Count >= page.Total)
+            {
+                break;
+            }
+
+            lastId = page.LastId;
+        }
+
+        return await GetProductInfoAsync(ids.Distinct().ToArray(), cancellationToken);
+    }
+
     public async Task<OzonProductSummary?> GetProductSummaryByIdAsync(long productId, CancellationToken cancellationToken)
     {
         if (productId <= 0)
@@ -96,13 +134,41 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     public async Task<IReadOnlyList<OzonStockSummary>> GetStockSummariesAsync(int limit, CancellationToken cancellationToken)
     {
         var stocks = await GetStocksAsync(limit, cancellationToken);
-        var productIds = stocks.Items.Select(item => item.ProductId).Distinct().ToArray();
+        return await BuildStockSummariesAsync(stocks.Items, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<OzonStockSummary>> GetAllStockSummariesAsync(CancellationToken cancellationToken)
+    {
+        var items = new List<OzonStockListItem>();
+        var lastId = string.Empty;
+
+        while (true)
+        {
+            var page = await GetStocksPageAsync(1000, lastId, cancellationToken);
+            items.AddRange(page.Items);
+
+            if (string.IsNullOrWhiteSpace(page.Cursor) || page.Cursor == lastId || items.Count >= page.Total)
+            {
+                break;
+            }
+
+            lastId = page.Cursor;
+        }
+
+        return await BuildStockSummariesAsync(items, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<OzonStockSummary>> BuildStockSummariesAsync(
+        IReadOnlyList<OzonStockListItem> stockItems,
+        CancellationToken cancellationToken)
+    {
+        var productIds = stockItems.Select(item => item.ProductId).Distinct().ToArray();
         var details = await GetProductInfoAsync(productIds, cancellationToken);
         var detailsById = details
             .GroupBy(item => item.ProductId)
             .ToDictionary(group => group.Key, group => group.First());
 
-        return stocks.Items.Select(item =>
+        return stockItems.Select(item =>
         {
             detailsById.TryGetValue(item.ProductId, out var detail);
             var fbo = item.Stocks.FirstOrDefault(stock => stock.Type.Equals("fbo", StringComparison.OrdinalIgnoreCase));
@@ -212,8 +278,11 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
         var revenueTotal = productRows.Sum(row => row.Revenue);
         var commissionTotal = productRows.Sum(row => row.CommissionAmount);
-        var payoutTotal = productRows.Sum(row => row.Payout);
+        var payoutTotal = financeOperations.Sum(operation => operation.Amount);
         var logisticsTotal = productRows.Sum(row => row.LogisticsAmount);
+        var servicesTotal = Math.Abs(financeOperations
+            .Where(operation => operation.Type.Equals("services", StringComparison.OrdinalIgnoreCase))
+            .Sum(operation => operation.Amount));
         var orderedUnitsTotal = productRows.Count(row => row.Revenue > 0);
         var productsForStatus = await GetProductSummariesAsync(1000, cancellationToken);
         var productStatusSummary = GetProductStatusSummary(productsForStatus);
@@ -228,7 +297,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             accountBalance = balance.Total.ClosingBalance.Value;
             accountBalanceCurrency = balance.Total.ClosingBalance.CurrencyCode;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
         {
             accountBalance = null;
             accountBalanceCurrency = string.Empty;
@@ -291,7 +360,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         {
             stocks = await GetStockSummariesAsync(1000, cancellationToken);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
         {
             stocks = [];
         }
@@ -338,7 +407,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             commissionTotal,
             payoutTotal,
             logisticsTotal,
-            financeOperations.Where(operation => operation.Type == "services").Sum(operation => operation.Amount),
+            servicesTotal,
             (int)awaitingDeliverCount,
             awaitingDeliverAmount,
             postings.Count(posting => posting.Status == "delivering"),
@@ -367,15 +436,14 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         CancellationToken cancellationToken = default)
     {
         var timeZone = analyticsTimeZone ?? ResolveDefaultAnalyticsTimeZone();
-        var productsForStatus = await GetProductSummariesAsync(1000, cancellationToken);
-        var allTimeSoldProductKeys = await GetAllTimeSoldProductKeysAsync(timeZone, cancellationToken);
+        var productsForStatus = await GetAllProductSummariesAsync(cancellationToken);
 
         IReadOnlyList<OzonStockSummary> stocks = [];
         try
         {
-            stocks = await GetStockSummariesAsync(1000, cancellationToken);
+            stocks = await GetAllStockSummariesAsync(cancellationToken);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
         {
             stocks = [];
         }
@@ -388,10 +456,33 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             .Where(stock => !string.IsNullOrWhiteSpace(stock.OfferId))
             .GroupBy(stock => stock.OfferId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Sum(stock => stock.FboPresent + stock.FbsPresent), StringComparer.OrdinalIgnoreCase);
+        var stocksByProductId = stocks
+            .Where(stock => stock.ProductId > 0)
+            .GroupBy(stock => stock.ProductId)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.FboPresent + stock.FbsPresent));
+        var stockedProductKeys = stocks
+            .Where(stock => stock.FboPresent + stock.FbsPresent > 0)
+            .SelectMany(stock =>
+            {
+                var keys = new List<string>();
+                if (stock.Sku is > 0)
+                {
+                    keys.Add($"sku:{stock.Sku.Value}");
+                }
 
-        var unsoldCandidates = productsForStatus
-            .Where(product => !allTimeSoldProductKeys.Contains(GetProductKey(product.Sku ?? 0, product.OfferId)))
-            .ToList();
+                if (!string.IsNullOrWhiteSpace(stock.OfferId))
+                {
+                    keys.Add($"offer:{stock.OfferId.Trim()}");
+                }
+
+                if (stock.ProductId > 0)
+                {
+                    keys.Add($"product:{stock.ProductId}");
+                }
+
+                return keys;
+            })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var ozonSupplyArrivalIndex = await TryBuildOzonSupplyArrivalIndexAsync(cancellationToken);
         OzonStockArrivalIndex? supplyArrivalIndex = ozonSupplyArrivalIndex;
@@ -402,12 +493,41 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
 
         var todayInTimeZone = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
-        var items = unsoldCandidates
+        var candidatesWithSupply = productsForStatus
             .Select(product =>
             {
                 var sku = product.Sku ?? 0;
                 var supplyDate = ResolveUnsoldProductSupplyDate(product, sku, supplyArrivalIndex);
                 var daysWithoutSales = CalculateDaysSinceSupplyDate(supplyDate, todayInTimeZone);
+
+                return new
+                {
+                    Product = product,
+                    Sku = sku,
+                    SupplyDate = supplyDate,
+                    DaysWithoutSales = daysWithoutSales,
+                    StockTotal = ResolveStockTotal(product.ProductId, sku, product.OfferId, stocksBySku, stocksByOfferId, stocksByProductId)
+                };
+            })
+            .Where(row => !string.IsNullOrWhiteSpace(row.SupplyDate))
+            .Where(row => row.StockTotal > 0 || IsProductInStock(row.Product.ProductId, row.Sku, row.Product.OfferId, stockedProductKeys))
+            .ToList();
+
+        var supplyDatesByProductKey = BuildSupplyDatesByProductKey(candidatesWithSupply.Select(row => (
+            row.Sku,
+            row.Product.OfferId,
+            row.SupplyDate)));
+        var soldAfterSupplyKeys = await GetSoldProductKeysSinceSupplyDatesAsync(
+            supplyDatesByProductKey,
+            timeZone,
+            cancellationToken);
+
+        var items = candidatesWithSupply
+            .Where(row => !WasProductSoldAfterSupply(row.Sku, row.Product.OfferId, soldAfterSupplyKeys))
+            .Select(row =>
+            {
+                var product = row.Product;
+                var sku = row.Sku;
 
                 return new OzonUnsoldProductRow(
                     sku,
@@ -415,13 +535,11 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                     product.Name,
                     product.Price,
                     product.CurrencyCode,
-                    sku != 0 && stocksBySku.TryGetValue(sku, out var stockBySku)
-                        ? stockBySku
-                        : stocksByOfferId.GetValueOrDefault(product.OfferId, 0),
+                    row.StockTotal,
                     product.Status,
                     product.ImageUrl,
-                    supplyDate,
-                    daysWithoutSales);
+                    row.SupplyDate,
+                    row.DaysWithoutSales);
             })
             .OrderByDescending(row => row.DaysWithoutSales ?? 0)
             .ThenBy(row => row.OfferId, StringComparer.OrdinalIgnoreCase)
@@ -449,7 +567,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
             accountBalance = balance.Total.ClosingBalance.Value;
             accountBalanceCurrency = balance.Total.ClosingBalance.CurrencyCode;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
         {
             accountBalance = null;
             accountBalanceCurrency = string.Empty;
@@ -636,7 +754,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 }
             }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
         {
             // Postings are supplemental for sold detection; finance transactions remain the primary source.
         }
@@ -646,6 +764,182 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
     private static string GetProductKey(long sku, string offerId) =>
         sku != 0 ? $"sku:{sku}" : $"offer:{offerId}";
+
+    private static Dictionary<string, DateOnly> BuildSupplyDatesByProductKey(
+        IEnumerable<(long Sku, string OfferId, string? SupplyDate)> rows)
+    {
+        var result = new Dictionary<string, DateOnly>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            if (string.IsNullOrWhiteSpace(row.SupplyDate) ||
+                !TryParseSellingSinceDate(row.SupplyDate, out var supplyDate))
+            {
+                continue;
+            }
+
+            if (row.Sku > 0)
+            {
+                result[$"sku:{row.Sku}"] = supplyDate;
+            }
+
+            if (!string.IsNullOrWhiteSpace(row.OfferId))
+            {
+                result[$"offer:{row.OfferId.Trim()}"] = supplyDate;
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<HashSet<string>> GetSoldProductKeysSinceSupplyDatesAsync(
+        IReadOnlyDictionary<string, DateOnly> supplyDatesByProductKey,
+        TimeZoneInfo timeZone,
+        CancellationToken cancellationToken)
+    {
+        var soldKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (supplyDatesByProductKey.Count == 0)
+        {
+            return soldKeys;
+        }
+
+        var dateFrom = supplyDatesByProductKey.Values.Min();
+        var dateTo = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date);
+        foreach (var (from, to) in SplitDateRange(dateFrom, dateTo))
+        {
+            var operations = await GetAllFinanceTransactionsAsync(from, to, string.Empty, timeZone, cancellationToken);
+            foreach (var operation in operations)
+            {
+                if (operation.AccrualsForSale <= 0 &&
+                    !operation.Type.Equals("orders", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!TryParseOzonDate(operation.OperationDate, out var operationDate))
+                {
+                    continue;
+                }
+
+                foreach (var item in operation.Items)
+                {
+                    if (item.Sku > 0)
+                    {
+                        TryAddSoldKeyAfterSupply($"sku:{item.Sku}", operationDate, supplyDatesByProductKey, soldKeys);
+                    }
+                }
+            }
+        }
+
+        try
+        {
+            var postings = await GetAllPostingsForRangeAsync(
+                dateFrom,
+                dateTo,
+                timeZone,
+                includeCancelled: false,
+                cancellationToken);
+            foreach (var posting in postings)
+            {
+                if (!TryParseOzonDate(ResolvePostingOperationDate(posting, null, timeZone), out var postingDate))
+                {
+                    continue;
+                }
+
+                foreach (var product in posting.Products)
+                {
+                    if (product.Quantity <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (product.Sku > 0)
+                    {
+                        TryAddSoldKeyAfterSupply($"sku:{product.Sku}", postingDate, supplyDatesByProductKey, soldKeys);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(product.OfferId))
+                    {
+                        TryAddSoldKeyAfterSupply(
+                            $"offer:{product.OfferId.Trim()}",
+                            postingDate,
+                            supplyDatesByProductKey,
+                            soldKeys);
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (IsRecoverableOzonException(exception))
+        {
+            // Finance transactions remain the primary source; postings only improve matching by offer id.
+        }
+
+        return soldKeys;
+    }
+
+    private static void TryAddSoldKeyAfterSupply(
+        string key,
+        DateOnly saleDate,
+        IReadOnlyDictionary<string, DateOnly> supplyDatesByProductKey,
+        HashSet<string> soldKeys)
+    {
+        if (supplyDatesByProductKey.TryGetValue(key, out var supplyDate) && saleDate >= supplyDate)
+        {
+            soldKeys.Add(key);
+        }
+    }
+
+    private static bool WasProductSoldAfterSupply(long sku, string offerId, IReadOnlySet<string> soldKeys)
+    {
+        if (sku > 0 && soldKeys.Contains($"sku:{sku}"))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(offerId) && soldKeys.Contains($"offer:{offerId.Trim()}");
+    }
+
+    private static int ResolveStockTotal(
+        long productId,
+        long sku,
+        string offerId,
+        IReadOnlyDictionary<long, int> stocksBySku,
+        IReadOnlyDictionary<string, int> stocksByOfferId,
+        IReadOnlyDictionary<long, int> stocksByProductId)
+    {
+        if (sku > 0 && stocksBySku.TryGetValue(sku, out var stockBySku))
+        {
+            return stockBySku;
+        }
+
+        if (!string.IsNullOrWhiteSpace(offerId) &&
+            stocksByOfferId.TryGetValue(offerId.Trim(), out var stockByOfferId))
+        {
+            return stockByOfferId;
+        }
+
+        return productId > 0 && stocksByProductId.TryGetValue(productId, out var stockByProductId)
+            ? stockByProductId
+            : 0;
+    }
+
+    private static bool IsProductInStock(
+        long productId,
+        long sku,
+        string offerId,
+        IReadOnlySet<string> stockedProductKeys)
+    {
+        if (sku > 0 && stockedProductKeys.Contains($"sku:{sku}"))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(offerId) && stockedProductKeys.Contains($"offer:{offerId.Trim()}"))
+        {
+            return true;
+        }
+
+        return productId > 0 && stockedProductKeys.Contains($"product:{productId}");
+    }
 
     private static int? CalculateDaysSinceSupplyDate(string? supplyDateAt, DateOnly periodEnd)
     {
@@ -729,10 +1023,18 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
             foreach (var batch in orderIds.Chunk(50))
             {
-                var content = await PostOzonJsonAsync(
-                    "/v3/supply-order/get",
-                    new { order_ids = batch },
-                    cancellationToken);
+                string content;
+                try
+                {
+                    content = await PostOzonJsonAsync(
+                        "/v3/supply-order/get",
+                        new { order_ids = batch },
+                        cancellationToken);
+                }
+                catch (HttpRequestException)
+                {
+                    continue;
+                }
 
                 using var document = JsonDocument.Parse(content);
                 if (!document.RootElement.TryGetProperty("orders", out var orders) ||
@@ -749,9 +1051,10 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                         continue;
                     }
 
-                    var orderCompletionDate = DateOnly.MinValue;
-                    var hasOrderCompletionDate = order.TryGetProperty("state_updated_date", out var updatedProperty) &&
-                                                 TryParseOzonSupplyCompletionDate(updatedProperty.GetString(), out orderCompletionDate);
+                    if (!TryResolveOzonSupplyShipmentDate(order, out var shipmentDate))
+                    {
+                        continue;
+                    }
 
                     if (!order.TryGetProperty("supplies", out var supplies) ||
                         supplies.ValueKind != JsonValueKind.Array)
@@ -761,18 +1064,6 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
 
                     foreach (var supply in supplies.EnumerateArray())
                     {
-                        var completionDate = orderCompletionDate;
-                        if (supply.TryGetProperty("storage_warehouse", out var storageWarehouse) &&
-                            storageWarehouse.TryGetProperty("arrival_date", out var arrivalProperty) &&
-                            TryParseOzonSupplyCompletionDate(arrivalProperty.GetString(), out var arrivalDate))
-                        {
-                            completionDate = arrivalDate;
-                        }
-                        else if (!hasOrderCompletionDate)
-                        {
-                            continue;
-                        }
-
                         if (!supply.TryGetProperty("bundle_id", out var bundleProperty))
                         {
                             continue;
@@ -784,22 +1075,31 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                             continue;
                         }
 
-                        var bundleItems = await GetSupplyBundleItemsAsync(bundleId, cancellationToken);
+                        List<(long Sku, string OfferId, long ProductId)> bundleItems;
+                        try
+                        {
+                            bundleItems = await GetSupplyBundleItemsAsync(bundleId, cancellationToken);
+                        }
+                        catch (HttpRequestException)
+                        {
+                            continue;
+                        }
+
                         foreach (var item in bundleItems)
                         {
                             if (item.Sku > 0)
                             {
-                                MergeMostRecentDate(bySku, item.Sku, completionDate);
+                                MergeMostRecentDate(bySku, item.Sku, shipmentDate);
                             }
 
                             if (!string.IsNullOrWhiteSpace(item.OfferId))
                             {
-                                MergeMostRecentOfferDate(byOfferId, item.OfferId, completionDate);
+                                MergeMostRecentOfferDate(byOfferId, item.OfferId, shipmentDate);
                             }
 
                             if (item.ProductId > 0)
                             {
-                                MergeMostRecentDate(byProductId, item.ProductId, completionDate);
+                                MergeMostRecentDate(byProductId, item.ProductId, shipmentDate);
                             }
                         }
                     }
@@ -819,6 +1119,78 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
     }
 
+    public async Task<IReadOnlyList<OzonSupplyShipmentQuantity>> GetCompletedSupplyShipmentQuantitiesAsync(
+        CancellationToken cancellationToken)
+    {
+        var orderIds = await ListCompletedSupplyOrderIdsAsync(cancellationToken);
+        if (orderIds.Count == 0)
+        {
+            return [];
+        }
+
+        var quantities = new Dictionary<string, OzonSupplyShipmentQuantity>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var orderId in orderIds)
+        {
+            List<OzonSupplyBundleItemQuantity> orderItems;
+            try
+            {
+                orderItems = await GetSupplyOrderItemQuantitiesAsync(orderId, cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                continue;
+            }
+
+            foreach (var item in orderItems)
+            {
+                var key = !string.IsNullOrWhiteSpace(item.OfferId)
+                    ? $"offer:{item.OfferId.Trim()}"
+                    : item.Sku > 0
+                        ? $"sku:{item.Sku}"
+                        : item.ProductId > 0
+                            ? $"product:{item.ProductId}"
+                            : string.Empty;
+
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                quantities.TryGetValue(key, out var current);
+                quantities[key] = new OzonSupplyShipmentQuantity(
+                    item.Sku > 0 ? item.Sku : current?.Sku ?? 0,
+                    !string.IsNullOrWhiteSpace(item.OfferId) ? item.OfferId.Trim() : current?.OfferId ?? string.Empty,
+                    item.ProductId > 0 ? item.ProductId : current?.ProductId ?? 0,
+                    (current?.Quantity ?? 0) + item.Quantity,
+                    !string.IsNullOrWhiteSpace(item.ProductName) ? item.ProductName.Trim() : current?.ProductName ?? string.Empty);
+            }
+        }
+
+        return quantities.Values.ToList();
+    }
+
+    private static bool TryResolveOzonSupplyShipmentDate(JsonElement order, out DateOnly shipmentDate)
+    {
+        shipmentDate = default;
+        if (order.TryGetProperty("timeslot", out var timeslotWrapper) &&
+            timeslotWrapper.TryGetProperty("timeslot", out var timeslot) &&
+            timeslot.TryGetProperty("from", out var fromProperty) &&
+            TryParseOzonSupplyCompletionDate(fromProperty.GetString(), out shipmentDate))
+        {
+            return true;
+        }
+
+        if (order.TryGetProperty("timeslot", out var flatTimeslot) &&
+            flatTimeslot.TryGetProperty("from", out var flatFromProperty) &&
+            TryParseOzonSupplyCompletionDate(flatFromProperty.GetString(), out shipmentDate))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task<List<long>> ListCompletedSupplyOrderIdsAsync(CancellationToken cancellationToken)
     {
         var orderIds = new List<long>();
@@ -830,29 +1202,29 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 "/v3/supply-order/list",
                 new
                 {
-                    filter = new { states = new[] { "COMPLETED" } },
+                    filter = new
+                    {
+                        states = new[] { "COMPLETED" }
+                    },
                     limit = 100,
                     last_id = lastId,
-                    sort_by = 1,
-                    sort_direction = 2
+                    sort_by = 1
                 },
                 cancellationToken);
 
             using var document = JsonDocument.Parse(content);
-            if (document.RootElement.TryGetProperty("order_ids", out var idsProperty) &&
-                idsProperty.ValueKind == JsonValueKind.Array)
+            var root = ResolveOzonResultElement(document.RootElement);
+            CollectOzonSupplyOrderIds(root, orderIds);
+
+            var hasNext = root.TryGetProperty("has_next", out var hasNextProperty) &&
+                          hasNextProperty.ValueKind == JsonValueKind.True;
+            if (!hasNext)
             {
-                foreach (var idProperty in idsProperty.EnumerateArray())
-                {
-                    if (idProperty.TryGetInt64(out var orderId) && orderId > 0)
-                    {
-                        orderIds.Add(orderId);
-                    }
-                }
+                break;
             }
 
-            var nextLastId = document.RootElement.TryGetProperty("last_id", out var lastIdProperty)
-                ? lastIdProperty.GetString() ?? string.Empty
+            var nextLastId = root.TryGetProperty("last_id", out var lastIdProperty)
+                ? ReadJsonElementString(lastIdProperty)
                 : string.Empty;
 
             if (string.IsNullOrWhiteSpace(nextLastId) || nextLastId == lastId)
@@ -886,7 +1258,8 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 cancellationToken);
 
             using var document = JsonDocument.Parse(content);
-            if (document.RootElement.TryGetProperty("items", out var bundleItems) &&
+            var root = ResolveOzonResultElement(document.RootElement);
+            if (root.TryGetProperty("items", out var bundleItems) &&
                 bundleItems.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in bundleItems.EnumerateArray())
@@ -909,10 +1282,10 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
                 }
             }
 
-            var hasNext = document.RootElement.TryGetProperty("has_next", out var hasNextProperty) &&
+            var hasNext = root.TryGetProperty("has_next", out var hasNextProperty) &&
                           hasNextProperty.ValueKind == JsonValueKind.True;
-            var nextLastId = document.RootElement.TryGetProperty("last_id", out var lastIdProperty)
-                ? lastIdProperty.GetString() ?? string.Empty
+            var nextLastId = root.TryGetProperty("last_id", out var lastIdProperty)
+                ? ReadJsonElementString(lastIdProperty)
                 : string.Empty;
 
             if (!hasNext || string.IsNullOrWhiteSpace(nextLastId) || nextLastId == lastId)
@@ -924,6 +1297,536 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
 
         return items;
+    }
+
+    private async Task<List<OzonSupplyBundleItemQuantity>> GetSupplyBundleItemQuantitiesAsync(
+        string bundleId,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<OzonSupplyBundleItemQuantity>();
+        var lastId = string.Empty;
+
+        for (var page = 0; page < 20; page++)
+        {
+            var content = await PostOzonJsonAsync(
+                "/v1/supply-order/bundle",
+                new
+                {
+                    bundle_ids = new[] { bundleId },
+                    limit = 100,
+                    last_id = lastId
+                },
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(content);
+            var root = ResolveOzonResultElement(document.RootElement);
+            if (root.TryGetProperty("items", out var bundleItems) &&
+                bundleItems.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in bundleItems.EnumerateArray())
+                {
+                    var sku = item.TryGetProperty("sku", out var skuProperty) && skuProperty.TryGetInt64(out var parsedSku)
+                        ? parsedSku
+                        : 0L;
+                    var offerId = item.TryGetProperty("offer_id", out var offerProperty)
+                        ? offerProperty.GetString() ?? string.Empty
+                        : string.Empty;
+                    var productId = item.TryGetProperty("product_id", out var productProperty) &&
+                                    productProperty.TryGetInt64(out var parsedProductId)
+                        ? parsedProductId
+                        : 0L;
+                    var productName = ReadOzonSupplyStringProperty(
+                        item,
+                        "product_name",
+                        "productName",
+                        "name",
+                        "title",
+                        "offer_name",
+                        "item_name");
+                    var quantity = ReadOzonSupplyItemQuantity(item);
+
+                    if ((sku > 0 || !string.IsNullOrWhiteSpace(offerId) || productId > 0) && quantity > 0)
+                    {
+                        items.Add(new OzonSupplyBundleItemQuantity(sku, offerId, productId, quantity, productName));
+                    }
+                }
+            }
+
+            var hasNext = root.TryGetProperty("has_next", out var hasNextProperty) &&
+                          hasNextProperty.ValueKind == JsonValueKind.True;
+            var nextLastId = root.TryGetProperty("last_id", out var lastIdProperty)
+                ? ReadJsonElementString(lastIdProperty)
+                : string.Empty;
+
+            if (!hasNext || string.IsNullOrWhiteSpace(nextLastId) || nextLastId == lastId)
+            {
+                break;
+            }
+
+            lastId = nextLastId;
+        }
+
+        return items;
+    }
+
+    private async Task<List<OzonSupplyBundleItemQuantity>> GetSupplyOrderItemQuantitiesAsync(
+        long orderId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var directItems = await GetSupplyOrderItemsEndpointQuantitiesAsync(orderId, cancellationToken);
+            if (directItems.Count > 0)
+            {
+                return directItems;
+            }
+        }
+        catch (HttpRequestException)
+        {
+        }
+
+        var items = new List<OzonSupplyBundleItemQuantity>();
+        var content = await PostOzonJsonAsync(
+            "/v3/supply-order/get",
+            new
+            {
+                order_ids = new[] { orderId.ToString(CultureInfo.InvariantCulture) }
+            },
+            cancellationToken);
+
+        using var document = JsonDocument.Parse(content);
+        var root = ResolveOzonResultElement(document.RootElement);
+        CollectOzonSupplyItems(root, items);
+
+        if (!root.TryGetProperty("orders", out var orders) ||
+            orders.ValueKind != JsonValueKind.Array)
+        {
+            return items;
+        }
+
+        foreach (var order in orders.EnumerateArray())
+        {
+            if (!order.TryGetProperty("supplies", out var supplies) ||
+                supplies.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var supply in supplies.EnumerateArray())
+            {
+                CollectOzonSupplyItems(supply, items);
+
+                if (!supply.TryGetProperty("bundle_id", out var bundleProperty))
+                {
+                    continue;
+                }
+
+                var bundleId = bundleProperty.GetString();
+                if (string.IsNullOrWhiteSpace(bundleId))
+                {
+                    continue;
+                }
+
+                items.AddRange(await GetSupplyBundleItemQuantitiesAsync(bundleId, cancellationToken));
+            }
+        }
+
+        return items;
+    }
+
+    private async Task<List<OzonSupplyBundleItemQuantity>> GetSupplyOrderItemsEndpointQuantitiesAsync(
+        long orderId,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<OzonSupplyBundleItemQuantity>();
+
+        for (var page = 1; page <= 50; page++)
+        {
+            var content = await PostOzonJsonAsync(
+                "/v1/supply-order/items",
+                new
+                {
+                    page,
+                    page_size = 100,
+                    supply_order_id = orderId
+                },
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(content);
+            var root = ResolveOzonResultElement(document.RootElement);
+            CollectOzonSupplyItems(root, items);
+
+            var hasNext = root.TryGetProperty("has_next", out var hasNextProperty) &&
+                          hasNextProperty.ValueKind == JsonValueKind.True;
+            if (!hasNext)
+            {
+                break;
+            }
+        }
+
+        return items;
+    }
+
+    private static bool TryReadJsonLong(JsonElement value, out long result)
+    {
+        result = 0;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.TryGetInt64(out result),
+            JsonValueKind.String => long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out result),
+            _ => false
+        };
+    }
+
+    private static void CollectOzonSupplyOrderIds(JsonElement root, List<long> orderIds)
+    {
+        foreach (var propertyName in new[] { "order_ids", "supply_order_ids" })
+        {
+            if (!root.TryGetProperty(propertyName, out var ids) || ids.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in ids.EnumerateArray())
+            {
+                if (TryReadJsonLong(item, out var orderId) && orderId > 0)
+                {
+                    orderIds.Add(orderId);
+                }
+            }
+        }
+
+        foreach (var arrayName in new[] { "orders", "items", "supply_orders" })
+        {
+            if (!root.TryGetProperty(arrayName, out var items) || items.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in items.EnumerateArray())
+            {
+                foreach (var idName in new[] { "id", "order_id", "supply_order_id", "supply_order_number" })
+                {
+                    if (item.TryGetProperty(idName, out var idProperty) &&
+                        TryReadJsonLong(idProperty, out var orderId) &&
+                        orderId > 0)
+                    {
+                        orderIds.Add(orderId);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private static void CollectOzonSupplyItems(JsonElement root, List<OzonSupplyBundleItemQuantity> items)
+    {
+        CollectOzonSupplyItems(root, items, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static void CollectOzonSupplyItems(
+        JsonElement root,
+        List<OzonSupplyBundleItemQuantity> items,
+        HashSet<string> seenItems)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (TryReadOzonSupplyItemQuantity(root, out var quantity))
+            {
+                var identity = $"{quantity.Sku}|{quantity.OfferId}|{quantity.ProductId}|{quantity.Quantity}|{quantity.ProductName}";
+                if (seenItems.Add(identity))
+                {
+                    items.Add(quantity);
+                }
+            }
+
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                {
+                    CollectOzonSupplyItems(property.Value, items, seenItems);
+                }
+            }
+
+            return;
+        }
+
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var item in root.EnumerateArray())
+        {
+            CollectOzonSupplyItems(item, items, seenItems);
+        }
+    }
+
+    private static bool TryReadOzonSupplyItemQuantity(JsonElement item, out OzonSupplyBundleItemQuantity quantity)
+    {
+        var sku = ReadOzonSupplyLongProperty(item, "sku", "sku_id", "skuId");
+        var offerId = ReadOzonSupplyStringProperty(
+            item,
+            "offer_id",
+            "offerId",
+            "seller_sku",
+            "sellerSku",
+            "item_code",
+            "article",
+            "barcode");
+        var productId = ReadOzonSupplyLongProperty(item, "product_id", "productId");
+        var productName = ReadOzonSupplyStringProperty(
+            item,
+            "product_name",
+            "productName",
+            "name",
+            "title",
+            "offer_name",
+            "item_name");
+
+        if (sku <= 0)
+        {
+            sku = ReadOzonSupplyLongPropertyDeep(item, "sku", "sku_id", "skuId");
+        }
+
+        if (string.IsNullOrWhiteSpace(offerId))
+        {
+            offerId = ReadOzonSupplyStringPropertyDeep(
+                item,
+                "offer_id",
+                "offerId",
+                "seller_sku",
+                "sellerSku",
+                "item_code",
+                "article",
+                "barcode");
+        }
+
+        if (productId <= 0)
+        {
+            productId = ReadOzonSupplyLongPropertyDeep(item, "product_id", "productId");
+        }
+
+        if (string.IsNullOrWhiteSpace(productName))
+        {
+            productName = ReadOzonSupplyStringPropertyDeep(
+                item,
+                "product_name",
+                "productName",
+                "name",
+                "title",
+                "offer_name",
+                "item_name");
+        }
+
+        var count = ReadOzonSupplyItemQuantity(item);
+
+        quantity = new OzonSupplyBundleItemQuantity(sku, offerId, productId, count, productName);
+        return count > 0 && (sku > 0 || !string.IsNullOrWhiteSpace(offerId) || productId > 0);
+    }
+
+    private static long ReadOzonSupplyLongProperty(JsonElement item, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (item.TryGetProperty(propertyName, out var property) &&
+                TryReadJsonLong(property, out var result))
+            {
+                return result;
+            }
+        }
+
+        return 0;
+    }
+
+    private static string ReadOzonSupplyStringProperty(JsonElement item, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!item.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            var value = ReadJsonElementString(property);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static long ReadOzonSupplyLongPropertyDeep(JsonElement item, params string[] propertyNames)
+    {
+        if (item.ValueKind == JsonValueKind.Object)
+        {
+            var direct = ReadOzonSupplyLongProperty(item, propertyNames);
+            if (direct > 0)
+            {
+                return direct;
+            }
+
+            foreach (var property in item.EnumerateObject())
+            {
+                if (property.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array))
+                {
+                    continue;
+                }
+
+                var nested = ReadOzonSupplyLongPropertyDeep(property.Value, propertyNames);
+                if (nested > 0)
+                {
+                    return nested;
+                }
+            }
+        }
+
+        if (item.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        foreach (var child in item.EnumerateArray())
+        {
+            var nested = ReadOzonSupplyLongPropertyDeep(child, propertyNames);
+            if (nested > 0)
+            {
+                return nested;
+            }
+        }
+
+        return 0;
+    }
+
+    private static string ReadOzonSupplyStringPropertyDeep(JsonElement item, params string[] propertyNames)
+    {
+        if (item.ValueKind == JsonValueKind.Object)
+        {
+            var direct = ReadOzonSupplyStringProperty(item, propertyNames);
+            if (!string.IsNullOrWhiteSpace(direct))
+            {
+                return direct;
+            }
+
+            foreach (var property in item.EnumerateObject())
+            {
+                if (property.Value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array))
+                {
+                    continue;
+                }
+
+                var nested = ReadOzonSupplyStringPropertyDeep(property.Value, propertyNames);
+                if (!string.IsNullOrWhiteSpace(nested))
+                {
+                    return nested;
+                }
+            }
+        }
+
+        if (item.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        foreach (var child in item.EnumerateArray())
+        {
+            var nested = ReadOzonSupplyStringPropertyDeep(child, propertyNames);
+            if (!string.IsNullOrWhiteSpace(nested))
+            {
+                return nested;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadJsonElementString(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? string.Empty,
+            JsonValueKind.Number => value.ToString(),
+            _ => string.Empty
+        };
+    }
+
+    private static int ReadOzonSupplyItemQuantity(JsonElement item)
+    {
+        foreach (var propertyName in new[]
+                 {
+                     "quantity",
+                     "count",
+                     "items_count",
+                     "sku_quantity",
+                     "available_quantity",
+                     "total_quantity",
+                     "fact_quantity",
+                     "accepted_quantity",
+                     "declared_quantity",
+                     "requested_quantity",
+                     "bundle_quantity",
+                     "planned_quantity",
+                     "valid_quantity",
+                     "real_quantity",
+                     "quantity_info",
+                     "quantityInfo",
+                     "amount"
+                 })
+        {
+            if (!item.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var number))
+            {
+                return Math.Max(0, number);
+            }
+
+            if (property.ValueKind == JsonValueKind.String &&
+                int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return Math.Max(0, parsed);
+            }
+
+            if (property.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var nestedName in new[]
+                         {
+                             "value",
+                             "count",
+                             "quantity",
+                             "items_count",
+                             "total_quantity",
+                             "fact_quantity",
+                             "accepted_quantity",
+                             "declared_quantity",
+                             "requested_quantity",
+                             "planned_quantity",
+                             "valid_quantity",
+                             "real_quantity"
+                         })
+                {
+                    if (property.TryGetProperty(nestedName, out var nestedProperty) &&
+                        TryReadJsonLong(nestedProperty, out var nested) &&
+                        nested > 0)
+                    {
+                        return (int)Math.Min(int.MaxValue, nested);
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private static JsonElement ResolveOzonResultElement(JsonElement root)
+    {
+        return root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
+            ? result
+            : root;
     }
 
     private static void MergeMostRecentDate(Dictionary<long, DateOnly> map, long key, DateOnly date)
@@ -1150,23 +2053,34 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     {
         EnsureConfigured();
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, path);
-        request.Headers.Add("Client-Id", _credentials.ClientId);
-        request.Headers.Add("Api-Key", _credentials.ApiKey);
-        request.Content = JsonContent.Create(body);
-
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            throw new HttpRequestException(
-                $"Ozon API returned {(int)response.StatusCode}: {content}",
-                null,
-                response.StatusCode);
+            using var request = new HttpRequestMessage(HttpMethod.Post, path);
+            request.Headers.Add("Client-Id", _credentials.ClientId);
+            request.Headers.Add("Api-Key", _credentials.ApiKey);
+            request.Content = JsonContent.Create(body);
+
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < 3)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2 + attempt * 2), cancellationToken);
+                continue;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"Ozon API returned {(int)response.StatusCode}: {content}",
+                    null,
+                    response.StatusCode);
+            }
+
+            return content;
         }
 
-        return content;
+        throw new HttpRequestException("Ozon API request failed after retries.");
     }
 
     private static bool IsCollectingStatus(string status)
@@ -1559,6 +2473,9 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         }
     }
 
+    private static bool IsRecoverableOzonException(Exception exception) =>
+        exception is InvalidOperationException or HttpRequestException or TaskCanceledException or TimeoutException;
+
     private static TimeZoneInfo ResolveDefaultAnalyticsTimeZone()
     {
         try
@@ -1584,6 +2501,15 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         var endLocal = dateTo.ToDateTime(new TimeOnly(23, 59, 59));
         var start = new DateTimeOffset(startLocal, timeZone.GetUtcOffset(startLocal));
         var end = new DateTimeOffset(endLocal, timeZone.GetUtcOffset(endLocal));
+        return (
+            start.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
+            end.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+    }
+
+    private static (string Since, string To) FormatFinanceDateRange(DateOnly dateFrom, DateOnly dateTo)
+    {
+        var start = new DateTimeOffset(dateFrom.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var end = new DateTimeOffset(dateTo.ToDateTime(new TimeOnly(23, 59, 59)), TimeSpan.Zero);
         return (
             start.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
             end.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
@@ -1698,7 +2624,7 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
     {
         EnsureConfigured();
 
-        var (since, to) = FormatAnalyticsDateRange(dateFrom, dateTo, timeZone);
+        var (since, to) = FormatFinanceDateRange(dateFrom, dateTo);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v3/finance/transaction/list");
         request.Headers.Add("Client-Id", _credentials.ClientId);
@@ -2002,11 +2928,27 @@ public class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials credent
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
+        var distinctIds = productIds.Where(id => id > 0).Distinct().ToArray();
+        if (distinctIds.Length == 0)
+        {
+            return [];
+        }
+
+        if (distinctIds.Length > 1000)
+        {
+            var result = new List<OzonProductSummary>();
+            foreach (var batch in distinctIds.Chunk(1000))
+            {
+                result.AddRange(await GetProductInfoAsync(batch, cancellationToken));
+            }
+
+            return result;
+        }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v3/product/info/list");
         request.Headers.Add("Client-Id", _credentials.ClientId);
         request.Headers.Add("Api-Key", _credentials.ApiKey);
-        request.Content = JsonContent.Create(new OzonProductInfoListRequest(productIds));
+        request.Content = JsonContent.Create(new OzonProductInfoListRequest(distinctIds));
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -2535,6 +3477,20 @@ public record OzonUnsoldProductRow(
     string? OzonSellingSince = null,
     int? DaysWithoutSales = null);
 
+public record OzonSupplyShipmentQuantity(
+    long Sku,
+    string OfferId,
+    long ProductId,
+    int Quantity,
+    string ProductName);
+
+internal record OzonSupplyBundleItemQuantity(
+    long Sku,
+    string OfferId,
+    long ProductId,
+    int Quantity,
+    string ProductName);
+
 public record OzonPostingListRequest(
     [property: JsonPropertyName("dir")] string Dir,
     [property: JsonPropertyName("filter")] OzonPostingFilter Filter,
@@ -2655,3 +3611,4 @@ public record OzonFinanceItem(
 public record OzonFinanceService(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("price")] decimal Price);
+

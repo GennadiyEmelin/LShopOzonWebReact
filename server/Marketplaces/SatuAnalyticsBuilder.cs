@@ -83,7 +83,8 @@ internal static class SatuAnalyticsBuilder
             var normalizedStatus = SatuApiClient.NormalizeOrderStatus(SatuApiClient.ReadString(order, "status"));
             var operationDate = SatuApiClient.ReadOrderDate(order)?.ToString("yyyy-MM-dd") ?? string.Empty;
             var currency = SatuApiClient.ReadString(order, "currency") ?? "KZT";
-            var orderCommission = SatuApiClient.ReadDecimal(order, "cpa_commission", "commission");
+            var orderCommission = SatuApiClient.ReadDecimal(order, "cpa_commission", "commission") +
+                                  SatuApiClient.ReadDecimal(order, "prosale_commission");
             var orderLogistics = SatuApiClient.ReadDecimal(order, "delivery_cost", "delivery_price", "delivery");
             var orderRevenue = SatuApiClient.ReadDecimal(order, "price", "full_price", "amount", "total_price");
             var orderProducts = SatuApiClient.EnumerateOrderProducts(order).ToList();

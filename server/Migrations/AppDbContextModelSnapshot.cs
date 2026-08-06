@@ -166,6 +166,27 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<bool>("TelegramMonthlyReportEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateOnly?>("TelegramMonthlyReportLastSentOn")
+                        .HasColumnType("date");
+
+                    b.Property<string>("TelegramMonthlyReportSections")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("TelegramMonthlyReportTime")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("TelegramMonthlyReportTimezone")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("TelegramNotifyEvents")
                         .IsRequired()
                         .HasMaxLength(4000)
@@ -242,6 +263,50 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.HasIndex("UserName");
 
                     b.ToTable("AuditLogs");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.CalculatorSettings", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("AcquiringPercent")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("AdvertisingPercent")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("BuyoutRatePercent")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("DefaultScheme")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<decimal>("ExtraCostFixed")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("LogisticsBaseAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("LogisticsRatePerLiter")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("TaxMode")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("character varying(48)");
+
+                    b.Property<decimal>("TaxPercent")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("CalculatorSettings");
                 });
 
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ChatGroup", b =>
@@ -351,6 +416,279 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.HasIndex("SenderId", "ReceiverId", "CreatedAt");
 
                     b.ToTable("ChatMessages");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.OzonCategoryCommission", b =>
+                {
+                    b.Property<long>("DescriptionCategoryId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("AvgSalesPercentFbo")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("AvgSalesPercentFbs")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("CategoryName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("IsManualOverride")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("SampleSize")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("DescriptionCategoryId");
+
+                    b.ToTable("OzonCategoryCommissions");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.OzonCommissionSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal?>("AcquiringPercent")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("CurrencyCode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<decimal>("CurrentPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<long?>("DescriptionCategoryId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("FboDelivToCustomerAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FboDirectFlowTransMaxAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FboDirectFlowTransMinAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FboFulfillmentAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FboReturnFlowAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsDelivToCustomerAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsDirectFlowTransMaxAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsDirectFlowTransMinAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsFirstMileMaxAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsFirstMileMinAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("FbsReturnFlowAmount")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTimeOffset>("FetchedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal?>("MarketingPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("MinPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("OfferId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<decimal?>("OldPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("RawCommissionsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<decimal>("SalesPercentFbo")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("SalesPercentFbs")
+                        .HasColumnType("numeric");
+
+                    b.Property<long?>("TypeId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DescriptionCategoryId");
+
+                    b.HasIndex("ProductId")
+                        .IsUnique();
+
+                    b.ToTable("OzonCommissionSnapshots");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.OzonCommissionSyncState", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTimeOffset?>("LastSyncCompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSyncStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("SyncedProducts")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TotalProducts")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("OzonCommissionSyncStates");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductCostProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CostTypeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsPurchased")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Marketplace")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("OfferId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<decimal?>("PackagingCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<decimal?>("ProductionCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal?>("PurchaseCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("UseIndividualCost")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CostTypeId");
+
+                    b.HasIndex("Marketplace", "OfferId");
+
+                    b.HasIndex("Marketplace", "ProductId")
+                        .IsUnique();
+
+                    b.ToTable("ProductCostProfiles");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductCostType", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsPurchased")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Marketplace")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<decimal?>("PackagingCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal?>("ProductionCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal?>("PurchaseCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Marketplace", "Name")
+                        .IsUnique();
+
+                    b.ToTable("ProductCostTypes");
                 });
 
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductionAnalyticsTaskRecord", b =>
@@ -482,9 +820,14 @@ namespace LShopOzonWebReact.Api.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<Guid?>("ProductionTaskItemId")
+                        .HasColumnType("uuid");
+
                     b.HasKey("Id");
 
                     b.HasIndex("OfferId");
+
+                    b.HasIndex("ProductionTaskItemId");
 
                     b.ToTable("ProductionFiles");
                 });
@@ -571,6 +914,9 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Property<Guid?>("CreatedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTimeOffset?>("DueAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<bool>("IsArchived")
                         .HasColumnType("boolean");
 
@@ -581,6 +927,9 @@ namespace LShopOzonWebReact.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(120)
                         .HasColumnType("character varying(120)");
+
+                    b.Property<DateTimeOffset?>("OverdueNotifiedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<long>("OzonProductId")
                         .HasColumnType("bigint");
@@ -608,7 +957,11 @@ namespace LShopOzonWebReact.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DueAt");
+
                     b.HasIndex("IsArchived");
+
+                    b.HasIndex("OverdueNotifiedAt");
 
                     b.HasIndex("Status");
 
@@ -639,6 +992,19 @@ namespace LShopOzonWebReact.Api.Migrations
 
                     b.Property<long>("OzonProductId")
                         .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("PackedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PackedByDisplayName")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<Guid?>("PackedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("PackedSupplyId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("ProductLink")
                         .IsRequired()
@@ -881,6 +1247,10 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Property<DateTimeOffset?>("SentAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<decimal?>("ShippingCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -895,6 +1265,83 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.ToTable("Supplies");
                 });
 
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyExpense", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<DateTimeOffset>("PurchasedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("Name");
+
+                    b.HasIndex("PurchasedAt");
+
+                    b.ToTable("SupplyExpenses");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyFboDefect", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("OfferId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("ProductKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ProductKey")
+                        .IsUnique();
+
+                    b.ToTable("SupplyFboDefects");
+                });
+
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -903,6 +1350,11 @@ namespace LShopOzonWebReact.Api.Migrations
 
                     b.Property<bool>("IsReserve")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("ItemKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<string>("OfferId")
                         .IsRequired()
@@ -926,6 +1378,8 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("IsReserve");
+
+                    b.HasIndex("ItemKind");
 
                     b.HasIndex("OfferId");
 
@@ -989,6 +1443,16 @@ namespace LShopOzonWebReact.Api.Migrations
                     b.Navigation("Sender");
                 });
 
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductCostProfile", b =>
+                {
+                    b.HasOne("LShopOzonWebReact.Api.Models.ProductCostType", "CostType")
+                        .WithMany()
+                        .HasForeignKey("CostTypeId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("CostType");
+                });
+
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.ProductionTaskItem", b =>
                 {
                     b.HasOne("LShopOzonWebReact.Api.Models.ProductionTask", "ProductionTask")
@@ -998,6 +1462,28 @@ namespace LShopOzonWebReact.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("ProductionTask");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyExpense", b =>
+                {
+                    b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
+                });
+
+            modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyFboDefect", b =>
+                {
+                    b.HasOne("LShopOzonWebReact.Api.Models.AppUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
                 });
 
             modelBuilder.Entity("LShopOzonWebReact.Api.Models.SupplyItem", b =>

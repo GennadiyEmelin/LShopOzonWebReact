@@ -3,6 +3,7 @@ namespace LShopOzonWebReact.Api.Models;
 public class ProductionFile
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? ProductionTaskItemId { get; set; }
     public long? OzonProductId { get; set; }
     public string OfferId { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;

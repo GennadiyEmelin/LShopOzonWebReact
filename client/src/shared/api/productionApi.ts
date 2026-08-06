@@ -11,6 +11,10 @@ export async function fetchProductionTasks(token: string) {
   return apiFetch('/api/production/tasks', token)
 }
 
+export async function fetchProductionDesigners(token: string) {
+  return apiFetch('/api/production/designers', token)
+}
+
 export async function saveProductionTask(
   token: string,
   taskId: string | null,
@@ -113,6 +117,10 @@ export async function saveProductionTaskItemFilePath(
   })
 }
 
+export async function deleteProductionTaskItemFilePath(token: string, taskId: string, itemId: string) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/file-path`, token, { method: 'DELETE' })
+}
+
 export async function saveProductionTaskItemActualQuantity(
   token: string,
   taskId: string,
@@ -123,6 +131,40 @@ export async function saveProductionTaskItemActualQuantity(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actualQuantity }),
+  })
+}
+
+export async function packProductionTaskItem(token: string, taskId: string, itemId: string) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/pack`, token, { method: 'PUT' })
+}
+
+export async function takeDesignerTaskItem(token: string, taskId: string, itemId: string) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/take-designer`, token, { method: 'PUT' })
+}
+
+export async function transferDesignerTaskItem(
+  token: string,
+  taskId: string,
+  itemId: string,
+  targetUserId: string,
+) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/transfer-designer`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetUserId }),
+  })
+}
+
+export async function saveProductionTaskItemRequiredQuantity(
+  token: string,
+  taskId: string,
+  itemId: string,
+  requiredQuantity: number,
+) {
+  return apiFetch(`/api/production/tasks/${taskId}/items/${itemId}/quantity`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requiredQuantity }),
   })
 }
 

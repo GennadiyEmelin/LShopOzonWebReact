@@ -20,6 +20,133 @@ public static class AdminEndpoints
 {
     public static void MapAdminEndpoints(this WebApplication app)
     {
+        app.MapPost("/api/accounting/export", async (
+            AccountingExportRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "accounting"))
+            {
+                return Results.Forbid();
+            }
+
+            if (request.Rows is not { Count: > 0 })
+            {
+                return Results.BadRequest("Нет данных для выгрузки.");
+            }
+
+            var sheetName = string.IsNullOrWhiteSpace(request.SheetName) ? "Учет" : request.SheetName.Trim();
+            var fileName = string.IsNullOrWhiteSpace(request.FileName)
+                ? $"accounting-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx"
+                : request.FileName.Trim();
+
+            if (!fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+            {
+                fileName += ".xlsx";
+            }
+
+            var rows = request.Rows
+                .Select(row => row.Select(cell => cell ?? string.Empty).ToArray())
+                .ToList();
+
+            var content = ExcelExport.CreateWorkbook(sheetName, rows);
+            return Results.File(
+                content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/accounting/telegram/send", async (
+            AccountingTelegramSendRequest request,
+            AppDbContext db,
+            TelegramNotificationService telegram,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, "accounting"))
+            {
+                return Results.Forbid();
+            }
+
+            if (request.Rows is not { Count: > 0 })
+            {
+                return Results.BadRequest("Нет данных для отправки.");
+            }
+
+            if (!telegram.IsBotConfigured)
+            {
+                return Results.BadRequest("Telegram-бот не настроен.");
+            }
+
+            var reportType = (request.ReportType ?? string.Empty).Trim().ToLowerInvariant();
+            var sectionId = reportType == "sales"
+                ? TelegramReportSections.AccountingSales
+                : TelegramReportSections.AccountingMaterials;
+            var reportName = reportType == "sales" ? "отчет продаж" : "отчет материалов";
+
+            var sheetName = string.IsNullOrWhiteSpace(request.SheetName) ? "Учет" : request.SheetName.Trim();
+            var fileName = string.IsNullOrWhiteSpace(request.FileName)
+                ? $"accounting-{DateTime.UtcNow:yyyyMMdd-HHmmss}.xlsx"
+                : request.FileName.Trim();
+
+            if (!fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+            {
+                fileName += ".xlsx";
+            }
+
+            var rows = request.Rows
+                .Select(row => row.Select(cell => cell ?? string.Empty).ToArray())
+                .ToList();
+            var content = ExcelExport.CreateWorkbook(sheetName, rows);
+
+            var recipients = await db.Users
+                .AsNoTracking()
+                .Where(user => user.IsActive && !string.IsNullOrWhiteSpace(user.TelegramChatId))
+                .Select(user => new
+                {
+                    user.Id,
+                    user.UserName,
+                    user.TelegramChatId,
+                    user.TelegramDailyReportSections
+                })
+                .ToListAsync(cancellationToken);
+
+            var enabledRecipients = recipients
+                .Where(user => TelegramReportSections.IsEnabled(user.TelegramDailyReportSections, sectionId))
+                .ToList();
+
+            var sent = 0;
+            foreach (var recipient in enabledRecipients)
+            {
+                var ok = await telegram.SendDocumentAsync(
+                    recipient.TelegramChatId!,
+                    content,
+                    fileName,
+                    $"LShopWeb: {reportName}",
+                    cancellationToken);
+
+                if (ok)
+                {
+                    sent++;
+                }
+            }
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Отправка отчета в Telegram",
+                "AccountingReport",
+                sectionId,
+                $"{reportName}: отправлено {sent} из {enabledRecipients.Count}");
+            await db.SaveChangesAsync(cancellationToken);
+
+            return Results.Ok(new
+            {
+                Sent = sent,
+                Recipients = enabledRecipients.Count
+            });
+        }).RequireAuthorization();
+
         app.MapGet("/api/admin/users", async (AppDbContext db, ClaimsPrincipal principal) =>
         {
             if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Users, FeatureAccess.UsersCreate, FeatureAccess.UsersEdit))
@@ -325,6 +452,11 @@ public static class AdminEndpoints
                 TelegramReportSections.Parse(user.TelegramDailyReportSections).ToList(),
                 TelegramReportSections.All.Select(section => section.Id).ToList(),
                 user.TelegramDailyReportLastSentOn,
+                user.TelegramMonthlyReportEnabled,
+                user.TelegramMonthlyReportTime,
+                user.TelegramMonthlyReportTimezone,
+                TelegramReportSections.Parse(user.TelegramMonthlyReportSections).ToList(),
+                user.TelegramMonthlyReportLastSentOn,
                 !string.IsNullOrWhiteSpace(user.TelegramChatId)));
         }).RequireAuthorization();
 
@@ -353,6 +485,14 @@ public static class AdminEndpoints
                 ? user.TelegramDailyReportTimezone
                 : request.Timezone.Trim();
             user.TelegramDailyReportSections = TelegramReportSections.Serialize(request.Sections ?? []);
+            user.TelegramMonthlyReportEnabled = request.MonthlyEnabled;
+            user.TelegramMonthlyReportTime = DailyReportService.TryParseReportTime(request.MonthlyReportTime, out var parsedMonthlyTime)
+                ? parsedMonthlyTime.ToString("HH:mm")
+                : user.TelegramMonthlyReportTime;
+            user.TelegramMonthlyReportTimezone = string.IsNullOrWhiteSpace(request.MonthlyTimezone)
+                ? user.TelegramMonthlyReportTimezone
+                : request.MonthlyTimezone.Trim();
+            user.TelegramMonthlyReportSections = TelegramReportSections.Serialize(request.MonthlySections ?? []);
 
             AuditLogWriter.Add(db, principal, "Настройка Telegram-отчёта", "User", user.Id.ToString(), user.UserName);
             await db.SaveChangesAsync();
@@ -364,6 +504,11 @@ public static class AdminEndpoints
                 TelegramReportSections.Parse(user.TelegramDailyReportSections).ToList(),
                 TelegramReportSections.All.Select(section => section.Id).ToList(),
                 user.TelegramDailyReportLastSentOn,
+                user.TelegramMonthlyReportEnabled,
+                user.TelegramMonthlyReportTime,
+                user.TelegramMonthlyReportTimezone,
+                TelegramReportSections.Parse(user.TelegramMonthlyReportSections).ToList(),
+                user.TelegramMonthlyReportLastSentOn,
                 !string.IsNullOrWhiteSpace(user.TelegramChatId)));
         }).RequireAuthorization();
 
@@ -398,6 +543,40 @@ public static class AdminEndpoints
 
             return sent
                 ? Results.Ok(new { message = "Тестовый отчёт отправлен." })
+                : Results.BadRequest("Не удалось отправить отчёт.");
+        }).RequireAuthorization();
+
+        app.MapPost("/api/admin/users/{id:guid}/telegram/report/test-monthly", async (
+            Guid id,
+            AppDbContext db,
+            DailyReportService reportService,
+            TelegramNotificationService telegram,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.IntegrationsTelegramReportsEdit))
+            {
+                return Results.Forbid();
+            }
+
+            var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+            if (user is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (string.IsNullOrWhiteSpace(user.TelegramChatId))
+            {
+                return Results.BadRequest("Telegram у пользователя не подключён.");
+            }
+
+            var timezone = DailyReportService.ResolveTimeZone(user.TelegramMonthlyReportTimezone);
+            var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, timezone).DateTime);
+            var message = await reportService.BuildMonthlyReportAsync(user, localDate, cancellationToken);
+            var sent = await telegram.SendMessageAsync(user.TelegramChatId, message, cancellationToken);
+
+            return sent
+                ? Results.Ok(new { message = "Тестовый ежемесячный отчёт отправлен." })
                 : Results.BadRequest("Не удалось отправить отчёт.");
         }).RequireAuthorization();
 
@@ -655,4 +834,8 @@ public static class AdminEndpoints
         }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
     }
 }
+
+public record AccountingExportRequest(string? SheetName, string? FileName, List<List<string?>>? Rows);
+
+public record AccountingTelegramSendRequest(string? SheetName, string? FileName, List<List<string?>>? Rows, string? ReportType);
 

@@ -10,4 +10,6 @@ export type OzonProduct = {
   status: string
   productUrl: string
   imageUrl: string
+  costTotal?: number | null
+  isPurchased?: boolean
 }

@@ -84,6 +84,7 @@ public static class SuppliesEndpoints
                     supply.CreatedAt,
                     supply.SentAt,
                     supply.AcceptedAt,
+                    supply.ShippingCost,
                     supply.IsArchived,
                     supply.ArchivedAt,
                     supply.Items
@@ -94,7 +95,8 @@ public static class SuppliesEndpoints
                             item.OfferId,
                             item.ProductName,
                             item.Quantity,
-                            item.IsReserve))
+                            item.IsReserve,
+                            item.ItemKind))
                         .ToList(),
                     historiesBySupplyId.GetValueOrDefault(supply.Id.ToString()) ?? []))
                 .ToList());
@@ -129,9 +131,11 @@ public static class SuppliesEndpoints
             }
 
             db.Supplies.Add(supply);
+            await LinkPackedProductionItemsToSupplyAsync(db, supply);
             AuditLogWriter.Add(db, principal, "Создание поставки", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("SuppliesChanged");
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
             await IntegrationNotificationPublisher.PublishAsync(
                 telegram,
                 db,
@@ -144,6 +148,7 @@ public static class SuppliesEndpoints
                 supply.CreatedAt,
                 supply.SentAt,
                 supply.AcceptedAt,
+                supply.ShippingCost,
                 supply.IsArchived,
                 supply.ArchivedAt,
                 supply.Items.Select(item => new SupplyItemListItem(
@@ -152,7 +157,8 @@ public static class SuppliesEndpoints
                     item.OfferId,
                     item.ProductName,
                     item.Quantity,
-                    item.IsReserve)).ToList(),
+                    item.IsReserve,
+                    item.ItemKind)).ToList(),
                 []));
         }).RequireAuthorization();
 
@@ -213,9 +219,11 @@ public static class SuppliesEndpoints
             }
 
             db.Supplies.Add(supply);
+            await LinkPackedProductionItemsToSupplyAsync(db, supply);
             AuditLogWriter.Add(db, principal, "Импорт поставки из Excel", "Supply", supply.Id.ToString(), $"Товаров: {supply.Items.Count}");
             await db.SaveChangesAsync(cancellationToken);
             await hub.Clients.All.SendAsync("SuppliesChanged");
+            await hub.Clients.All.SendAsync("ProductionTasksChanged", cancellationToken);
 
             await IntegrationNotificationPublisher.PublishAsync(
                 telegram,
@@ -234,7 +242,9 @@ public static class SuppliesEndpoints
             IHubContext<AppHub> hub,
             TelegramNotificationService telegram) =>
         {
-            var supply = await db.Supplies.FindAsync(id);
+            var supply = await db.Supplies
+                .Include(item => item.Items)
+                .SingleOrDefaultAsync(item => item.Id == id);
             if (supply is null)
             {
                 return Results.NotFound();
@@ -253,8 +263,16 @@ public static class SuppliesEndpoints
                     return Results.BadRequest("Отправить можно только поставку в статусе создано.");
                 }
 
+                if (request.ShippingCost is null || request.ShippingCost <= 0)
+                {
+                    return Results.BadRequest("Укажите сумму отправки поставки.");
+                }
+
                 supply.Status = SupplyStatuses.Sent;
                 supply.SentAt ??= now;
+                supply.ShippingCost = decimal.Round(request.ShippingCost.Value, 2);
+                await LinkPackedProductionItemsToSupplyAsync(db, supply);
+                await ArchiveCompletedPackedTasksForSentSupplyAsync(db, principal, supply);
             }
             else if (request.Status == SupplyStatuses.Accepted)
             {
@@ -274,6 +292,7 @@ public static class SuppliesEndpoints
             AuditLogWriter.Add(db, principal, $"Статус поставки: {request.Status}", "Supply", supply.Id.ToString(), supply.Status);
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("SuppliesChanged");
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
             var statusEventId = request.Status == SupplyStatuses.Sent
                 ? "supply.sent"
@@ -313,13 +332,16 @@ public static class SuppliesEndpoints
 
             supply.SentAt = request.SentAt;
             supply.AcceptedAt = request.AcceptedAt;
+            supply.ShippingCost = request.ShippingCost is { } shippingCost && shippingCost > 0
+                ? decimal.Round(shippingCost, 2)
+                : null;
             AuditLogWriter.Add(
                 db,
                 principal,
                 "Изменение дат поставки",
                 "Supply",
                 supply.Id.ToString(),
-                $"Отправка: {request.SentAt?.ToString("O") ?? "-"}, приемка: {request.AcceptedAt?.ToString("O") ?? "-"}");
+                $"Отправка: {request.SentAt?.ToString("O") ?? "-"}, приемка: {request.AcceptedAt?.ToString("O") ?? "-"}, сумма отправки: {supply.ShippingCost?.ToString("0.##") ?? "-"}");
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("SuppliesChanged");
 
@@ -369,11 +391,24 @@ public static class SuppliesEndpoints
                 return Results.BadRequest("Укажите название и количество больше нуля для каждой строки.");
             }
 
+            await ClearPackedProductionItemsFromSupplyAsync(db, supply.Id);
             db.SupplyItems.RemoveRange(supply.Items);
             db.SupplyItems.AddRange(updatedItems);
-            AuditLogWriter.Add(db, principal, "Редактирование поставки", "Supply", supply.Id.ToString(), $"Товаров: {updatedItems.Count}");
+            supply.Items = updatedItems;
+            supply.ShippingCost = request.ShippingCost is { } shippingCost && shippingCost > 0
+                ? decimal.Round(shippingCost, 2)
+                : null;
+            await LinkPackedProductionItemsToSupplyAsync(db, supply);
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Редактирование поставки",
+                "Supply",
+                supply.Id.ToString(),
+                $"Товаров: {updatedItems.Count}, сумма отправки: {supply.ShippingCost?.ToString("0.##") ?? "-"}");
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("SuppliesChanged");
+            await hub.Clients.All.SendAsync("ProductionTasksChanged");
 
             await IntegrationNotificationPublisher.PublishAsync(
                 telegram,
@@ -490,12 +525,14 @@ public static class SuppliesEndpoints
                     item.OfferId,
                     item.ProductName,
                     item.IsReserve,
+                    item.ItemKind,
                     item.Supply.Status,
                     item.Supply.IsArchived,
                     item.Supply.ArchivedAt,
                     item.Supply.CreatedAt,
                     item.Supply.SentAt,
-                    item.Supply.AcceptedAt
+                    item.Supply.AcceptedAt,
+                    item.Supply.ShippingCost
                 })
                 .OrderByDescending(group => group.Key.CreatedAt)
                 .Select(group => new SupplyAnalyticsItem(
@@ -506,13 +543,291 @@ public static class SuppliesEndpoints
                     group.Key.ProductName,
                     group.Sum(item => item.Quantity),
                     group.Key.IsReserve,
+                    group.Key.ItemKind,
                     group.Key.Status,
                     group.Key.IsArchived,
                     group.Key.ArchivedAt,
                     group.Key.CreatedAt,
                     group.Key.SentAt,
-                    group.Key.AcceptedAt))
+                    group.Key.AcceptedAt,
+                    group.Key.ShippingCost))
                 .ToList());
+        })
+            .RequireAuthorization();
+
+        app.MapGet("/api/supplies/expenses", async (
+            string? search,
+            string? from,
+            string? to,
+            AppDbContext db,
+            ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var query = db.SupplyExpenses
+                .AsNoTracking()
+                .Include(expense => expense.CreatedByUser)
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var normalizedSearch = search.Trim().ToLower();
+                query = query.Where(expense => expense.Name.ToLower().Contains(normalizedSearch));
+            }
+
+            var fromDate = ParseSupplyExpenseBoundary(from, false);
+            if (fromDate is not null)
+            {
+                query = query.Where(expense => expense.PurchasedAt >= fromDate.Value);
+            }
+
+            var toDate = ParseSupplyExpenseBoundary(to, true);
+            if (toDate is not null)
+            {
+                query = query.Where(expense => expense.PurchasedAt <= toDate.Value);
+            }
+
+            var expenses = await query
+                .OrderByDescending(expense => expense.PurchasedAt)
+                .ThenByDescending(expense => expense.CreatedAt)
+                .ToListAsync();
+            var rows = expenses.Select(MapSupplyExpense).ToList();
+
+            return Results.Ok(new SupplyExpensesResponse(rows, rows.Sum(row => row.Amount)));
+        })
+            .RequireAuthorization();
+
+        app.MapPost("/api/supplies/expenses", async (
+            CreateSupplyExpenseRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var name = request.Name.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Results.BadRequest("Укажите что купили.");
+            }
+
+            if (request.Amount <= 0)
+            {
+                return Results.BadRequest("Укажите сумму покупки больше 0.");
+            }
+
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(currentUserId, out var userId))
+            {
+                return Results.Forbid();
+            }
+
+            var expense = new SupplyExpense
+            {
+                Name = name,
+                Amount = request.Amount,
+                PurchasedAt = request.PurchasedAt,
+                CreatedByUserId = userId
+            };
+
+            db.SupplyExpenses.Add(expense);
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Добавлен расходник",
+                "SupplyExpense",
+                expense.Id.ToString(),
+                $"{name}: {request.Amount:0.##}");
+            await db.SaveChangesAsync();
+            await db.Entry(expense).Reference(item => item.CreatedByUser).LoadAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+
+            return Results.Ok(MapSupplyExpense(expense));
+        })
+            .RequireAuthorization();
+
+        app.MapPut("/api/supplies/expenses/{id:guid}", async (
+            Guid id,
+            UpdateSupplyExpenseRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            if (request.Amount <= 0)
+            {
+                return Results.BadRequest("Укажите сумму покупки больше 0.");
+            }
+
+            var expense = await db.SupplyExpenses
+                .Include(item => item.CreatedByUser)
+                .FirstOrDefaultAsync(item => item.Id == id);
+            if (expense is null)
+            {
+                return Results.NotFound();
+            }
+
+            expense.Amount = request.Amount;
+            expense.PurchasedAt = request.PurchasedAt;
+
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Обновлен расходник",
+                "SupplyExpense",
+                expense.Id.ToString(),
+                $"{expense.Name}: {request.Amount:0.##}");
+
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+
+            return Results.Ok(MapSupplyExpense(expense));
+        })
+            .RequireAuthorization();
+
+        app.MapDelete("/api/supplies/expenses/{id:guid}", async (
+            Guid id,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var expense = await db.SupplyExpenses.FirstOrDefaultAsync(item => item.Id == id);
+            if (expense is null)
+            {
+                return Results.NotFound();
+            }
+
+            db.SupplyExpenses.Remove(expense);
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Удален расходник",
+                "SupplyExpense",
+                expense.Id.ToString(),
+                $"{expense.Name}: {expense.Amount:0.##}");
+
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+
+            return Results.NoContent();
+        })
+            .RequireAuthorization();
+
+        app.MapGet("/api/supplies/fbo-defects", async (AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var defects = await db.SupplyFboDefects
+                .AsNoTracking()
+                .OrderByDescending(defect => defect.CreatedAt)
+                .Select(defect => new SupplyFboDefectItem(
+                    defect.Id,
+                    defect.ProductKey,
+                    defect.OfferId,
+                    defect.ProductName,
+                    defect.Quantity,
+                    defect.CreatedAt))
+                .ToListAsync();
+
+            return Results.Ok(defects);
+        })
+            .RequireAuthorization();
+
+        app.MapPost("/api/supplies/fbo-defects", async (
+            SupplyFboDefectRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var productKey = request.ProductKey.Trim();
+            if (string.IsNullOrWhiteSpace(productKey))
+            {
+                return Results.BadRequest("Не удалось определить товар для отметки брака.");
+            }
+
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(currentUserId, out var userId))
+            {
+                return Results.Forbid();
+            }
+
+            var existing = await db.SupplyFboDefects.FirstOrDefaultAsync(
+                defect => defect.ProductKey == productKey);
+            if (existing is not null)
+            {
+                existing.OfferId = request.OfferId.Trim();
+                existing.ProductName = request.ProductName.Trim();
+                existing.Quantity = Math.Max(0, request.Quantity);
+                existing.CreatedAt = DateTimeOffset.UtcNow;
+                existing.CreatedByUserId = userId;
+            }
+            else
+            {
+                db.SupplyFboDefects.Add(new SupplyFboDefect
+                {
+                    ProductKey = productKey,
+                    OfferId = request.OfferId.Trim(),
+                    ProductName = request.ProductName.Trim(),
+                    Quantity = Math.Max(0, request.Quantity),
+                    CreatedByUserId = userId
+                });
+            }
+
+            AuditLogWriter.Add(db, principal, "Товар отмечен браком", "SupplyFboDefect", productKey, request.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+
+            return Results.NoContent();
+        })
+            .RequireAuthorization();
+
+        app.MapDelete("/api/supplies/fbo-defects/{productKey}", async (
+            string productKey,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var normalizedProductKey = Uri.UnescapeDataString(productKey).Trim();
+            var defect = await db.SupplyFboDefects.FirstOrDefaultAsync(item => item.ProductKey == normalizedProductKey);
+            if (defect is null)
+            {
+                return Results.NotFound();
+            }
+
+            db.SupplyFboDefects.Remove(defect);
+            AuditLogWriter.Add(db, principal, "Товар возвращен в остаток отгрузки", "SupplyFboDefect", defect.ProductKey, defect.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+
+            return Results.NoContent();
         })
             .RequireAuthorization();
 
@@ -531,28 +846,32 @@ public static class SuppliesEndpoints
                     item.OfferId,
                     item.ProductName,
                     item.IsReserve,
+                    item.ItemKind,
                     item.Supply.Status,
                     item.Supply.IsArchived,
                     item.Supply.CreatedAt,
                     item.Supply.SentAt,
-                    item.Supply.AcceptedAt
+                    item.Supply.AcceptedAt,
+                    item.Supply.ShippingCost
                 })
                 .OrderByDescending(group => group.Key.CreatedAt)
                 .ThenBy(group => group.Key.ProductName)
                 .ToList();
 
             var builder = new StringBuilder();
-            builder.AppendLine("Дата создания;Дата отправки;Дата приемки;Статус;Товар;Артикул;Количество;Новый товар;ID поставки");
+            builder.AppendLine("Дата создания;Дата отправки;Дата приемки;Сумма отправки;Статус;Товар;Артикул;Количество;Тип;Новый товар;ID поставки");
             foreach (var row in rows)
             {
                 builder.AppendLine(string.Join(';', [
                     CsvExport.Cell(row.Key.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")),
                     CsvExport.Cell(row.Key.SentAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
                     CsvExport.Cell(row.Key.AcceptedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty),
+                    CsvExport.Cell(row.Key.ShippingCost?.ToString("0.##") ?? string.Empty),
                     CsvExport.Cell(row.Key.IsArchived ? "Архив" : row.Key.Status),
                     CsvExport.Cell(row.Key.ProductName),
                     CsvExport.Cell(row.Key.OfferId),
                     CsvExport.Cell(row.Sum(item => item.Quantity).ToString()),
+                    CsvExport.Cell(row.Key.ItemKind),
                     CsvExport.Cell(row.Key.IsReserve ? "Да" : "Нет"),
                     CsvExport.Cell(row.Key.SupplyId.ToString())
                 ]));
@@ -563,6 +882,120 @@ public static class SuppliesEndpoints
                 "text/csv; charset=utf-8",
                 $"supplies-analytics-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
         }).RequireAuthorization(policy => policy.RequireRole(UserRoles.Admin));
+    }
+
+    private static async Task ClearPackedProductionItemsFromSupplyAsync(AppDbContext db, Guid supplyId)
+    {
+        var linkedItems = await db.ProductionTaskItems
+            .Where(item => item.PackedSupplyId == supplyId)
+            .ToListAsync();
+
+        foreach (var item in linkedItems)
+        {
+            item.PackedSupplyId = null;
+        }
+    }
+
+    private static DateTimeOffset? ParseSupplyExpenseBoundary(string? value, bool endOfDay)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+        {
+            var time = endOfDay ? new TimeOnly(23, 59, 59, 999) : TimeOnly.MinValue;
+            return new DateTimeOffset(date.ToDateTime(time), TimeSpan.Zero);
+        }
+
+        if (DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal,
+                out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static SupplyExpenseItem MapSupplyExpense(SupplyExpense expense) =>
+        new(
+            expense.Id,
+            expense.Name,
+            expense.Amount,
+            expense.PurchasedAt,
+            expense.CreatedAt,
+            expense.CreatedByUserId,
+            expense.CreatedByUser.DisplayName);
+
+    private static async Task LinkPackedProductionItemsToSupplyAsync(AppDbContext db, Supply supply)
+    {
+        var offerIds = supply.Items
+            .Where(item => item.ItemKind == SupplyItemKinds.Product)
+            .Select(item => item.OfferId.Trim())
+            .Where(item => item.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (offerIds.Count == 0)
+        {
+            return;
+        }
+
+        var packedItems = await db.ProductionTaskItems
+            .Include(item => item.ProductionTask)
+            .Where(item =>
+                item.PackedAt != null &&
+                (item.PackedSupplyId == null || item.PackedSupplyId == supply.Id) &&
+                item.ProductionTask.Status == ProductionTaskStatuses.Completed &&
+                item.ProductionTask.TaskType != ProductionTaskTypes.Novinka)
+            .ToListAsync();
+
+        foreach (var item in packedItems)
+        {
+            if (offerIds.Contains(item.OfferId, StringComparer.OrdinalIgnoreCase))
+            {
+                item.PackedSupplyId = supply.Id;
+            }
+        }
+    }
+
+    private static async Task ArchiveCompletedPackedTasksForSentSupplyAsync(
+        AppDbContext db,
+        ClaimsPrincipal principal,
+        Supply supply)
+    {
+        var tasks = await db.ProductionTasks
+            .Include(task => task.Items)
+            .Where(task =>
+                !task.IsArchived &&
+                task.Status == ProductionTaskStatuses.Completed &&
+                task.TaskType != ProductionTaskTypes.Novinka &&
+                task.Items.Any(item => item.PackedSupplyId == supply.Id))
+            .ToListAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var task in tasks)
+        {
+            if (task.Items.Count == 0 ||
+                task.Items.Any(item => item.PackedAt == null || item.PackedSupplyId == null))
+            {
+                continue;
+            }
+
+            task.IsArchived = true;
+            task.ArchivedAt ??= now;
+            AuditLogWriter.Add(
+                db,
+                principal,
+                "Автоархив после отправки поставки",
+                "ProductionTask",
+                task.Id.ToString(),
+                $"Поставка: {supply.Id}");
+        }
     }
 }
 

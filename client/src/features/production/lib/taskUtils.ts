@@ -128,11 +128,21 @@ export function getProductionTaskItems(task: ProductionTask) {
 }
 
 export function isNovinkaTask(task: ProductionTask) {
-  if (task.taskType === 'Novinka') {
+  const taskType = (task.taskType ?? '').trim().toLowerCase()
+
+  if (taskType === 'novinka' || taskType === 'design' || taskType === 'дизайн') {
     return true
   }
 
-  if (task.taskType === 'Ozon') {
+  if (
+    taskType === 'ozon' ||
+    taskType === 'packaging' ||
+    taskType === 'production' ||
+    taskType === 'производство' ||
+    taskType === 'озон' ||
+    taskType === 'ozon - производство' ||
+    taskType === 'озон - производство'
+  ) {
     return false
   }
 

@@ -217,16 +217,39 @@ export function getProductionPathsForTaskItem(
 }
 
 export function getProductionFilesForTaskItem(
-  item: { offerId: string; ozonProductId: number; productLink?: string; productName?: string },
+  item: { id?: string; offerId: string; ozonProductId: number; productLink?: string; productName?: string },
   files: ProductionFile[],
 ) {
-  return files.filter(
-    (file) =>
-      (item.offerId && file.offerId === item.offerId) ||
-      (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId) ||
-      (item.productLink && file.productLink === item.productLink) ||
-      (item.productName && file.productName === item.productName && item.offerId?.startsWith('NV-')),
-  )
+  if (item.id) {
+    const exactFiles = files.filter((file) => file.productionTaskItemId === item.id)
+    if (exactFiles.length > 0) {
+      return exactFiles
+    }
+  }
+
+  const offerId = item.offerId?.trim().toUpperCase()
+  const productLink = item.productLink?.trim().toLowerCase()
+  const productName = item.productName?.trim().toLowerCase()
+
+  return files.filter((file) => {
+    const fileOfferId = file.offerId?.trim().toUpperCase()
+    const fileProductLink = file.productLink?.trim().toLowerCase()
+    const fileProductName = file.productName?.trim().toLowerCase()
+
+    if (offerId && fileOfferId && fileOfferId === offerId) {
+      return true
+    }
+
+    if (item.ozonProductId > 0 && file.ozonProductId === item.ozonProductId) {
+      return true
+    }
+
+    if (productLink && fileProductLink && fileProductLink === productLink) {
+      return true
+    }
+
+    return Boolean(productName && fileProductName && fileProductName === productName && offerId?.startsWith('NV-'))
+  })
 }
 
 export function getProductionPathsForCatalogItem(

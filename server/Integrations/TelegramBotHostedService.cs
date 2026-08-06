@@ -77,16 +77,42 @@ public class TelegramBotHostedService(
         }
 
         var text = message.Text.Trim();
-        if (!text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+        if (text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
         {
+            await HandleStartAsync(
+                message.Chat.Id,
+                text,
+                cancellationToken);
             return;
         }
 
+        await HandleMenuActionAsync(message.Chat.Id, text, cancellationToken);
+    }
+
+    private async Task HandleStartAsync(long chatId, string text, CancellationToken cancellationToken)
+    {
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length < 2)
         {
+            using var menuScope = scopeFactory.CreateScope();
+            var menuDb = menuScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var menuTelegram = menuScope.ServiceProvider.GetRequiredService<TelegramNotificationService>();
+            var connectedUser = await menuDb.Users.AsNoTracking().FirstOrDefaultAsync(
+                entry => entry.TelegramChatId == chatId.ToString() && entry.IsActive,
+                cancellationToken);
+
+            if (connectedUser is not null)
+            {
+                await menuTelegram.SendMessageAsync(
+                    chatId.ToString(),
+                    TelegramBotMenuService.BuildMenuText(connectedUser),
+                    TelegramBotMenuService.BuildKeyboard(),
+                    cancellationToken);
+                return;
+            }
+
             await SendDirectAsync(
-                message.Chat.Id,
+                chatId,
                 "Откройте ссылку подключения из раздела «Интеграции» в приложении LShop.",
                 cancellationToken);
             return;
@@ -95,6 +121,7 @@ public class TelegramBotHostedService(
         var token = parts[1].Trim();
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var telegram = scope.ServiceProvider.GetRequiredService<TelegramNotificationService>();
         var user = await db.Users.FirstOrDefaultAsync(
             entry => entry.TelegramConnectToken == token && entry.IsActive,
             cancellationToken);
@@ -102,13 +129,13 @@ public class TelegramBotHostedService(
         if (user is null)
         {
             await SendDirectAsync(
-                message.Chat.Id,
+                chatId,
                 "Ссылка подключения недействительна или устарела. Сгенерируйте новую в разделе «Интеграции».",
                 cancellationToken);
             return;
         }
 
-        user.TelegramChatId = message.Chat.Id.ToString();
+        user.TelegramChatId = chatId.ToString();
         user.TelegramConnectedAt = DateTimeOffset.UtcNow;
         user.TelegramConnectToken = string.Empty;
         if (string.IsNullOrWhiteSpace(user.TelegramNotifyEvents))
@@ -125,9 +152,40 @@ public class TelegramBotHostedService(
 
         await db.SaveChangesAsync(cancellationToken);
 
-        await SendDirectAsync(
-            message.Chat.Id,
+        await telegram.SendMessageAsync(
+            chatId.ToString(),
             $"Подключено к аккаунту {(string.IsNullOrWhiteSpace(user.DisplayName) ? user.UserName : user.DisplayName)}. Настройте типы оповещений в разделе «Интеграции».",
+            TelegramBotMenuService.BuildKeyboard(),
+            cancellationToken);
+    }
+
+    private async Task HandleMenuActionAsync(long chatId, string text, CancellationToken cancellationToken)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var telegram = scope.ServiceProvider.GetRequiredService<TelegramNotificationService>();
+        var menu = scope.ServiceProvider.GetRequiredService<TelegramBotMenuService>();
+        var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(
+            entry => entry.TelegramChatId == chatId.ToString() && entry.IsActive,
+            cancellationToken);
+
+        if (user is null)
+        {
+            await telegram.SendMessageAsync(
+                chatId.ToString(),
+                "Telegram не подключён к пользователю LShop. Откройте ссылку подключения из раздела «Интеграции».",
+                cancellationToken);
+            return;
+        }
+
+        var response = TelegramBotMenuService.IsMenuRequest(text)
+            ? TelegramBotMenuService.BuildMenuText(user)
+            : await menu.BuildResponseAsync(user, text, cancellationToken);
+
+        await telegram.SendMessageAsync(
+            chatId.ToString(),
+            response,
+            TelegramBotMenuService.BuildKeyboard(),
             cancellationToken);
     }
 

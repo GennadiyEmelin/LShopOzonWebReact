@@ -63,17 +63,23 @@ static class SupplyItemFactory
     {
         var itemId = Guid.NewGuid();
         var isReserve = request.IsReserve;
+        var itemKind = SupplyItemKinds.Normalize(request.ItemKind);
+        if (itemKind != SupplyItemKinds.Product)
+        {
+            isReserve = true;
+        }
 
         return new SupplyItem
         {
             Id = itemId,
-            OzonProductId = isReserve ? null : request.OzonProductId,
-            OfferId = isReserve
+            OzonProductId = itemKind == SupplyItemKinds.Product && !isReserve ? request.OzonProductId : null,
+            OfferId = itemKind == SupplyItemKinds.Product && isReserve
                 ? NormalizeReserveOfferId(itemId, request.OfferId)
                 : request.OfferId.Trim(),
             ProductName = request.ProductName.Trim(),
             Quantity = request.Quantity,
-            IsReserve = isReserve
+            IsReserve = isReserve,
+            ItemKind = itemKind
         };
     }
 
@@ -95,9 +101,9 @@ static class ExcelSupplyImport
     {
         var rows = new[]
         {
-            new[] { "Название товара", "Артикул", "ProductId", "Количество", "Новый товар" },
-            new[] { "Пример постоянного товара", "OFFER-001", "123456789", "10", "нет" },
-            new[] { "Пример нового товара", "", "", "5", "да" }
+            new[] { "Название товара", "Артикул", "ProductId", "Количество", "Новый товар", "Тип" },
+            new[] { "Пример постоянного товара", "OFFER-001", "123456789", "10", "нет", "товар" },
+            new[] { "Пример расходника", "", "", "5", "да", "расходник" }
         };
         return ExcelExport.CreateWorkbook("Поставка", rows);
     }
@@ -124,6 +130,7 @@ static class ExcelSupplyImport
             var productIdText = GetValue(values, 2);
             var quantityText = GetValue(values, 3);
             var reserveText = GetValue(values, 4);
+            var itemKindText = GetValue(values, 5);
 
             if (!TryParseQuantity(quantityText, out var quantity))
             {
@@ -138,8 +145,19 @@ static class ExcelSupplyImport
                 throw new InvalidOperationException($"Строка {index + 2}: для постоянного товара нужен артикул.");
             }
 
-            return new CreateSupplyItemRequest(productId, offerId, productName, quantity, isReserve);
+            return new CreateSupplyItemRequest(productId, offerId, productName, quantity, isReserve, ParseItemKind(itemKindText));
         }).ToList();
+    }
+
+    private static string ParseItemKind(string value)
+    {
+        var normalized = value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "расходник" or "расходный материал" or "consumable" => SupplyItemKinds.Consumable,
+            "матценность" or "мат ценность" or "материальная ценность" or "asset" => SupplyItemKinds.MaterialAsset,
+            _ => SupplyItemKinds.Product
+        };
     }
 
     private static List<string> ReadSharedStrings(ZipArchive archive)

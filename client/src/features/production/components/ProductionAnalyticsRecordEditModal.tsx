@@ -52,7 +52,12 @@ export function ProductionAnalyticsRecordEditModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-title-row">
-          <h3>Редактирование записи аналитики</h3>
+          <div>
+            <h3>Редактирование записи аналитики</h3>
+            <p className="production-analytics-edit-subtitle">
+              {draft.productName || 'Задача'} · {getProductionTaskItems(draft).length} позиций
+            </p>
+          </div>
           <button type="button" className="text-action-button" onClick={onClose}>
             Закрыть
           </button>
@@ -115,7 +120,7 @@ export function ProductionAnalyticsRecordEditModal({
                 }))
               }
             />
-            Срочная задача
+            <span>Срочная задача</span>
           </label>
           <label>
             Ozon Product ID
@@ -222,32 +227,35 @@ export function ProductionAnalyticsRecordEditModal({
           </label>
         </div>
         <section className="production-analytics-edit-items">
-          <h4>Позиции</h4>
+          <div className="production-analytics-edit-section-head">
+            <h4>Позиции</h4>
+            <span>{getProductionTaskItems(draft).length}</span>
+          </div>
           {getProductionTaskItems(draft).map((item, index) => (
             <div className="production-analytics-edit-item" key={item.id ?? `${item.offerId}-${index}`}>
-              <label>
-                Товар
+              <label className="production-analytics-edit-item-name">
+                <span>Товар</span>
                 <input
                   value={item.productName}
                   onChange={(event) => updateItem(index, { productName: event.target.value })}
                 />
               </label>
-              <label>
-                Артикул
+              <label className="production-analytics-edit-item-offer">
+                <span>Артикул</span>
                 <input
                   value={item.offerId}
                   onChange={(event) => updateItem(index, { offerId: event.target.value })}
                 />
               </label>
-              <label>
-                Ссылка
+              <label className="production-analytics-edit-item-link">
+                <span>Ссылка</span>
                 <input
                   value={item.productLink ?? ''}
                   onChange={(event) => updateItem(index, { productLink: event.target.value })}
                 />
               </label>
-              <label>
-                План
+              <label className="production-analytics-edit-item-qty">
+                <span>План</span>
                 <input
                   type="number"
                   min={0}
@@ -257,8 +265,8 @@ export function ProductionAnalyticsRecordEditModal({
                   }
                 />
               </label>
-              <label>
-                Факт
+              <label className="production-analytics-edit-item-qty">
+                <span>Факт</span>
                 <input
                   type="number"
                   min={0}
@@ -268,8 +276,8 @@ export function ProductionAnalyticsRecordEditModal({
                   }
                 />
               </label>
-              <label>
-                Путь к файлу
+              <label className="production-analytics-edit-item-path">
+                <span>Путь к файлу</span>
                 <input
                   value={item.filePath ?? ''}
                   onChange={(event) => updateItem(index, { filePath: event.target.value })}

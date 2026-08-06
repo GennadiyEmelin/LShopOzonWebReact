@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Models;
@@ -41,7 +42,14 @@ public class TelegramNotificationService(
 
     public string GenerateConnectToken() => Guid.NewGuid().ToString("N");
 
-    public async Task<bool> SendMessageAsync(string chatId, string text, CancellationToken cancellationToken = default)
+    public Task<bool> SendMessageAsync(string chatId, string text, CancellationToken cancellationToken = default) =>
+        SendMessageAsync(chatId, text, null, cancellationToken);
+
+    public async Task<bool> SendMessageAsync(
+        string chatId,
+        string text,
+        object? replyMarkup = null,
+        CancellationToken cancellationToken = default)
     {
         if (!IsBotConfigured || string.IsNullOrWhiteSpace(chatId))
         {
@@ -53,13 +61,52 @@ public class TelegramNotificationService(
         using var client = httpClientFactory.CreateClient(nameof(TelegramNotificationService));
         using var response = await client.PostAsJsonAsync(
             $"https://api.telegram.org/bot{_options.BotToken}/sendMessage",
-            new TelegramSendMessageRequest(chatId, trimmed),
+            new TelegramSendMessageRequest(chatId, trimmed, replyMarkup),
             cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             logger.LogWarning("Telegram send failed: {Status} {Body}", response.StatusCode, body);
+            return false;
+        }
+
+        return true;
+    }
+
+    public async Task<bool> SendDocumentAsync(
+        string chatId,
+        byte[] content,
+        string fileName,
+        string caption,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsBotConfigured || string.IsNullOrWhiteSpace(chatId) || content.Length == 0)
+        {
+            return false;
+        }
+
+        using var client = httpClientFactory.CreateClient(nameof(TelegramNotificationService));
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(chatId), "chat_id");
+        if (!string.IsNullOrWhiteSpace(caption))
+        {
+            form.Add(new StringContent(caption.Length > 1024 ? caption[..1024] : caption), "caption");
+        }
+
+        var fileContent = new ByteArrayContent(content);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        form.Add(fileContent, "document", fileName);
+
+        using var response = await client.PostAsync(
+            $"https://api.telegram.org/bot{_options.BotToken}/sendDocument",
+            form,
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            logger.LogWarning("Telegram document send failed: {Status} {Body}", response.StatusCode, body);
             return false;
         }
 
@@ -92,6 +139,7 @@ public class TelegramNotificationService(
             .Select(user => new
             {
                 user.Id,
+                user.Role,
                 user.TelegramChatId,
                 user.TelegramNotifyEvents,
                 user.TelegramNotifyEventsKz
@@ -100,14 +148,18 @@ public class TelegramNotificationService(
 
         foreach (var recipient in recipients)
         {
-            if (!IsEnabledForRecipient(recipient.TelegramNotifyEvents, recipient.TelegramNotifyEventsKz, eventId, normalizedRegion))
+            if (!IsAlwaysAllowedRecipient(recipient.Role, eventId) &&
+                !IsEnabledForRecipient(recipient.TelegramNotifyEvents, recipient.TelegramNotifyEventsKz, eventId, normalizedRegion))
             {
                 continue;
             }
 
-            await SendMessageAsync(recipient.TelegramChatId!, message, cancellationToken);
+            await SendMessageAsync(recipient.TelegramChatId!, message, cancellationToken: cancellationToken);
         }
     }
+
+    private static bool IsAlwaysAllowedRecipient(string role, string eventId) =>
+        false;
 
     private static bool IsEnabledForRecipient(
         string? rfEvents,
@@ -155,6 +207,17 @@ public record TelegramBotInfo(string Username, string DisplayName);
 
 public record TelegramSendMessageRequest(
     [property: JsonPropertyName("chat_id")] string ChatId,
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("reply_markup")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    object? ReplyMarkup = null);
+
+public record TelegramReplyKeyboardMarkup(
+    [property: JsonPropertyName("keyboard")] IReadOnlyList<IReadOnlyList<TelegramKeyboardButton>> Keyboard,
+    [property: JsonPropertyName("resize_keyboard")] bool ResizeKeyboard = true,
+    [property: JsonPropertyName("one_time_keyboard")] bool OneTimeKeyboard = false);
+
+public record TelegramKeyboardButton(
     [property: JsonPropertyName("text")] string Text);
 
 public record TelegramGetMeResponse(

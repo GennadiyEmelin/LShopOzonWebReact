@@ -25,6 +25,11 @@ public class AppUser
     public string TelegramDailyReportTimezone { get; set; } = "Asia/Almaty";
     public string TelegramDailyReportSections { get; set; } = string.Empty;
     public DateOnly? TelegramDailyReportLastSentOn { get; set; }
+    public bool TelegramMonthlyReportEnabled { get; set; }
+    public string TelegramMonthlyReportTime { get; set; } = "19:00";
+    public string TelegramMonthlyReportTimezone { get; set; } = "Asia/Almaty";
+    public string TelegramMonthlyReportSections { get; set; } = string.Empty;
+    public DateOnly? TelegramMonthlyReportLastSentOn { get; set; }
 }
 
 public static class UserRoles

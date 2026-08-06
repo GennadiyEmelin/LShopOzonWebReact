@@ -15,6 +15,8 @@ public class ProductionTask
     public string? CreatedByDisplayName { get; set; }
     public string? AssignedUserName { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? DueAt { get; set; }
+    public DateTimeOffset? OverdueNotifiedAt { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? CancelledAt { get; set; }
     public Guid? CancelledByUserId { get; set; }
@@ -39,12 +41,17 @@ public class ProductionTaskItem
     public bool EnforceMinimumQuantity { get; set; }
     public string ProductLink { get; set; } = string.Empty;
     public string FilePath { get; set; } = string.Empty;
+    public DateTimeOffset? PackedAt { get; set; }
+    public Guid? PackedByUserId { get; set; }
+    public string? PackedByDisplayName { get; set; }
+    public Guid? PackedSupplyId { get; set; }
 }
 
 public static class ProductionTaskTypes
 {
     public const string Ozon = "Ozon";
     public const string Novinka = "Novinka";
+    public const string Packaging = "Packaging";
     public const string Kaspi = "Kaspi";
     public const string Satu = "Satu";
     public const string Halyk = "Halyk";

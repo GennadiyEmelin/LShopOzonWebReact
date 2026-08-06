@@ -314,10 +314,57 @@ public static class KzMarketplaceRoutes
             }
         }).RequireAuthorization();
 
+        app.MapGet("/api/kz/kaspi/sales-channels", async (
+            string? dateFrom,
+            string? dateTo,
+            AppDbContext db,
+            KzMarketplaceApiClient marketplaceApi,
+            KzMarketplaceCredentials credentials,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Analytics))
+            {
+                return Results.Forbid();
+            }
+
+            await credentials.LoadFromDatabaseAsync(db, cancellationToken);
+
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var from = today;
+            var to = today;
+
+            if (!string.IsNullOrWhiteSpace(dateFrom) && !DateOnly.TryParse(dateFrom, out from))
+            {
+                return Results.BadRequest("РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РґР°С‚Р° РЅР°С‡Р°Р»Р° РїРµСЂРёРѕРґР°.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(dateTo) && !DateOnly.TryParse(dateTo, out to))
+            {
+                return Results.BadRequest("РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ РґР°С‚Р° РѕРєРѕРЅС‡Р°РЅРёСЏ РїРµСЂРёРѕРґР°.");
+            }
+
+            if (from > to)
+            {
+                return Results.BadRequest("Р”Р°С‚Р° РЅР°С‡Р°Р»Р° РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РїРѕР·Р¶Рµ РґР°С‚С‹ РѕРєРѕРЅС‡Р°РЅРёСЏ.");
+            }
+
+            try
+            {
+                var result = await marketplaceApi.GetKaspiSalesChannelRowsAsync(from, to, cancellationToken);
+                return Results.Ok(result);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(exception.Message);
+            }
+        }).RequireAuthorization();
+
         app.MapGet("/api/kz/{marketplace}/analytics", async (
             string marketplace,
             string? dateFrom,
             string? dateTo,
+            bool? forceRefresh,
             AppDbContext db,
             KzMarketplaceApiClient marketplaceApi,
             KzMarketplaceCredentials credentials,
@@ -352,7 +399,12 @@ public static class KzMarketplaceRoutes
 
             try
             {
-                var result = await marketplaceApi.GetAnalyticsAsync(marketplace, from, to, cancellationToken);
+                var result = await marketplaceApi.GetAnalyticsAsync(
+                    marketplace,
+                    from,
+                    to,
+                    forceRefresh ?? false,
+                    cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)

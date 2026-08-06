@@ -31,8 +31,15 @@ public static class FeatureAccess
     public const string Settings = "settings";
     public const string SettingsEdit = "settings.edit";
 
+    public const string AnalyticsCalculator = "analytics.calculator";
+    public const string AnalyticsCalculatorEdit = "analytics.calculator.edit";
+    public const string AnalyticsFinances = "analytics.finances";
+
     public const string ProductionTasksDesigner = "production.tasks.designer";
     public const string ProductionTasksProduction = "production.tasks.production";
+    public const string ProductionTaskDeadline = "production.taskDeadline";
+    public const string ProductionChangeTaskType = "production.changeTaskType";
+    public const string ProductionPackItems = "production.packItems";
 
     public static readonly string[] ProductionDefaults =
     [
@@ -48,6 +55,7 @@ public static class FeatureAccess
         Supplies,
         "supplies.create",
         "supplies.all",
+        "supplies.expenses",
         Chats,
         "chats.edit",
         Integrations,
@@ -69,8 +77,11 @@ public static class FeatureAccess
         "production.archive",
         "production.createTask",
         "production.editTasks",
+        ProductionChangeTaskType,
+        ProductionTaskDeadline,
         "production.cancelTasks",
         "production.editProducts",
+        ProductionPackItems,
         "production.deleteFiles",
         "production.deleteFilePaths",
         Products,
@@ -80,6 +91,7 @@ public static class FeatureAccess
         "analytics.topProducts",
         "analytics.noSales",
         "analytics.production",
+        "analytics.internal",
         Pooling,
         "pooling.editPrices",
         Supplies,
@@ -88,6 +100,7 @@ public static class FeatureAccess
         "supplies.all",
         "supplies.archive",
         "supplies.analytics",
+        "supplies.expenses",
         "supplies.edit",
         Chats,
         "chats.edit",

@@ -1,11 +1,13 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using LShopOzonWebReact.Api.Calculator;
 using LShopOzonWebReact.Api.Configuration;
 using LShopOzonWebReact.Api.Data;
 using LShopOzonWebReact.Api.Integrations;
 using LShopOzonWebReact.Api.Marketplaces;
 using LShopOzonWebReact.Api.Ozon;
+using LShopOzonWebReact.Api.Production;
 using LShopOzonWebReact.Api.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -24,6 +26,8 @@ public static class DependencyInjectionExtensions
         services.AddSingleton<SatuCatalogCache>();
         services.AddSingleton<SatuProductSyncCoordinator>();
         services.AddSingleton<ISatuProductSyncCoordinator>(sp => sp.GetRequiredService<SatuProductSyncCoordinator>());
+        services.AddSingleton<KaspiProductSyncCoordinator>();
+        services.AddSingleton<IKaspiProductSyncCoordinator>(sp => sp.GetRequiredService<KaspiProductSyncCoordinator>());
         services.AddScoped<SatuProductRepository>();
         services.AddHttpClient(nameof(SatuProductSyncService), client =>
         {
@@ -32,6 +36,16 @@ public static class DependencyInjectionExtensions
         services.AddScoped<SatuProductSyncService>();
         services.AddScoped<SatuAnalyticsCacheService>();
         services.AddHostedService<SatuProductSyncHostedService>();
+        services.AddHostedService<KaspiProductSyncHostedService>();
+
+        // Калькулятор юнит-экономики Ozon
+        services.AddSingleton<OzonCommissionSyncCoordinator>();
+        services.AddSingleton<IOzonCommissionSyncCoordinator>(sp => sp.GetRequiredService<OzonCommissionSyncCoordinator>());
+        services.AddScoped<OzonCommissionRepository>();
+        services.AddScoped<OzonCommissionSyncService>();
+        services.AddSingleton<CalculatorService>();
+        services.AddHostedService<OzonCommissionSyncHostedService>();
+
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(configuration.GetConnectionString("Postgres")));
 
@@ -51,16 +65,24 @@ public static class DependencyInjectionExtensions
         services.AddHttpClient(nameof(TelegramNotificationService));
         services.AddHttpClient(nameof(TelegramBotHostedService));
         services.AddSingleton<TelegramNotificationService>();
+        services.AddScoped<TelegramBotMenuService>();
         services.AddScoped<DailyReportService>();
         services.AddHostedService<TelegramBotHostedService>();
         services.AddHostedService<DailyReportHostedService>();
+        services.AddHostedService<ProductionTaskOverdueHostedService>();
         services.AddHttpClient<OzonApiClient>((serviceProvider, client) =>
         {
             var credentials = serviceProvider.GetRequiredService<OzonRuntimeCredentials>();
             client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(credentials.BaseUrl)
                 ? "https://api-seller.ozon.ru"
                 : credentials.BaseUrl);
-            client.Timeout = TimeSpan.FromMinutes(15);
+            client.Timeout = TimeSpan.FromSeconds(60);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+        {
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
         });
         services.AddScoped<JwtTokenService>();
 

@@ -46,7 +46,7 @@ export function isKzMarketplaceTaskType(taskType: string): boolean {
 }
 
 export function isRfMarketplaceTaskType(taskType: string): boolean {
-  return taskType === 'Ozon'
+  return taskType === 'Ozon' || taskType === 'Packaging'
 }
 
 export function getDefaultTaskFormMode(

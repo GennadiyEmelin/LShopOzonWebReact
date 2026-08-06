@@ -4,6 +4,8 @@ import * as signalR from '@microsoft/signalr'
 import { KzMarketplaceTabs, RegionSwitcher } from './KzRegionUi'
 import type { KzIntegrationSettings } from './KzRegionUi'
 import { KzIntegrationsPanel } from './features/integrations/components/KzIntegrationsPanel'
+import { CalculatorPanel } from './features/calculator/components/CalculatorPanel'
+import { FinancesPanel } from './features/finances/components/FinancesPanel'
 import {
   getKzMarketplaceLabel,
   getKzTaskType,
@@ -54,7 +56,9 @@ import type {
   ProductionFilePath,
   ProductionSubTab,
   ProductionTask,
+  ProductionTaskEditorKind,
   ProductionTaskItem,
+  ProductionTaskType,
   TaskFormMode,
 } from './domain/types/production'
 import type { OzonProduct } from './domain/types/ozon'
@@ -88,6 +92,7 @@ import {
 } from './features/production/lib/taskDisplayUtils'
 import {
   ProductionFilesModal,
+  ProductionFileThumb,
   ProductionTaskArchiveTable,
   ProductionTaskTable,
 } from './features/production/components/ProductionTaskTables'
@@ -183,6 +188,11 @@ type AdminUserReport = {
   enabledSections: string[]
   availableSections: string[]
   lastSentOn: string | null
+  monthlyEnabled: boolean
+  monthlyReportTime: string
+  monthlyTimezone: string
+  monthlyEnabledSections: string[]
+  monthlyLastSentOn: string | null
   telegramConnected: boolean
 }
 
@@ -191,6 +201,10 @@ type ReportSection = {
   group: string
   label: string
 }
+
+const accountingReportGroup = 'Учет / Отчетность'
+const isAccountingReportSection = (section: ReportSection) => section.group === accountingReportGroup
+const isRegularReportSection = (section: ReportSection) => !isAccountingReportSection(section)
 
 type ChatMessage = {
   id: string
@@ -225,6 +239,127 @@ type ChatGroupMember = {
   displayName: string
   position: string
   avatarUrl: string
+}
+
+const accountingPrototypeTabs = ['materials', 'sales'] as const
+type AccountingPrototypeTab = (typeof accountingPrototypeTabs)[number]
+
+type AccountingMaterialRow = {
+  id: string
+  category: string
+  name: string
+  previewUrl?: string
+  norm: number
+  available: number
+  inTransit: number
+  request: number
+  orderNote: string
+  customFields?: Record<string, string>
+}
+
+type AccountingMaterialColumn = {
+  id: string
+  label: string
+}
+
+type AccountingSalesChannelRow = {
+  id: string
+  channel: string
+  orders: number
+  lshopAmount: number
+  joyAmount: number | null
+}
+
+type AccountingSalesChannelApiRow = {
+  id: string
+  channel?: string
+  orders?: number
+  lshopAmount?: number
+  joyAmount?: number | null
+}
+
+const accountingMaterialSeed: AccountingMaterialRow[] = [
+  { id: 'roll-badge-58', category: 'Закатные заготовки (значки и магниты)', name: 'Значок D=58 мм', norm: 5000, available: 3700, inTransit: 1000, request: 800, orderNote: '' },
+  { id: 'roll-badge-44', category: 'Закатные заготовки (значки и магниты)', name: 'Значок D=44 мм', norm: 2500, available: 1700, inTransit: 1000, request: 800, orderNote: '' },
+  { id: 'roll-badge-32', category: 'Закатные заготовки (значки и магниты)', name: 'Значок D=32 мм', norm: 2000, available: 1900, inTransit: 0, request: 100, orderNote: '' },
+  { id: 'roll-badge-60x40', category: 'Закатные заготовки (значки и магниты)', name: 'Значок 60x40 мм', norm: 3000, available: 2800, inTransit: 0, request: 200, orderNote: '' },
+  { id: 'roll-badge-50x50', category: 'Закатные заготовки (значки и магниты)', name: 'Значок 50x50 мм', norm: 2000, available: 2300, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'roll-magnet-58', category: 'Закатные заготовки (значки и магниты)', name: 'Магнит D=58мм', norm: 5000, available: 5500, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'roll-magnet-100', category: 'Закатные заготовки (значки и магниты)', name: 'Магнит D=100мм', norm: 1000, available: 974, inTransit: 0, request: 26, orderNote: '' },
+  { id: 'roll-magnet-50x50', category: 'Закатные заготовки (значки и магниты)', name: 'Магнит 50x50мм', norm: 2000, available: 2200, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'roll-magnet-80x53', category: 'Закатные заготовки (значки и магниты)', name: 'Магнит 80x53мм', norm: 3000, available: 2150, inTransit: 600, request: 600, orderNote: '' },
+  { id: 'roll-bag-badge-58', category: 'Закатные заготовки (значки и магниты)', name: 'Пакетики для значков D=58мм', norm: 5000, available: 850, inTransit: 0, request: 4000, orderNote: '' },
+  { id: 'roll-bag-badge-44', category: 'Закатные заготовки (значки и магниты)', name: 'Пакетики для значков D=44мм', norm: 2500, available: 2240, inTransit: 0, request: 1500, orderNote: '' },
+  { id: 'roll-bag-badge-32', category: 'Закатные заготовки (значки и магниты)', name: 'Пакетики для значков D=32мм', norm: 2000, available: 960, inTransit: 0, request: 1800, orderNote: '' },
+  { id: 'roll-bag-magnet-80x53', category: 'Закатные заготовки (значки и магниты)', name: 'Пакетики для магнитов 80x53мм', norm: 3000, available: 2000, inTransit: 0, request: 2800, orderNote: '' },
+  { id: 'token-silver-matte', category: 'Заготовки жетонов, цепи и брелоки', name: 'Жетон серебро матовый', norm: 0, available: 64, inTransit: 0, request: 0, orderNote: 'Удаляем' },
+  { id: 'token-silver-glossy', category: 'Заготовки жетонов, цепи и брелоки', name: 'Жетон серебро глянцевый', norm: 1000, available: 1055, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'token-gold', category: 'Заготовки жетонов, цепи и брелоки', name: 'Жетон золото', norm: 500, available: 371, inTransit: 0, request: 128, orderNote: '' },
+  { id: 'token-black', category: 'Заготовки жетонов, цепи и брелоки', name: 'Жетон черный', norm: 150, available: 164, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'token-heart', category: 'Заготовки жетонов, цепи и брелоки', name: 'Жетон сердце', norm: 100, available: 99, inTransit: 0, request: 1, orderNote: '' },
+  { id: 'chain-token-silver', category: 'Заготовки жетонов, цепи и брелоки', name: 'Цепь для жетона серебро', norm: 1000, available: 1432, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'chain-token-gold', category: 'Заготовки жетонов, цепи и брелоки', name: 'Цепь для жетона золото', norm: 500, available: 2, inTransit: 200, request: 500, orderNote: '' },
+  { id: 'ring-keychain-silver', category: 'Заготовки жетонов, цепи и брелоки', name: 'Кольцо для Брелка (серебро)', norm: 0, available: 0, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'ring-keychain-gold', category: 'Заготовки жетонов, цепи и брелоки', name: 'Кольцо для Брелка (золото)', norm: 0, available: 63, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'keychain-clear-round', category: 'Заготовки жетонов, цепи и брелоки', name: 'Брелок прозрачный круглый', norm: 0, available: 100, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'keychain-clear-heart', category: 'Заготовки жетонов, цепи и брелоки', name: 'Брелок прозрачный сердце', norm: 0, available: 99, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'keychain-clear-40x40', category: 'Заготовки жетонов, цепи и брелоки', name: 'Брелок прозрачный 40x40мм', norm: 0, available: 97, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'keychain-clear-34x52', category: 'Заготовки жетонов, цепи и брелоки', name: 'Брелок прозрачный 34x52мм', norm: 0, available: 949, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'keychain-ring-chain', category: 'Заготовки жетонов, цепи и брелоки', name: 'Кольцо для брелка (с цепью)', norm: 0, available: 1959, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'paper-a4-glossy-115', category: 'Бумага', name: 'Бумага А4 (глянец 115гр)', norm: 10, available: 4, inTransit: 0, request: 6, orderNote: '' },
+  { id: 'paper-a4-glossy-300', category: 'Бумага', name: 'Бумага А4 (глянец 300гр)', norm: 10, available: 4, inTransit: 0, request: 0, orderNote: '' },
+  { id: 'paper-a4-matte-300', category: 'Бумага', name: 'Бумага А4 (матовая 300гр)', norm: 10, available: 4, inTransit: 0, request: 9, orderNote: '' },
+  { id: 'paper-magnet-photo-100x150', category: 'Бумага', name: 'Бумага Magnet photo 100x150мм', norm: 20, available: 19, inTransit: 0, request: 1, orderNote: '' },
+  { id: 'mug-beer-500', category: 'Сувенирная посуда', name: 'Бокал для пива 500мл (2шт)', norm: 30, available: 26, inTransit: 0, request: 21, orderNote: '' },
+  { id: 'mug-wine-445', category: 'Сувенирная посуда', name: 'Бокал для вина 445мл (2шт)', norm: 30, available: 8, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'mug-champagne-210', category: 'Сувенирная посуда', name: 'Бокал для шампанского 210мл (2шт)', norm: 30, available: 10, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'mug-beer-660', category: 'Сувенирная посуда', name: 'Кружка для пива 660мл (2шт)', norm: 30, available: 26, inTransit: 0, request: 2, orderNote: '' },
+  { id: 'mug-tea-330', category: 'Сувенирная посуда', name: 'Кружка чайная 330мл (1шт)', norm: 100, available: 92, inTransit: 0, request: 49, orderNote: '' },
+  { id: 'shot-glass-60', category: 'Сувенирная посуда', name: 'Стопки для водки 60мл. (6шт)', norm: 30, available: 10, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'plate-big-203', category: 'Сувенирная посуда', name: 'Тарелка большая D=203мм', norm: 30, available: 24, inTransit: 0, request: 6, orderNote: '' },
+  { id: 'plate-small', category: 'Сувенирная посуда', name: 'Тарелка малая D=', norm: 30, available: 0, inTransit: 0, request: 30, orderNote: '' },
+  { id: 'shirt-embroidery-black', category: 'Текстиль', name: 'Футболка для вышивки (черные)', norm: 20, available: 1, inTransit: 0, request: 19, orderNote: '' },
+  { id: 'shirt-embroidery-white', category: 'Текстиль', name: 'Футболка для вышивки (белые)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'shirt-embroidery-gray', category: 'Текстиль', name: 'Футболка для вышивки (серые)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'shirt-sublimation-black', category: 'Текстиль', name: 'Футболка для сублимации (черные)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'shirt-sublimation-white', category: 'Текстиль', name: 'Футболка для сублимации (белые)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'shirt-sublimation-gray', category: 'Текстиль', name: 'Футболка для сублимации (серые)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'mousepad-180x220', category: 'Текстиль', name: 'Коврик для мыши 180x220мм', norm: 20, available: 10, inTransit: 0, request: 10, orderNote: '' },
+  { id: 'mousepad-210x260', category: 'Текстиль', name: 'Коврик для мыши 210x260мм.', norm: 20, available: 8, inTransit: 0, request: 12, orderNote: '' },
+  { id: 'mousepad-heart', category: 'Текстиль', name: 'Коврик для мыши (Сердце)', norm: 20, available: 9, inTransit: 0, request: 11, orderNote: '' },
+  { id: 'cap-sublimation-black', category: 'Текстиль', name: 'Кепки Сублимация (черные)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'cap-sublimation-white', category: 'Текстиль', name: 'Кепки Сублимация (белые)', norm: 20, available: 0, inTransit: 0, request: 20, orderNote: '' },
+  { id: 'puzzle-sublimation-200x290', category: 'Прочее', name: 'Пазл (сублимация) 200x290мм', norm: 20, available: 6, inTransit: 0, request: 14, orderNote: '' },
+]
+
+const accountingSalesSeed: AccountingSalesChannelRow[] = [
+  { id: 'kaspi-express', channel: 'Kaspi Express', orders: 54, lshopAmount: 436_400, joyAmount: 128_500 },
+  { id: 'kaspi-zamler', channel: 'Kaspi Zamler', orders: 18, lshopAmount: 145_200, joyAmount: 42_300 },
+  { id: 'kaspi-pickup', channel: 'Kaspi Самовывоз / Покупатели', orders: 9, lshopAmount: 74_900, joyAmount: 18_600 },
+  { id: 'satu-halyk', channel: 'Satu / Halyk', orders: 7, lshopAmount: 56_700, joyAmount: 0 },
+]
+
+function toNumber(value: string) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function toOptionalNumber(value: string) {
+  const trimmed = value.trim()
+  return trimmed === '' ? null : toNumber(trimmed)
+}
+
+function readStoredJsonValue<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredJsonValue<T>(key: string, value: T) {
+  localStorage.setItem(key, JSON.stringify(value))
 }
 
 type AuditLog = {
@@ -298,6 +433,60 @@ type OzonStock = {
   fbsPresent: number
   productUrl: string
   imageUrl: string
+}
+
+type ProductCostProfile = {
+  productId: number
+  offerId: string
+  productName: string
+  isPurchased: boolean
+  costTypeId?: string | null
+  costTypeName?: string | null
+  useIndividualCost: boolean
+  purchaseCost?: number | null
+  packagingCost?: number | null
+  productionCost?: number | null
+  costTotal?: number | null
+}
+
+type ProductCostType = {
+  id: string
+  name: string
+  isPurchased: boolean
+  purchaseCost?: number | null
+  packagingCost?: number | null
+  productionCost?: number | null
+  costTotal?: number | null
+}
+
+type InternalAnalyticsData = {
+  stockCostTotal: number
+  stockSalesNetTotal: number
+  stockProfitTotal: number
+  stockQuantity: number
+  costedStockQuantity: number
+  productsWithStock: number
+  productsWithoutCost: number
+  suppliesShippingTotal: number
+  suppliesCount: number
+  suppliesItemQuantity: number
+  suppliesWithoutShippingCost: number
+  periodDateFrom: string
+  periodDateTo: string
+  periodOrdersCount: number
+  periodOrderedAmount: number
+  periodPayoutTotal: number
+  periodCommissionTotal: number
+  periodLogisticsTotal: number
+  periodServicesTotal: number
+  periodDeductionsTotal: number
+  periodSupplyShippingTotal: number
+  periodExpensesTotal: number
+  periodExpensesCount: number
+  periodSoldCostTotal: number
+  periodSoldCostedQuantity: number
+  periodSoldWithoutCostQuantity: number
+  periodNetProfit: number
 }
 
 type OzonAnalyticsSnapshot = {
@@ -415,6 +604,7 @@ type OzonAnalytics = {
 }
 
 type SupplyStatus = 'Created' | 'Sent' | 'Accepted'
+type SupplyItemKind = 'Product' | 'Consumable' | 'MaterialAsset'
 
 type SupplyItem = {
   id: string
@@ -423,6 +613,7 @@ type SupplyItem = {
   productName: string
   quantity: number
   isReserve: boolean
+  itemKind: SupplyItemKind
 }
 
 type SupplyHistoryItem = {
@@ -440,6 +631,7 @@ type Supply = {
   createdAt: string
   sentAt?: string
   acceptedAt?: string
+  shippingCost?: number | null
   isArchived: boolean
   archivedAt?: string
   items: SupplyItem[]
@@ -454,6 +646,54 @@ type SupplyAnalyticsItem = SupplyItem & {
   createdAt: string
   sentAt?: string
   acceptedAt?: string
+  shippingCost?: number | null
+}
+
+type SupplyFboSummary = {
+  shippedToOzon: number
+  remainingToShip: number
+  remainingItems: SupplyFboRemainingItem[]
+}
+
+type SupplyFboRemainingItem = {
+  key: string
+  productName: string
+  offerId: string
+  acceptedQuantity: number
+  shippedQuantity: number
+  remainingQuantity: number
+}
+
+type SupplyFboDefect = {
+  id: string
+  productKey: string
+  offerId: string
+  productName: string
+  quantity: number
+  createdAt: string
+}
+
+type SupplyExpense = {
+  id: string
+  name: string
+  amount: number
+  purchasedAt: string
+  createdAt: string
+  createdByUserId: string
+  createdByDisplayName: string
+}
+
+type SupplyExpensesResponse = {
+  items: SupplyExpense[]
+  totalAmount: number
+}
+
+type OzonSupplyShipmentQuantity = {
+  sku: number
+  offerId: string
+  productId: number
+  quantity: number
+  productName?: string
 }
 
 type DraftSupplyItem = {
@@ -465,6 +705,84 @@ type DraftSupplyItem = {
   imageUrl?: string
   quantity: number
   isReserve: boolean
+  itemKind: SupplyItemKind
+}
+
+function formatSupplyItemKind(item: Pick<SupplyItem, 'isReserve' | 'offerId' | 'itemKind'>) {
+  if (item.itemKind === 'Consumable') {
+    return 'Расходный материал'
+  }
+
+  if (item.itemKind === 'MaterialAsset') {
+    return 'Мат. ценность'
+  }
+
+  return item.isReserve ? (item.offerId.startsWith('NV-') ? 'Новинка' : 'Новый') : 'Постоянный'
+}
+
+function isSupplyProductKind(itemKind?: string | null) {
+  return itemKind !== 'Consumable' && itemKind !== 'MaterialAsset'
+}
+
+function parseMoneyInput(value: string) {
+  const normalized = value.trim().replace(',', '.')
+  if (!normalized) {
+    return null
+  }
+
+  const number = Number(normalized)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
+
+function isDateStringInRange(value: string | null | undefined, from: string, to: string) {
+  const date = value?.trim().slice(0, 10)
+  if (!date) {
+    return false
+  }
+
+  if (from && date < from) {
+    return false
+  }
+
+  if (to && date > to) {
+    return false
+  }
+
+  return true
+}
+
+function dateInputValue(value: string | null | undefined) {
+  return value?.trim().slice(0, 10) || ''
+}
+
+function normalizeMarketplaceOfferId(offerId: string) {
+  const value = offerId.trim().toUpperCase()
+  const match = /^([A-ZА-Я]+)-?0*(\d+)$/.exec(value)
+  return match ? `${match[1]}:${Number(match[2])}` : value
+}
+
+function getOfferMatchKeys(offerId: string) {
+  const value = offerId.trim()
+  if (!value) {
+    return []
+  }
+
+  return [`offer:${value}`, `offer-normalized:${normalizeMarketplaceOfferId(value)}`]
+}
+
+function normalizeSupplyProductName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getSupplyProductNameKey(value: string) {
+  const normalized = normalizeSupplyProductName(value)
+  return normalized ? `name:${normalized}` : ''
 }
 
 function createTempId() {
@@ -560,6 +878,7 @@ const tabs = [
   { id: 'supplies', label: 'Поставки' },
   { id: 'chats', label: 'Чаты' },
   { id: 'integrations', label: 'Интеграции' },
+  { id: 'accounting', label: 'Учет / Отчетность' },
   { id: 'users', label: 'Пользователи' },
   { id: 'settings', label: 'Настройки' },
 ] as const
@@ -579,14 +898,18 @@ const featureGroups = [
       { id: 'production.tasks.designer', label: 'Видимость задач для дизайнеров' },
       { id: 'production.tasks.production', label: 'Видимость задач для производства' },
       { id: 'production.inProgress', label: 'В работе' },
+      { id: 'production.readyToShip', label: 'Готовые к отгрузке' },
       { id: 'production.cancelled', label: 'Отменённые' },
       { id: 'production.completed', label: 'Выполненные' },
       { id: 'production.archive', label: 'Архив задач' },
       { id: 'production.createTask', label: 'Создание задач' },
       { id: 'production.editTasks', label: 'Редактирование задач' },
+      { id: 'production.changeTaskType', label: 'Смена типа задачи' },
+      { id: 'production.taskDeadline', label: 'Срок выполнения задач' },
       { id: 'production.cancelTasks', label: 'Отмена задач' },
       { id: 'production.editProducts', label: 'Редактирование товара' },
-      { id: 'production.deleteFiles', label: 'Удаление файлов' },
+      { id: 'production.packItems', label: 'Упаковка товаров' },
+      { id: 'production.deleteFiles', label: 'Удаление превью' },
       { id: 'production.deleteFilePaths', label: 'Удаление путей к файлам' },
     ],
   },
@@ -605,6 +928,10 @@ const featureGroups = [
       { id: 'analytics.topProducts', label: 'Топ товары' },
       { id: 'analytics.noSales', label: 'Без продаж' },
       { id: 'analytics.production', label: 'Производство' },
+      { id: 'analytics.internal', label: 'Внутренняя аналитика' },
+      { id: 'analytics.calculator', label: 'Калькулятор' },
+      { id: 'analytics.calculator.edit', label: 'Калькулятор: настройки и синхронизация' },
+      { id: 'analytics.finances', label: 'Финансы' },
     ],
   },
   {
@@ -623,6 +950,7 @@ const featureGroups = [
       { id: 'supplies.all', label: 'Все поставки' },
       { id: 'supplies.archive', label: 'Архив поставок' },
       { id: 'supplies.analytics', label: 'Аналитика поставок' },
+      { id: 'supplies.expenses', label: 'Расходники' },
       { id: 'supplies.edit', label: 'Изменение поставок' },
     ],
   },
@@ -649,6 +977,15 @@ const featureGroups = [
     ],
   },
   {
+    title: 'Учет / Отчетность',
+    items: [
+      { id: 'accounting', label: 'Раздел' },
+      { id: 'accounting.sales', label: 'Отчет продаж' },
+      { id: 'accounting.materials', label: 'Отчет материалов' },
+      { id: 'accounting.send', label: 'Отправка в Telegram' },
+    ],
+  },
+  {
     title: 'Пользователи',
     items: [
       { id: 'users', label: 'Раздел' },
@@ -672,6 +1009,7 @@ const homeBlockDefinitions = [
     actions: [
       { id: 'production.tasks', label: 'Задачи' },
       { id: 'production.inProgress', label: 'В работе' },
+      { id: 'production.readyToShip', label: 'Готовые к отгрузке' },
       { id: 'production.cancelled', label: 'Отменённые' },
       { id: 'production.completed', label: 'Выполненные' },
       { id: 'production.createTask', label: 'Создание задач' },
@@ -685,6 +1023,10 @@ const homeBlockDefinitions = [
       { id: 'analytics.topProducts', label: 'Топ товары' },
       { id: 'analytics.noSales', label: 'Без продаж' },
       { id: 'analytics.production', label: 'Производство' },
+      { id: 'analytics.internal', label: 'Внутренняя аналитика' },
+      { id: 'analytics.calculator', label: 'Калькулятор' },
+      { id: 'analytics.calculator.edit', label: 'Калькулятор: настройки и синхронизация' },
+      { id: 'analytics.finances', label: 'Финансы' },
     ],
   },
   {
@@ -695,6 +1037,7 @@ const homeBlockDefinitions = [
       { id: 'supplies.all', label: 'Все поставки' },
       { id: 'supplies.editor', label: 'Редактор' },
       { id: 'supplies.analytics', label: 'Аналитика' },
+      { id: 'supplies.expenses', label: 'Расходники' },
     ],
   },
   {
@@ -979,21 +1322,46 @@ function canSeeOzonProductionTasks(role: string | undefined, features: string[] 
 }
 
 function isProductionTaskVisibleForUser(
-  task: ProductionTask,
+  _task: ProductionTask,
   role: string | undefined,
   features: string[] | undefined,
 ) {
-  return (
-    (isNovinkaTask(task) && canSeeNovinkaProductionTasks(role, features)) ||
-    (!isNovinkaTask(task) && canSeeOzonProductionTasks(role, features))
-  )
+  return canSeeNovinkaProductionTasks(role, features) || canSeeOzonProductionTasks(role, features)
 }
 
-const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'chats', 'chats.edit', 'integrations', 'integrations.telegram', 'integrations.telegram.connect']
+const defaultUserFeatures = ['home', 'production', 'production.products', 'production.tasks', 'production.inProgress', 'production.readyToShip', 'production.cancelled', 'production.completed', 'products', 'supplies', 'supplies.create', 'supplies.all', 'supplies.expenses', 'chats', 'chats.edit', 'integrations', 'integrations.telegram', 'integrations.telegram.connect', 'accounting', 'accounting.sales', 'accounting.materials', 'accounting.send', 'analytics.internal']
 
 type TabId = (typeof tabs)[number]['id']
-type SupplySubTab = 'create' | 'editor' | 'all' | 'archive' | 'analytics'
-type AnalyticsSubTab = 'summary' | 'topProducts' | 'noSales' | 'production'
+const tabIds = tabs.map((tab) => tab.id) as TabId[]
+const supplySubTabs = ['create', 'editor', 'all', 'archive', 'analytics', 'expenses'] as const
+const analyticsSubTabs = ['summary', 'topProducts', 'noSales', 'production', 'internal', 'calculator', 'finances'] as const
+
+/**
+ * Начало «всего периода» для кнопки быстрого выбора дат.
+ * Ozon хранит финансовые операции ограниченный срок, поэтому уходить
+ * дальше смысла нет — только лишние запросы в пустоту.
+ */
+const ALL_PERIOD_START = '2024-01-01'
+const productionSubTabs = ['products', 'tasks', 'inProgress', 'readyToShip', 'cancelled', 'completed', 'archive'] as const
+type SupplySubTab = (typeof supplySubTabs)[number]
+type AnalyticsSubTab = (typeof analyticsSubTabs)[number]
+
+function readStoredUiValue<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  const value = window.localStorage.getItem(key)
+  return value && allowed.includes(value as T) ? (value as T) : fallback
+}
+
+function writeStoredUiValue(key: string, value: string) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.localStorage.setItem(key, value)
+}
 
 function UsersAdminPanel({
   token,
@@ -1332,7 +1700,7 @@ function UsersAdminPanel({
                   <span className={`user-badge user-badge-online ${item.isOnline ? 'is-online' : 'is-offline'}`}>
                     {item.isOnline ? 'В сети' : 'Не в сети'}
                     {!item.isOnline && item.lastSeenAt && (
-                      <small>Был: {formatDateTime(item.lastSeenAt)}</small>
+                      <small>Р‘С‹Р»: {formatDateTime(item.lastSeenAt)}</small>
                     )}
                   </span>
                 </div>
@@ -1468,6 +1836,757 @@ function UsersAdminPanel({
   )
 }
 
+function AccountingReportsPrototype({ token }: { token: string }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [activeAccountingTab, setActiveAccountingTab] = useState<AccountingPrototypeTab>(() =>
+    readStoredUiValue('lshop.accountingTab', accountingPrototypeTabs, 'materials'),
+  )
+  const [materialsReportDate, setMaterialsReportDate] = useState(today)
+  const [salesReportDateFrom, setSalesReportDateFrom] = useState(today)
+  const [salesReportDateTo, setSalesReportDateTo] = useState(today)
+  const [materials, setMaterials] = useState<AccountingMaterialRow[]>(() =>
+    readStoredJsonValue<AccountingMaterialRow[]>('lshop.accounting.materials', accountingMaterialSeed),
+  )
+  const [materialSections, setMaterialSections] = useState(() =>
+    readStoredJsonValue<string[]>(
+      'lshop.accounting.materialSections',
+      Array.from(new Set(accountingMaterialSeed.map((row) => row.category.trim()).filter(Boolean))),
+    ),
+  )
+  const [materialColumns] = useState<AccountingMaterialColumn[]>([])
+  const [newMaterialSectionName, setNewMaterialSectionName] = useState('')
+  const [materialFilter, setMaterialFilter] = useState('')
+  const [salesRows, setSalesRows] = useState<AccountingSalesChannelRow[]>(() =>
+    readStoredJsonValue<AccountingSalesChannelRow[]>('lshop.accounting.salesRows', accountingSalesSeed),
+  )
+  const [notice, setNotice] = useState('')
+  const [salesReportLoading, setSalesReportLoading] = useState(false)
+  const [accountingReportReady, setAccountingReportReady] = useState<Record<AccountingPrototypeTab, boolean>>({
+    materials: false,
+    sales: false,
+  })
+  const [manualSalesFields, setManualSalesFields] = useState(() =>
+    readStoredJsonValue('lshop.accounting.salesManual', {
+    previousReturns: 12_400,
+    designerSales: 64_000,
+    buyerCancels: 3,
+    buyerCancelAmount: 19_800,
+    managerCancels: 1,
+    newKaspiPositions: 14,
+    newSatuPositions: 3,
+    quality: 'Хорошо',
+    responsible: 'Валентин',
+    manager: 'Таир',
+    driver: 'Мухит',
+    comment: 'Проверить отмены и возвраты перед отправкой директору.',
+    }),
+  )
+
+  function getSalesReportRange() {
+    const from = salesReportDateFrom || today
+    const to = salesReportDateTo || from
+    return from <= to ? { from, to } : { from: to, to: from }
+  }
+
+  function getSalesReportPeriodLabel() {
+    const { from, to } = getSalesReportRange()
+    return from === to ? from : `${from} - ${to}`
+  }
+
+  function getSalesReportFileDate() {
+    const { from, to } = getSalesReportRange()
+    return from === to ? from : `${from}_${to}`
+  }
+
+  useEffect(() => {
+    writeStoredUiValue('lshop.accountingTab', activeAccountingTab)
+  }, [activeAccountingTab])
+
+  const filteredMaterials = useMemo(() => {
+    const query = materialFilter.trim().toLowerCase()
+    if (!query) {
+      return materials
+    }
+
+    return materials.filter((row) => {
+      const customValues = Object.values(row.customFields ?? {}).join(' ')
+      return `${row.category} ${row.name} ${row.orderNote} ${customValues}`.toLowerCase().includes(query)
+    })
+  }, [materialFilter, materials])
+
+  const materialSummary = useMemo(() => {
+    const shortageRows = filteredMaterials.filter((row) => row.available - row.norm < 0)
+    return {
+      total: filteredMaterials.length,
+      shortages: shortageRows.length,
+      requestTotal: filteredMaterials.reduce((sum, row) => sum + row.request, 0),
+      critical: shortageRows.filter((row) => row.available + row.inTransit < row.norm).length,
+    }
+  }, [filteredMaterials])
+
+  const materialGroups = useMemo(() => {
+    const groups = new Map<string, AccountingMaterialRow[]>(materialSections.map((section) => [section, []]))
+    filteredMaterials.forEach((row) => {
+      const category = row.category.trim() || 'Без раздела'
+      groups.set(category, [...(groups.get(category) ?? []), row])
+    })
+
+    return Array.from(groups.entries())
+      .map(([category, rows]) => ({
+        category,
+        rows,
+        shortages: rows.filter((row) => row.available - row.norm < 0).length,
+        requestTotal: rows.reduce((sum, row) => sum + row.request, 0),
+      }))
+      .filter((group) => group.rows.length > 0 || !materialFilter.trim())
+  }, [filteredMaterials, materialFilter, materialSections])
+
+  const salesSummary = useMemo(() => {
+    const orders = salesRows.reduce((sum, row) => sum + row.orders, 0)
+    const lshopAmount = salesRows.reduce((sum, row) => sum + row.lshopAmount, 0)
+    const joyAmount = salesRows.reduce((sum, row) => sum + (row.joyAmount ?? 0), 0)
+    const gross = lshopAmount + joyAmount
+
+    return { orders, lshopAmount, joyAmount, gross, finalAmount: gross }
+  }, [salesRows])
+  const hasAnyJoySalesAmount = salesRows.some((row) => row.joyAmount !== null)
+  const materialGridTemplate = `minmax(260px, 1.6fr) repeat(5, minmax(92px, 0.65fr)) ${materialColumns
+    .map(() => 'minmax(150px, 0.8fr)')
+    .join(' ')} minmax(210px, 1.3fr) minmax(120px, 0.55fr)`
+  const materialGridMinWidth = `${1100 + materialColumns.length * 170}px`
+
+  function updateMaterial(id: string, patch: Partial<AccountingMaterialRow>) {
+    setMaterials((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)))
+  }
+
+  function updateMaterialCustomField(rowId: string, columnId: string, value: string) {
+    setMaterials((current) =>
+      current.map((row) =>
+        row.id === rowId
+          ? {
+              ...row,
+              customFields: {
+                ...(row.customFields ?? {}),
+                [columnId]: value,
+              },
+            }
+          : row,
+      ),
+    )
+  }
+
+  function updateSalesRow(id: string, patch: Partial<AccountingSalesChannelRow>) {
+    setSalesRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)))
+  }
+
+  function addMaterialRow(category = 'Ручной ввод') {
+    const sectionName = category.trim() || 'Ручной ввод'
+    setMaterialSections((current) => (current.includes(sectionName) ? current : [...current, sectionName]))
+    setMaterials((current) => [
+      ...current,
+      {
+        id: `manual-${Date.now()}`,
+        category: sectionName,
+        name: 'Новая позиция',
+        previewUrl: '',
+        norm: 0,
+        available: 0,
+        inTransit: 0,
+        request: 0,
+        orderNote: '',
+        customFields: Object.fromEntries(materialColumns.map((column) => [column.id, ''])),
+      },
+    ])
+  }
+
+  function addMaterialSection() {
+    const sectionName = newMaterialSectionName.trim()
+    if (!sectionName) {
+      setNotice('Введите название нового раздела материалов.')
+      return
+    }
+
+    setMaterialSections((current) => (current.includes(sectionName) ? current : [...current, sectionName]))
+    setNewMaterialSectionName('')
+    setNotice(`Раздел «${sectionName}» добавлен. Добавляй строки внутри него.`)
+  }
+
+  function buildAccountingReport() {
+    setAccountingReportReady((current) => ({ ...current, [activeAccountingTab]: true }))
+    setNotice('')
+  }
+
+  function persistAccountingChanges(message = 'Изменения сохранены.') {
+    writeStoredJsonValue('lshop.accounting.materials', materials)
+    writeStoredJsonValue('lshop.accounting.materialSections', materialSections)
+    writeStoredJsonValue('lshop.accounting.salesRows', salesRows)
+    writeStoredJsonValue('lshop.accounting.salesManual', manualSalesFields)
+    setNotice(message)
+  }
+
+  function saveAccountingMaterialRow(row: AccountingMaterialRow) {
+    const nextMaterials = materials.map((item) => (item.id === row.id ? row : item))
+    writeStoredJsonValue('lshop.accounting.materials', nextMaterials)
+    writeStoredJsonValue('lshop.accounting.materialSections', materialSections)
+    setNotice(`Позиция «${row.name || 'без названия'}» сохранена.`)
+  }
+
+  function saveAccountingSalesRow(row: AccountingSalesChannelRow) {
+    const nextRows = salesRows.map((item) => (item.id === row.id ? row : item))
+    writeStoredJsonValue('lshop.accounting.salesRows', nextRows)
+    writeStoredJsonValue('lshop.accounting.salesManual', manualSalesFields)
+    setNotice(`Строка «${row.channel || 'продажи'}» сохранена.`)
+  }
+
+  async function loadKzAccountingAnalytics(marketplace: KzMarketplace) {
+    const { from, to } = getSalesReportRange()
+    const params = new URLSearchParams({
+      dateFrom: from,
+      dateTo: to,
+      forceRefresh: 'true',
+    })
+
+    const response = await fetch(`/api/kz/${marketplace}/analytics?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(getApiErrorMessage(await response.text(), `Не удалось обновить ${getKzMarketplaceLabel(marketplace)}`))
+    }
+
+    return (await response.json()) as OzonAnalytics
+  }
+
+  async function loadKaspiAccountingSalesChannels() {
+    const { from, to } = getSalesReportRange()
+    const params = new URLSearchParams({
+      dateFrom: from,
+      dateTo: to,
+    })
+
+    const response = await fetch(`/api/kz/kaspi/sales-channels?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(getApiErrorMessage(await response.text(), 'Не удалось обновить каналы Kaspi.'))
+    }
+
+    return (await response.json()) as AccountingSalesChannelApiRow[]
+  }
+
+  async function refreshSalesAccountingReport() {
+    setSalesReportLoading(true)
+    const periodLabel = getSalesReportPeriodLabel()
+    setNotice('Обновляем отчет продаж за выбранный период...')
+
+    try {
+      const [kaspiChannelsResult, kaspiResult, satuResult, halykResult] = await Promise.allSettled([
+        loadKaspiAccountingSalesChannels(),
+        loadKzAccountingAnalytics('kaspi'),
+        loadKzAccountingAnalytics('satu'),
+        loadKzAccountingAnalytics('halyk'),
+      ])
+      const kaspiChannels = kaspiChannelsResult.status === 'fulfilled' ? kaspiChannelsResult.value : null
+      const kaspi = kaspiResult.status === 'fulfilled' ? kaspiResult.value : null
+      const satu = satuResult.status === 'fulfilled' ? satuResult.value : null
+      const halyk = halykResult.status === 'fulfilled' ? halykResult.value : null
+
+      if (!kaspi && !satu) {
+        const message =
+          kaspiResult.status === 'rejected'
+            ? kaspiResult.reason instanceof Error
+              ? kaspiResult.reason.message
+              : 'Не удалось обновить Kaspi.'
+            : satuResult.status === 'rejected' && satuResult.reason instanceof Error
+              ? satuResult.reason.message
+              : 'Не удалось обновить отчет продаж.'
+        throw new Error(message)
+      }
+
+      const kaspiRowsById = new Map((kaspiChannels ?? []).map((row) => [row.id, row]))
+      const hasKaspiChannelRows = kaspiRowsById.size > 0
+      const nextRows = salesRows.map((row) => {
+        if (row.id.startsWith('kaspi-')) {
+          const kaspiChannel = kaspiRowsById.get(row.id)
+          if (kaspiChannel) {
+            return {
+              ...row,
+              channel: kaspiChannel.channel || row.channel,
+              orders: toNumber(String(kaspiChannel.orders ?? 0)),
+              lshopAmount: toNumber(String(kaspiChannel.lshopAmount ?? 0)),
+              joyAmount: kaspiChannel.joyAmount == null ? null : toNumber(String(kaspiChannel.joyAmount)),
+            }
+          }
+
+          if (hasKaspiChannelRows) {
+            return {
+              ...row,
+              orders: 0,
+              lshopAmount: 0,
+              joyAmount: null,
+            }
+          }
+
+          if (row.id === 'kaspi-express' && kaspi) {
+            return {
+              ...row,
+              orders: kaspi.salesTotalCount,
+              lshopAmount: kaspi.salesAmountTotal,
+              joyAmount: null,
+            }
+          }
+
+          return {
+            ...row,
+            orders: 0,
+            lshopAmount: 0,
+            joyAmount: null,
+          }
+        }
+
+        if (row.id === 'satu-halyk') {
+          const satuOrders = satu?.salesTotalCount ?? 0
+          const halykOrders = halyk?.salesTotalCount ?? 0
+          return {
+            ...row,
+            orders: satuOrders + halykOrders,
+            lshopAmount: satu?.salesAmountTotal ?? 0,
+            joyAmount: halyk ? halyk.salesAmountTotal : null,
+          }
+        }
+
+        return row
+      })
+
+      setSalesRows(nextRows)
+      writeStoredJsonValue('lshop.accounting.salesRows', nextRows)
+      setAccountingReportReady((current) => ({ ...current, sales: false }))
+      setNotice(
+        halykResult.status === 'rejected'
+          ? `Отчет продаж обновлен за ${periodLabel} без Halyk.`
+          : `Отчет продаж обновлен за ${periodLabel}.`,
+      )
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось обновить отчет продаж.')
+    } finally {
+      setSalesReportLoading(false)
+    }
+  }
+
+  function buildAccountingRowsForTab(reportType: AccountingPrototypeTab) {
+    if (reportType === 'materials') {
+      const header = [
+        'Раздел',
+        'Наименование',
+        'Норма',
+        'Наличие',
+        'Итого',
+        'В пути',
+        'Заявка',
+        ...materialColumns.map((column) => column.label),
+        'Заказать / комментарий',
+      ]
+      return [
+        [`Отчет материалов за ${materialsReportDate}`],
+        header,
+        ...materials.map((row) => [
+          row.category,
+          row.name,
+          String(row.norm),
+          String(row.available),
+          String(row.available - row.norm),
+          String(row.inTransit),
+          String(row.request),
+          ...materialColumns.map((column) => row.customFields?.[column.id] ?? ''),
+          row.orderNote,
+        ]),
+      ]
+    }
+
+    return [
+      [`Отчет продаж за ${getSalesReportPeriodLabel()}`],
+      ['Канал', 'Заказы', 'LShop', 'Joy', 'Всего'],
+      ...salesRows.map((row) => [
+        row.channel,
+        String(row.orders),
+        String(row.lshopAmount),
+        row.joyAmount === null ? '-' : String(row.joyAmount),
+        String(row.lshopAmount + (row.joyAmount ?? 0)),
+      ]),
+      [],
+      ['Всего заказов', String(salesSummary.orders)],
+      ['LShop', String(salesSummary.lshopAmount)],
+      ['JOY Mart', hasAnyJoySalesAmount ? String(salesSummary.joyAmount) : '-'],
+      ['Итог продаж', String(salesSummary.finalAmount)],
+      ['Качество работы магазина', manualSalesFields.quality],
+      ['Сумма возвратов за предыдущий день', String(manualSalesFields.previousReturns)],
+      ['Отмены покупателями', String(manualSalesFields.buyerCancels)],
+      ['Сумма отмен', String(manualSalesFields.buyerCancelAmount)],
+      ['Отмены менеджерами', String(manualSalesFields.managerCancels)],
+      ['Новые позиции Kaspi', String(manualSalesFields.newKaspiPositions)],
+      ['Новые позиции Satu', String(manualSalesFields.newSatuPositions)],
+      ['Руководитель', manualSalesFields.responsible],
+      ['Менеджер', manualSalesFields.manager],
+      ['Водитель', manualSalesFields.driver],
+      ['Комментарий', manualSalesFields.comment],
+    ]
+  }
+
+  async function downloadAccountingReport() {
+    const rows = buildAccountingRowsForTab(activeAccountingTab)
+    const reportDate = activeAccountingTab === 'sales' ? getSalesReportFileDate() : materialsReportDate
+    const reportName = activeAccountingTab === 'sales' ? 'sales' : 'materials'
+    const response = await fetch('/api/accounting/export', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sheetName: activeAccountingTab === 'sales' ? 'Sales' : 'Materials',
+        fileName: reportName + '-' + reportDate + '.xlsx',
+        rows,
+      }),
+    })
+
+    if (!response.ok) {
+      setNotice(getApiErrorMessage(await response.text(), 'Не удалось скачать Excel.'))
+      return
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = reportName + '-' + reportDate + '.xlsx'
+    document.body.append(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setNotice('Excel сформирован и скачан.')
+  }
+
+  async function sendAccountingReportToTelegram() {
+    if (!accountingReportReady[activeAccountingTab]) {
+      setNotice('Сначала сформируйте Excel и проверьте отчет перед отправкой.')
+      return
+    }
+
+    setNotice('Отправляем отчет в Telegram...')
+    const rows = buildAccountingRowsForTab(activeAccountingTab)
+    const reportDate = activeAccountingTab === 'sales' ? getSalesReportFileDate() : materialsReportDate
+    const reportName = activeAccountingTab === 'sales' ? 'sales' : 'materials'
+    const response = await fetch('/api/accounting/telegram/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sheetName: activeAccountingTab === 'sales' ? 'Sales' : 'Materials',
+        fileName: reportName + '-' + reportDate + '.xlsx',
+        reportType: activeAccountingTab,
+        rows,
+      }),
+    })
+
+    if (!response.ok) {
+      setNotice(getApiErrorMessage(await response.text(), 'Не удалось отправить отчет в Telegram.'))
+      return
+    }
+
+    const result = (await response.json()) as { sent?: number; recipients?: number }
+    const sent = result.sent ?? 0
+    const recipients = result.recipients ?? 0
+    setNotice(
+      recipients === 0
+        ? 'Нет получателей: включите нужную галочку отчетности в Интеграции -> Оповещения.'
+        : `Отчет отправлен в Telegram: ${sent} из ${recipients}.`,
+    )
+  }
+
+  return (
+    <section className="tab-panel accounting-panel">
+      <div className="section-title">
+        <div>
+          <h2>Учет / Отчетность</h2>
+          <p>Локальный прототип отчетов для директора: материалы заполняются вручную, продажи считаются из полей.</p>
+        </div>
+      </div>
+
+      <div className="inner-tabs">
+        {[
+          ['materials', 'Материалы'],
+          ['sales', 'Продажи'],
+        ].map(([id, label]) => (
+          <button
+            type="button"
+            key={id}
+            className={activeAccountingTab === id ? 'active' : ''}
+            onClick={() => setActiveAccountingTab(id as AccountingPrototypeTab)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="accounting-tab-actions">
+        <strong>{activeAccountingTab === 'materials' ? 'Отчет материалов' : 'Отчет продаж'}</strong>
+        <span className="section-actions">
+          <button type="button" className="header-action" onClick={buildAccountingReport}>
+            {activeAccountingTab === 'materials' ? 'Сформировать Excel материалов' : 'Сформировать Excel продаж'}
+          </button>
+          {accountingReportReady[activeAccountingTab] && (
+            <button type="button" className="header-action secondary" onClick={() => void downloadAccountingReport()}>
+              {activeAccountingTab === 'materials' ? 'Скачать Excel материалов' : 'Скачать Excel продаж'}
+            </button>
+          )}
+          <button type="button" className="header-action green" onClick={() => void sendAccountingReportToTelegram()}>
+            {activeAccountingTab === 'materials' ? 'Отправить материалы в Telegram' : 'Отправить продажи в Telegram'}
+          </button>
+        </span>
+      </div>
+
+      {notice && <div className="accounting-notice">{notice}</div>}
+
+      {activeAccountingTab === 'materials' && (
+        <>
+          <div className="toolbar-row accounting-toolbar">
+            <label>
+              <span>С</span>
+              <input type="date" value={materialsReportDate} onChange={(event) => setMaterialsReportDate(event.target.value)} />
+            </label>
+            <label className="accounting-filter-field">
+              <span>Фильтр</span>
+              <input
+                value={materialFilter}
+                placeholder="Раздел, наименование, комментарий"
+                onChange={(event) => setMaterialFilter(event.target.value)}
+              />
+            </label>
+            <label className="accounting-add-section">
+              <span>Новый раздел</span>
+              <input
+                value={newMaterialSectionName}
+                placeholder="Например: бумага, текстиль, жетоны"
+                onChange={(event) => setNewMaterialSectionName(event.target.value)}
+              />
+            </label>
+            <button type="button" onClick={addMaterialSection}>
+              Добавить раздел
+            </button>
+            <button type="button" className="secondary accounting-save-button" onClick={() => persistAccountingChanges()}>
+              Сохранить изменения
+            </button>
+          </div>
+
+          <div className="accounting-metrics">
+            <span><small>Позиций</small><strong>{materialSummary.total}</strong></span>
+            <span><small>Ниже нормы</small><strong>{materialSummary.shortages}</strong></span>
+            <span><small>К заявке</small><strong>{materialSummary.requestTotal}</strong></span>
+            <span className={materialSummary.critical > 0 ? 'danger' : ''}><small>Критично</small><strong>{materialSummary.critical}</strong></span>
+          </div>
+
+          <div className="accounting-material-sections">
+            {materialGroups.length === 0 && (
+              <div className="empty-state">По фильтру ничего не найдено.</div>
+            )}
+            {materialGroups.map((group) => (
+              <details className="accounting-material-section" key={group.category}>
+                <summary>
+                  <span>
+                    <strong>{group.category}</strong>
+                    <small>{group.rows.length} позиций</small>
+                  </span>
+                  <span>Ниже нормы: {group.shortages}</span>
+                  <span>К заявке: {group.requestTotal}</span>
+                </summary>
+                <div className="accounting-material-section-actions">
+                  <button type="button" onClick={() => addMaterialRow(group.category)}>
+                    Добавить строку в раздел
+                  </button>
+                </div>
+                <div className="data-table accounting-material-table">
+                  <div className="table-row table-head" style={{ gridTemplateColumns: materialGridTemplate, minWidth: materialGridMinWidth }}>
+                    <span>Наименование</span><span>Норма</span><span>Наличие</span><span>Итого</span><span>В пути</span><span>Заявка</span>
+                    {materialColumns.map((column) => (
+                      <span key={column.id}>{column.label}</span>
+                    ))}
+                    <span>Заказать / комментарий</span><span>Действия</span>
+                  </div>
+                  {group.rows.map((row) => {
+                    const total = row.available - row.norm
+                    const materialPreviewUrl = (row.previewUrl ?? '').trim()
+                    return (
+                      <div className="table-row accounting-material-row" key={row.id} style={{ gridTemplateColumns: materialGridTemplate, minWidth: materialGridMinWidth }}>
+                        <span data-label="Наименование" className="accounting-material-name-cell">
+                          <span className="accounting-material-name-hover">
+                            <input value={row.name} onChange={(event) => updateMaterial(row.id, { name: event.target.value })} />
+                            {materialPreviewUrl && (
+                              <span className="accounting-material-preview-popover" role="tooltip">
+                                <img src={materialPreviewUrl} alt={`Превью ${row.name}`} />
+                              </span>
+                            )}
+                          </span>
+                          <input
+                            className="accounting-material-category-input"
+                            value={row.category}
+                            placeholder="Раздел"
+                            onChange={(event) => updateMaterial(row.id, { category: event.target.value })}
+                          />
+                          <input
+                            className="accounting-material-preview-input"
+                            value={row.previewUrl ?? ''}
+                            placeholder="Ссылка на превью"
+                            onChange={(event) => updateMaterial(row.id, { previewUrl: event.target.value })}
+                          />
+                        </span>
+                        <span data-label="Норма"><input type="number" value={row.norm} onChange={(event) => updateMaterial(row.id, { norm: toNumber(event.target.value) })} /></span>
+                        <span data-label="Наличие"><input type="number" value={row.available} onChange={(event) => updateMaterial(row.id, { available: toNumber(event.target.value) })} /></span>
+                        <span data-label="Итого" className={total < 0 ? 'accounting-negative' : 'accounting-positive'}>{total}</span>
+                        <span data-label="В пути"><input type="number" value={row.inTransit} onChange={(event) => updateMaterial(row.id, { inTransit: toNumber(event.target.value) })} /></span>
+                        <span data-label="Заявка"><input type="number" value={row.request} onChange={(event) => updateMaterial(row.id, { request: toNumber(event.target.value) })} /></span>
+                        {materialColumns.map((column) => (
+                          <span data-label={column.label} key={column.id}>
+                            <input
+                              value={row.customFields?.[column.id] ?? ''}
+                              placeholder={column.label}
+                              onChange={(event) => updateMaterialCustomField(row.id, column.id, event.target.value)}
+                            />
+                          </span>
+                        ))}
+                        <span data-label="Заказать"><input value={row.orderNote} placeholder="Что заказать / комментарий" onChange={(event) => updateMaterial(row.id, { orderNote: event.target.value })} /></span>
+                        <span data-label="Действия" className="accounting-row-save-cell">
+                          <button type="button" className="secondary accounting-row-save-button" onClick={() => saveAccountingMaterialRow(row)}>
+                            Сохранить
+                          </button>
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </details>
+            ))}
+          </div>
+
+          <div className="data-table accounting-material-table accounting-material-table-legacy">
+            <div className="table-row table-head" style={{ gridTemplateColumns: materialGridTemplate, minWidth: materialGridMinWidth }}>
+              <span>Раздел</span><span>Наименование</span><span>Норма</span><span>Наличие</span><span>Итого</span><span>В пути</span><span>Заявка</span>
+              {materialColumns.map((column) => (
+                <span key={column.id}>{column.label}</span>
+              ))}
+              <span>Заказать / комментарий</span><span>Действия</span>
+            </div>
+            {materials.map((row) => {
+              const total = row.available - row.norm
+              return (
+                <div className="table-row accounting-material-row" key={row.id} style={{ gridTemplateColumns: materialGridTemplate, minWidth: materialGridMinWidth }}>
+                  <span data-label="Раздел"><input value={row.category} onChange={(event) => updateMaterial(row.id, { category: event.target.value })} /></span>
+                  <span data-label="Наименование"><input value={row.name} onChange={(event) => updateMaterial(row.id, { name: event.target.value })} /></span>
+                  <span data-label="Норма"><input type="number" value={row.norm} onChange={(event) => updateMaterial(row.id, { norm: toNumber(event.target.value) })} /></span>
+                  <span data-label="Наличие"><input type="number" value={row.available} onChange={(event) => updateMaterial(row.id, { available: toNumber(event.target.value) })} /></span>
+                  <span data-label="Итого" className={total < 0 ? 'accounting-negative' : 'accounting-positive'}>{total}</span>
+                  <span data-label="В пути"><input type="number" value={row.inTransit} onChange={(event) => updateMaterial(row.id, { inTransit: toNumber(event.target.value) })} /></span>
+                  <span data-label="Заявка"><input type="number" value={row.request} onChange={(event) => updateMaterial(row.id, { request: toNumber(event.target.value) })} /></span>
+                  {materialColumns.map((column) => (
+                    <span data-label={column.label} key={column.id}>
+                      <input
+                        value={row.customFields?.[column.id] ?? ''}
+                        placeholder={column.label}
+                        onChange={(event) => updateMaterialCustomField(row.id, column.id, event.target.value)}
+                      />
+                    </span>
+                  ))}
+                  <span data-label="Заказать"><input value={row.orderNote} placeholder="Что заказать / комментарий" onChange={(event) => updateMaterial(row.id, { orderNote: event.target.value })} /></span>
+                  <span data-label="Действия" className="accounting-row-save-cell">
+                    <button type="button" className="secondary accounting-row-save-button" onClick={() => saveAccountingMaterialRow(row)}>
+                      Сохранить
+                    </button>
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="accounting-bottom-actions">
+            <button type="button" className="secondary accounting-save-button" onClick={() => persistAccountingChanges()}>
+              Сохранить изменения
+            </button>
+          </div>
+        </>
+      )}
+
+      {activeAccountingTab === 'sales' && (
+        <>
+          <div className="toolbar-row accounting-toolbar">
+            <label>
+              <span>С</span>
+              <input type="date" value={salesReportDateFrom} onChange={(event) => setSalesReportDateFrom(event.target.value)} />
+            </label>
+            <label>
+              <span>По</span>
+              <input type="date" value={salesReportDateTo} onChange={(event) => setSalesReportDateTo(event.target.value)} />
+            </label>
+            <label>
+              <span>Качество работы магазина</span>
+              <select value={manualSalesFields.quality} onChange={(event) => setManualSalesFields((current) => ({ ...current, quality: event.target.value }))}>
+                <option>Отлично</option><option>Хорошо</option><option>Нормально</option><option>Плохо</option>
+              </select>
+            </label>
+            <button type="button" className="secondary accounting-save-button" onClick={() => void refreshSalesAccountingReport()} disabled={salesReportLoading}>
+              {salesReportLoading ? 'Обновляем...' : 'Обновить отчет'}
+            </button>
+          </div>
+
+          <div className="accounting-metrics">
+            <span><small>Всего заказов</small><strong>{salesSummary.orders}</strong></span>
+            <span><small>L-Shop</small><strong>{formatMoney(salesSummary.lshopAmount, 'KZT')}</strong></span>
+            <span><small>JOY Mart</small><strong>{hasAnyJoySalesAmount ? formatMoney(salesSummary.joyAmount, 'KZT') : '-'}</strong></span>
+            <span><small>Итог продаж</small><strong>{formatMoney(salesSummary.finalAmount, 'KZT')}</strong></span>
+          </div>
+
+          <div className="data-table accounting-sales-table">
+            <div className="table-row table-head">
+              <span>Канал</span><span>Заказы</span><span>L-Shop</span><span>JOY Mart</span><span>Всего</span><span>Действия</span>
+            </div>
+            {salesRows.map((row) => (
+              <div className="table-row accounting-sales-row" key={row.id}>
+                <span data-label="Канал">{row.channel}</span>
+                <span data-label="Заказы"><input type="number" value={row.orders} onChange={(event) => updateSalesRow(row.id, { orders: toNumber(event.target.value) })} /></span>
+                <span data-label="L-Shop"><input type="number" value={row.lshopAmount} onChange={(event) => updateSalesRow(row.id, { lshopAmount: toNumber(event.target.value) })} /></span>
+                <span data-label="JOY Mart"><input type="number" value={row.joyAmount ?? ''} placeholder="-" onChange={(event) => updateSalesRow(row.id, { joyAmount: toOptionalNumber(event.target.value) })} /></span>
+                <span data-label="Всего">{formatMoney(row.lshopAmount + (row.joyAmount ?? 0), 'KZT')}</span>
+                <span data-label="Действия" className="accounting-row-save-cell">
+                  <button type="button" className="secondary accounting-row-save-button" onClick={() => saveAccountingSalesRow(row)}>
+                    Сохранить
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="accounting-manual-grid">
+            <label><span>Сумма возвратов за предыдущий день</span><input type="number" value={manualSalesFields.previousReturns} onChange={(event) => setManualSalesFields((current) => ({ ...current, previousReturns: toNumber(event.target.value) }))} /></label>
+            <label><span>Отмены покупателями</span><input type="number" value={manualSalesFields.buyerCancels} onChange={(event) => setManualSalesFields((current) => ({ ...current, buyerCancels: toNumber(event.target.value) }))} /></label>
+            <label><span>Сумма отмен</span><input type="number" value={manualSalesFields.buyerCancelAmount} onChange={(event) => setManualSalesFields((current) => ({ ...current, buyerCancelAmount: toNumber(event.target.value) }))} /></label>
+            <label><span>Отмены менеджерами</span><input type="number" value={manualSalesFields.managerCancels} onChange={(event) => setManualSalesFields((current) => ({ ...current, managerCancels: toNumber(event.target.value) }))} /></label>
+            <label><span>Новые позиции Kaspi</span><input type="number" value={manualSalesFields.newKaspiPositions} onChange={(event) => setManualSalesFields((current) => ({ ...current, newKaspiPositions: toNumber(event.target.value) }))} /></label>
+            <label><span>Новые позиции Satu</span><input type="number" value={manualSalesFields.newSatuPositions} onChange={(event) => setManualSalesFields((current) => ({ ...current, newSatuPositions: toNumber(event.target.value) }))} /></label>
+            <label><span>Руководитель</span><input value={manualSalesFields.responsible} onChange={(event) => setManualSalesFields((current) => ({ ...current, responsible: event.target.value }))} /></label>
+            <label><span>Менеджер</span><input value={manualSalesFields.manager} onChange={(event) => setManualSalesFields((current) => ({ ...current, manager: event.target.value }))} /></label>
+            <label><span>Водитель</span><input value={manualSalesFields.driver} onChange={(event) => setManualSalesFields((current) => ({ ...current, driver: event.target.value }))} /></label>
+            <label className="accounting-wide-field"><span>Комментарий вручную</span><textarea value={manualSalesFields.comment} onChange={(event) => setManualSalesFields((current) => ({ ...current, comment: event.target.value }))} /></label>
+          </div>
+          <div className="accounting-bottom-actions">
+            <button type="button" className="secondary accounting-save-button" onClick={() => persistAccountingChanges()}>
+              Сохранить изменения
+            </button>
+          </div>
+        </>
+      )}
+
+    </section>
+  )
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('authToken') ?? '')
   const [user, setUser] = useState<User | null>(() => {
@@ -1493,7 +2612,7 @@ function App() {
   const [telegramStatus, setTelegramStatus] = useState('')
   const [backupFiles, setBackupFiles] = useState<BackupFile[]>([])
   const [backupStatus, setBackupStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<TabId>('home')
+  const [activeTab, setActiveTab] = useState<TabId>(() => readStoredUiValue('lshop.activeTab', tabIds, 'home'))
   const [shopRegion, setShopRegion] = useState<ShopRegion>(() => readShopRegion())
   const [kzMarketplace, setKzMarketplace] = useState<KzMarketplace>(() => readKzMarketplace())
   const [kzTaskMarketplace, setKzTaskMarketplace] = useState<KzMarketplace>(() => readKzMarketplace())
@@ -1501,6 +2620,39 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [ozonStatus, setOzonStatus] = useState('')
   const [ozonProducts, setOzonProducts] = useState<OzonProduct[]>([])
+  const [productCostModalProduct, setProductCostModalProduct] = useState<OzonProduct | null>(null)
+  const [productCostForm, setProductCostForm] = useState({
+    useIndividualCost: true,
+    costTypeId: '',
+    isPurchased: false,
+    purchaseCost: '',
+    packagingCost: '',
+    productionCost: '',
+  })
+  const [productCostTypes, setProductCostTypes] = useState<ProductCostType[]>([])
+  const [productCostTypeForm, setProductCostTypeForm] = useState({
+    name: '',
+    isPurchased: false,
+    purchaseCost: '',
+    packagingCost: '',
+    productionCost: '',
+  })
+  const [productCostTypeEditForm, setProductCostTypeEditForm] = useState({
+    id: '',
+    name: '',
+    isPurchased: false,
+    purchaseCost: '',
+    packagingCost: '',
+    productionCost: '',
+  })
+  const [productCostTypeEditModalOpen, setProductCostTypeEditModalOpen] = useState(false)
+  const [productsInnerTab, setProductsInnerTab] = useState<'catalog' | 'costTypes'>('catalog')
+  const [productCostProfiles, setProductCostProfiles] = useState<ProductCostProfile[]>([])
+  const [expandedProductCostTypeId, setExpandedProductCostTypeId] = useState<string | null>(null)
+  const [productCostTypesStatus, setProductCostTypesStatus] = useState('')
+  const [productCostTypeSaving, setProductCostTypeSaving] = useState(false)
+  const [productCostStatus, setProductCostStatus] = useState('')
+  const [productCostSaving, setProductCostSaving] = useState(false)
   const [productSearch, setProductSearch] = useState('')
   const [productStatusFilter, setProductStatusFilter] = useState<'all' | 'selling' | 'ready' | 'archived'>('all')
   const [kzProductsLoading, setKzProductsLoading] = useState(false)
@@ -1536,7 +2688,9 @@ function App() {
     satu: '',
     halyk: '',
   })
-  const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>('summary')
+  const [analyticsSubTab, setAnalyticsSubTab] = useState<AnalyticsSubTab>(() =>
+    readStoredUiValue('lshop.analyticsSubTab', analyticsSubTabs, 'summary'),
+  )
   const [analyticsDateFrom, setAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
   const [analyticsDateTo, setAnalyticsDateTo] = useState(getDefaultAnalyticsDateTo)
   const [productionAnalyticsDateFrom, setProductionAnalyticsDateFrom] = useState(getDefaultAnalyticsDateFrom)
@@ -1555,10 +2709,15 @@ function App() {
   const [unsoldProductStatusFilter, setUnsoldProductStatusFilter] = useState<'all' | 'selling' | 'ready'>('all')
   const [expandedAnalyticsProductKeys, setExpandedAnalyticsProductKeys] = useState<Record<string, boolean>>({})
   const [productionSearch, setProductionSearch] = useState('')
-  const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>('products')
+  const [productionSubTab, setProductionSubTab] = useState<ProductionSubTab>(() =>
+    readStoredUiValue('lshop.productionSubTab', productionSubTabs, 'products'),
+  )
+  const [productionTaskAssigneeFilter, setProductionTaskAssigneeFilter] = useState('')
+  const [productionTaskTypeFilter, setProductionTaskTypeFilter] = useState<'all' | 'design' | 'production'>('all')
   const [taskFormMode, setTaskFormMode] = useState<TaskFormMode>(() =>
     getDefaultTaskFormMode(readShopRegion(), undefined, readKzMarketplace()),
   )
+  const [taskEditorKind, setTaskEditorKind] = useState<ProductionTaskEditorKind>('production')
   const [productionCatalogTab, setProductionCatalogTab] = useState<ProductionCatalogTab>(() =>
     readShopRegion() === 'rf' ? 'ozon' : readKzMarketplace(),
   )
@@ -1640,6 +2799,7 @@ function App() {
     files: ProductionFile[]
   } | null>(null)
   const [productionTasks, setProductionTasks] = useState<ProductionTask[]>([])
+  const [productionDesigners, setProductionDesigners] = useState<User[]>([])
   const [taskSearch, setTaskSearch] = useState('')
   const [taskUrgencyFilter, setTaskUrgencyFilter] = useState<'all' | 'urgent' | 'normal'>('all')
   const [archiveTaskStatusFilter, setArchiveTaskStatusFilter] = useState<'all' | 'Completed' | 'Cancelled'>('all')
@@ -1655,29 +2815,61 @@ function App() {
   const [showCreateNovinkaTaskModal, setShowCreateNovinkaTaskModal] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [taskIsUrgent, setTaskIsUrgent] = useState(false)
+  const [taskDueAt, setTaskDueAt] = useState('')
   const [cancelTaskId, setCancelTaskId] = useState<string | null>(null)
   const [cancelTaskComment, setCancelTaskComment] = useState('')
+  const [transferDesignerItem, setTransferDesignerItem] = useState<{
+    task: ProductionTask
+    item: ProductionTaskItem
+  } | null>(null)
+  const [transferDesignerUserId, setTransferDesignerUserId] = useState('')
   const [draftTaskItems, setDraftTaskItems] = useState<DraftTaskItem[]>([])
   const [actualQuantities, setActualQuantities] = useState<Record<string, string>>({})
-  const [supplySubTab, setSupplySubTab] = useState<SupplySubTab>('create')
+  const [supplySubTab, setSupplySubTab] = useState<SupplySubTab>(() =>
+    readStoredUiValue('lshop.supplySubTab', supplySubTabs, 'create'),
+  )
   const [supplies, setSupplies] = useState<Supply[]>([])
   const [supplySearch, setSupplySearch] = useState('')
   const [supplyStatusFilter, setSupplyStatusFilter] = useState<'all' | SupplyStatus>('all')
   const [supplyAnalytics, setSupplyAnalytics] = useState<SupplyAnalyticsItem[]>([])
+  const [ozonSupplyShipments, setOzonSupplyShipments] = useState<OzonSupplyShipmentQuantity[]>([])
   const [supplyStatus, setSupplyStatus] = useState('')
   const [supplyProductId, setSupplyProductId] = useState('')
   const [supplyQuantity, setSupplyQuantity] = useState('')
   const [reserveQuantity, setReserveQuantity] = useState('')
+  const [supplyMaterialName, setSupplyMaterialName] = useState('')
+  const [supplyMaterialQuantity, setSupplyMaterialQuantity] = useState('')
+  const [supplyMaterialKind, setSupplyMaterialKind] = useState<Exclude<SupplyItemKind, 'Product'>>('Consumable')
   const [draftSupplyItems, setDraftSupplyItems] = useState<DraftSupplyItem[]>([])
   const [replaceProducts, setReplaceProducts] = useState<Record<string, string>>({})
   const [editingSupplyId, setEditingSupplyId] = useState<string | null>(null)
   const [editSupplyItems, setEditSupplyItems] = useState<DraftSupplyItem[]>([])
   const [editSupplyProductId, setEditSupplyProductId] = useState('')
   const [editSupplyQuantity, setEditSupplyQuantity] = useState('')
+  const [editSupplyShippingCost, setEditSupplyShippingCost] = useState('')
   const [editReserveQuantity, setEditReserveQuantity] = useState('')
+  const [editSupplyMaterialName, setEditSupplyMaterialName] = useState('')
+  const [editSupplyMaterialQuantity, setEditSupplyMaterialQuantity] = useState('')
+  const [editSupplyMaterialKind, setEditSupplyMaterialKind] =
+    useState<Exclude<SupplyItemKind, 'Product'>>('Consumable')
   const [analyticsProductKey, setAnalyticsProductKey] = useState('')
+  const [showSupplyFboRemaining, setShowSupplyFboRemaining] = useState(false)
+  const [showSupplyFboDefects, setShowSupplyFboDefects] = useState(false)
+  const [supplyFboDefects, setSupplyFboDefects] = useState<SupplyFboDefect[]>([])
+  const [supplyExpenses, setSupplyExpenses] = useState<SupplyExpense[]>([])
+  const [supplyExpensesTotal, setSupplyExpensesTotal] = useState(0)
+  const [internalSupplyExpenses, setInternalSupplyExpenses] = useState<SupplyExpense[]>([])
+  const [internalSupplyExpensesTotal, setInternalSupplyExpensesTotal] = useState(0)
+  const [supplyExpenseSearch, setSupplyExpenseSearch] = useState('')
+  const [supplyExpenseDateFrom, setSupplyExpenseDateFrom] = useState(getDefaultAnalyticsDateFrom)
+  const [supplyExpenseDateTo, setSupplyExpenseDateTo] = useState(getDefaultAnalyticsDateTo)
+  const [supplyExpenseName, setSupplyExpenseName] = useState('')
+  const [supplyExpenseAmount, setSupplyExpenseAmount] = useState('')
+  const [supplyExpenseDate, setSupplyExpenseDate] = useState(getDefaultAnalyticsDateTo)
   const [showSupplyHelp, setShowSupplyHelp] = useState(false)
   const [showCreateSupplyModal, setShowCreateSupplyModal] = useState(false)
+  const [shippingCostModalSupply, setShippingCostModalSupply] = useState<Supply | null>(null)
+  const [shippingCostDraft, setShippingCostDraft] = useState('')
   const [supplyImportFile, setSupplyImportFile] = useState<File | null>(null)
   const [roleProfiles, setRoleProfiles] = useState<RoleProfile[]>([])
   const [roleProfileEdits, setRoleProfileEdits] = useState<Record<string, RoleProfile>>({})
@@ -1688,6 +2880,7 @@ function App() {
   const [userTelegramStatus, setUserTelegramStatus] = useState<Record<string, string>>({})
   const [userReportData, setUserReportData] = useState<Record<string, AdminUserReport>>({})
   const [userReportSections, setUserReportSections] = useState<Record<string, string[]>>({})
+  const [userMonthlyReportSections, setUserMonthlyReportSections] = useState<Record<string, string[]>>({})
   const [userReportStatus, setUserReportStatus] = useState<Record<string, string>>({})
   const [reportSections, setReportSections] = useState<ReportSection[]>([])
   const [reportsStatus, setReportsStatus] = useState('')
@@ -1750,6 +2943,23 @@ function App() {
   const selectedChatKeyRef = useRef('')
   const loadChatThreadsSeqRef = useRef(0)
   const creatingGroupRef = useRef(false)
+
+  useEffect(() => {
+    writeStoredUiValue('lshop.activeTab', activeTab)
+  }, [activeTab])
+
+  useEffect(() => {
+    writeStoredUiValue('lshop.productionSubTab', productionSubTab)
+  }, [productionSubTab])
+
+  useEffect(() => {
+    writeStoredUiValue('lshop.supplySubTab', supplySubTab)
+  }, [supplySubTab])
+
+  useEffect(() => {
+    writeStoredUiValue('lshop.analyticsSubTab', analyticsSubTab)
+  }, [analyticsSubTab])
+
   const normalizedProductSearch = productSearch.trim().toLowerCase()
   const activeKzProducts = kzProducts[kzMarketplace]
   const activeKzStocks = kzStocks[kzMarketplace]
@@ -1878,6 +3088,8 @@ function App() {
   )
   const canSeeDesignerProductionTasks = canSeeNovinkaProductionTasks(user?.role, user?.allowedFeatures)
   const canSeeOzonProductionTasksFlag = canSeeOzonProductionTasks(user?.role, user?.allowedFeatures)
+  const canStartVisibleProductionTask = (task: ProductionTask) =>
+    isNovinkaTask(task) ? canSeeDesignerProductionTasks : canSeeOzonProductionTasksFlag
   const roleTaskTableContext =
     canSeeDesignerProductionTasks && canSeeOzonProductionTasksFlag
       ? 'mixed'
@@ -1893,6 +3105,42 @@ function App() {
   const allInProgressProductionTasks = visibleProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived)
   const allCancelledProductionTasks = visibleProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived)
   const allCompletedProductionTasks = visibleProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived)
+  const isPackedProductionTask = (task: ProductionTask) => {
+    const taskItems = getProductionTaskItems(task)
+    return (
+      !isNovinkaTask(task) &&
+      taskItems.length > 0 &&
+      taskItems.every((item) => Boolean(item.packedAt) && !item.packedSupplyId)
+    )
+  }
+  const allReadyToShipProductionTasks = allCompletedProductionTasks.filter(isPackedProductionTask)
+  const productionTaskFilterAssignees = useMemo(() => {
+    const assignees = new Set<string>()
+
+    for (const task of [...allInProgressProductionTasks, ...allCompletedProductionTasks]) {
+      const name = task.assignedUserName?.trim()
+      if (name) {
+        assignees.add(name)
+      }
+    }
+
+    return Array.from(assignees).sort((left, right) => left.localeCompare(right, 'ru'))
+  }, [allInProgressProductionTasks, allCompletedProductionTasks])
+  const matchesProductionTaskListFilters = (task: ProductionTask) => {
+    if (productionTaskAssigneeFilter && task.assignedUserName !== productionTaskAssigneeFilter) {
+      return false
+    }
+
+    if (productionTaskTypeFilter === 'design') {
+      return isNovinkaTask(task)
+    }
+
+    if (productionTaskTypeFilter === 'production') {
+      return !isNovinkaTask(task)
+    }
+
+    return true
+  }
   const newProductionTasks = filteredProductionTasks.filter((task) => task.status === 'New' && !task.isArchived)
   const filteredNewProductionTasks = sortProductionTasksByUrgency(
     newProductionTasks.filter((task) => {
@@ -1908,13 +3156,24 @@ function App() {
     }),
   )
   const inProgressProductionTasks = sortProductionTasksByUrgency(
-    filteredProductionTasks.filter((task) => task.status === 'InProgress' && !task.isArchived),
+    filteredProductionTasks.filter(
+      (task) => task.status === 'InProgress' && !task.isArchived && matchesProductionTaskListFilters(task),
+    ),
   )
   const cancelledProductionTasks = sortProductionTasksByUrgency(
     filteredProductionTasks.filter((task) => task.status === 'Cancelled' && !task.isArchived),
   )
   const completedProductionTasks = sortProductionTasksByUrgency(
-    filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived),
+    filteredProductionTasks.filter(
+      (task) =>
+        task.status === 'Completed' &&
+        !task.isArchived &&
+        !isPackedProductionTask(task) &&
+        matchesProductionTaskListFilters(task),
+    ),
+  )
+  const readyToShipProductionTasks = sortProductionTasksByUrgency(
+    filteredProductionTasks.filter((task) => task.status === 'Completed' && !task.isArchived && isPackedProductionTask(task)),
   )
   const archivedProductionTasks = filteredProductionTasks.filter((task) => task.isArchived)
   const filteredArchivedProductionTasks = archivedProductionTasks.filter(
@@ -1971,12 +3230,7 @@ function App() {
       return ''
     }
 
-    const productsSource =
-      shopRegion === 'rf'
-        ? ozonProducts
-        : taskFormMode === 'kaspi' || taskFormMode === 'satu' || taskFormMode === 'halyk'
-          ? kzProducts[taskFormMode] ?? []
-          : kzProducts[kzTaskMarketplace] ?? []
+    const productsSource = getTaskFormProducts()
     const product = productsSource.find((item) => String(item.productId) === selectedTaskProductId)
 
     if (!product) {
@@ -2029,10 +3283,51 @@ function App() {
       ),
     [novinkaProductionCatalogItems, shopRegion, activeNovinkaCatalogMarketplace, kzMarketplace],
   )
-  const supplyNovinkaCatalogItems = useMemo(
-    () => filterNovinkaCatalogByMarketplace(novinkaProductionCatalogItems, 'ozon'),
-    [novinkaProductionCatalogItems],
-  )
+  const supplyPackedCatalogItems = useMemo((): ProductionCatalogItem[] => {
+    const byOfferId = new Map<string, ProductionCatalogItem>()
+
+    for (const task of allCompletedProductionTasks) {
+      if (isNovinkaTask(task)) {
+        continue
+      }
+
+      for (const item of getProductionTaskItems(task)) {
+        if (!item.packedAt || item.packedSupplyId || !item.offerId) {
+          continue
+        }
+
+        const packedQuantity = item.actualQuantity ?? item.requiredQuantity
+        const existing = byOfferId.get(item.offerId)
+
+        if (existing) {
+          byOfferId.set(item.offerId, {
+            ...existing,
+            packedQuantity: (existing.packedQuantity ?? 0) + packedQuantity,
+            completedAt:
+              existing.completedAt && new Date(existing.completedAt).getTime() > new Date(item.packedAt).getTime()
+                ? existing.completedAt
+                : item.packedAt,
+          })
+          continue
+        }
+
+        byOfferId.set(item.offerId, {
+          offerId: item.offerId,
+          ozonProductId: item.ozonProductId,
+          productName: item.productName,
+          productLink: item.productLink ?? '',
+          fileCount: 0,
+          completedAt: item.packedAt,
+          marketplace: 'ozon',
+          packedQuantity,
+        })
+      }
+    }
+
+    return Array.from(byOfferId.values()).sort((left, right) =>
+      left.productName.localeCompare(right.productName, 'ru'),
+    )
+  }, [allCompletedProductionTasks])
   const activeProductionCatalog =
     activeNovinkaCatalogMarketplace !== null
       ? filterNovinkaCatalogByMarketplace(novinkaProductionCatalogItems, activeNovinkaCatalogMarketplace)
@@ -2068,6 +3363,121 @@ function App() {
           : `product:${item.ozonProductId}` === analyticsProductKey,
       )
     : supplyAnalytics
+  const supplyFboSummary = useMemo((): SupplyFboSummary => {
+    const acceptedProductQuantities = new Map<
+      string,
+      { productName: string; offerId: string; quantity: number; keys: string[] }
+    >()
+    const totalOzonShippedQuantity = ozonSupplyShipments.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    )
+
+    const catalogKeysByPrimaryKey = new Map<string, string[]>()
+    const catalogProductNameByKey = new Map<string, string>()
+    const registerProductKeys = (keys: string[], productName = '') => {
+      const uniqueKeys = [...new Set(keys.filter(Boolean))]
+      for (const key of uniqueKeys) {
+        catalogKeysByPrimaryKey.set(key, uniqueKeys)
+        if (productName.trim()) {
+          catalogProductNameByKey.set(key, productName)
+        }
+      }
+    }
+
+    for (const product of ozonProducts) {
+      registerProductKeys([
+        ...getOfferMatchKeys(product.offerId),
+        product.productId > 0 ? `product:${product.productId}` : '',
+        product.sku && product.sku > 0 ? `sku:${product.sku}` : '',
+      ], product.name)
+    }
+
+    for (const item of supplyAnalytics) {
+      if (
+        item.status !== 'Accepted' ||
+        !isSupplyProductKind(item.itemKind)
+      ) {
+        continue
+      }
+
+      const offerKeys = getOfferMatchKeys(item.offerId)
+      const productKey = item.ozonProductId ? `product:${item.ozonProductId}` : ''
+      const key = [offerKeys[1], offerKeys[0], productKey, `supply-item:${item.id}`].find(Boolean) ?? ''
+      if (!key || key === 'offer:') {
+        continue
+      }
+
+      const productNameKey = getSupplyProductNameKey(item.productName)
+      const keys = [
+        ...new Set([...offerKeys, ...(catalogKeysByPrimaryKey.get(key) ?? [key]), productNameKey].filter(Boolean)),
+      ]
+      const current = acceptedProductQuantities.get(key)
+      acceptedProductQuantities.set(key, {
+        productName: current?.productName || item.productName,
+        offerId: current?.offerId || item.offerId,
+        quantity: (current?.quantity ?? 0) + item.quantity,
+        keys: [...new Set([...(current?.keys ?? []), ...keys])],
+      })
+    }
+
+    const shippedByKey = new Map<string, number>()
+    for (const item of ozonSupplyShipments) {
+      const shipmentKeys = [
+        item.productId > 0 ? `product:${item.productId}` : '',
+        ...getOfferMatchKeys(item.offerId),
+        item.sku > 0 ? `sku:${item.sku}` : '',
+      ].filter(Boolean)
+      const catalogProductNameKeys = shipmentKeys
+        .map((key) => getSupplyProductNameKey(catalogProductNameByKey.get(key) ?? ''))
+        .filter(Boolean)
+      const directProductNameKey = getSupplyProductNameKey(item.productName ?? '')
+      const keys = [
+        ...new Set([
+          ...shipmentKeys.flatMap((key) => catalogKeysByPrimaryKey.get(key) ?? [key]),
+          directProductNameKey,
+          ...catalogProductNameKeys,
+        ].filter(Boolean)),
+      ]
+
+      for (const key of keys) {
+        shippedByKey.set(key, (shippedByKey.get(key) ?? 0) + item.quantity)
+      }
+    }
+
+    const defectQuantityByKey = new Map(
+      supplyFboDefects.map((defect) => [defect.productKey, Math.max(0, defect.quantity)]),
+    )
+    const remainingItems: SupplyFboRemainingItem[] = []
+    for (const [key, accepted] of acceptedProductQuantities) {
+      const shippedQuantity = Math.min(
+        accepted.quantity,
+        Math.max(...accepted.keys.map((itemKey) => shippedByKey.get(itemKey) ?? 0), shippedByKey.get(key) ?? 0),
+      )
+      const defectQuantity = Math.max(
+        ...accepted.keys.map((itemKey) => defectQuantityByKey.get(itemKey) ?? 0),
+        defectQuantityByKey.get(key) ?? 0,
+      )
+      const visibleRemainingQuantity = Math.max(0, accepted.quantity - shippedQuantity - defectQuantity)
+
+      if (visibleRemainingQuantity > 0) {
+        remainingItems.push({
+          key,
+          productName: accepted.productName,
+          offerId: accepted.offerId,
+          acceptedQuantity: accepted.quantity,
+          shippedQuantity,
+          remainingQuantity: visibleRemainingQuantity,
+        })
+      }
+    }
+
+    return {
+      shippedToOzon: totalOzonShippedQuantity,
+      remainingToShip: remainingItems.reduce((sum, item) => sum + item.remainingQuantity, 0),
+      remainingItems: remainingItems.sort((first, second) => second.remainingQuantity - first.remainingQuantity),
+    }
+  }, [supplyAnalytics, ozonSupplyShipments, ozonProducts, supplyFboDefects])
   const normalizedSupplySearch = supplySearch.trim().toLowerCase()
   const searchedSupplies = normalizedSupplySearch
     ? supplies.filter((supply) => matchesSupply(supply, normalizedSupplySearch))
@@ -2119,7 +3529,7 @@ function App() {
 
     return map
   }, [ozonProducts, kzProducts, kzMarketplace, shopRegion])
-  const showKzFullAnalytics = shopRegion === 'kz' && kzMarketplace === 'satu'
+  const showKzFullAnalytics = shopRegion === 'kz' && (kzMarketplace === 'kaspi' || kzMarketplace === 'satu')
   const showFullAnalytics = shopRegion === 'rf' || showKzFullAnalytics
   const analyticsMarketplaceLabel = shopRegion === 'rf' ? 'OZON' : getKzMarketplaceLabel(kzMarketplace)
   const topAnalyticsProducts = (analytics?.topProducts ?? [])
@@ -2208,6 +3618,161 @@ function App() {
     () => filteredGroupedAnalyticsProducts.flatMap((group) => group.byDate.flatMap((dateGroup) => dateGroup.rows)),
     [filteredGroupedAnalyticsProducts],
   )
+  const filteredAnalytics = useMemo(
+    () => buildFilteredAnalytics(analytics, exportableAnalyticsRows),
+    [analytics, exportableAnalyticsRows],
+  )
+  const internalAnalytics = useMemo<InternalAnalyticsData>(() => {
+    const productCostById = new Map<number, number>()
+    const productCostByOfferId = new Map<string, number>()
+    const productCostBySku = new Map<number, number>()
+    const productPriceById = new Map<number, number>()
+    for (const product of ozonProducts) {
+      if (product.productId && typeof product.costTotal === 'number' && Number.isFinite(product.costTotal) && product.costTotal > 0) {
+        const cost = product.costTotal
+        productCostById.set(product.productId, cost)
+        if (product.offerId) {
+          productCostByOfferId.set(product.offerId.trim().toLowerCase(), cost)
+        }
+        if (typeof product.sku === 'number' && Number.isFinite(product.sku) && product.sku > 0) {
+          productCostBySku.set(product.sku, cost)
+        }
+      }
+
+      if (product.productId && typeof product.price === 'number' && Number.isFinite(product.price) && product.price > 0) {
+        productPriceById.set(product.productId, product.price)
+      }
+    }
+
+    const productsWithStockIds = new Set<number>()
+    const productsWithoutCostIds = new Set<number>()
+    let stockQuantity = 0
+    let costedStockQuantity = 0
+    let stockCostTotal = 0
+    let stockSalesGrossTotal = 0
+
+    for (const stock of ozonStocks) {
+      const quantity = Math.max(0, (stock.fboPresent ?? 0) + (stock.fbsPresent ?? 0))
+      if (quantity <= 0) {
+        continue
+      }
+
+      productsWithStockIds.add(stock.productId)
+      stockQuantity += quantity
+      const sellingPrice =
+        typeof stock.price === 'number' && Number.isFinite(stock.price) && stock.price > 0
+          ? stock.price
+          : productPriceById.get(stock.productId) ?? 0
+      stockSalesGrossTotal += sellingPrice * quantity
+
+      const cost = productCostById.get(stock.productId)
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) {
+        costedStockQuantity += quantity
+        stockCostTotal += cost * quantity
+      } else {
+        productsWithoutCostIds.add(stock.productId)
+      }
+    }
+
+    const sentOrAcceptedSupplies = supplies.filter(
+      (supply) => !supply.isArchived && (supply.status === 'Sent' || supply.status === 'Accepted'),
+    )
+    const suppliesShippingTotal = sentOrAcceptedSupplies.reduce(
+      (sum, supply) => sum + (typeof supply.shippingCost === 'number' ? supply.shippingCost : 0),
+      0,
+    )
+    const suppliesItemQuantity = sentOrAcceptedSupplies.reduce(
+      (sum, supply) =>
+        sum +
+        supply.items.reduce((itemsSum, item) => itemsSum + (isSupplyProductKind(item.itemKind) ? item.quantity : 0), 0),
+      0,
+    )
+    const suppliesWithoutShippingCost = sentOrAcceptedSupplies.filter(
+      (supply) => !supply.shippingCost || supply.shippingCost <= 0,
+    ).length
+    const periodSupplies = sentOrAcceptedSupplies.filter((supply) =>
+      isDateStringInRange(supply.sentAt || supply.acceptedAt || supply.createdAt, analyticsDateFrom, analyticsDateTo),
+    )
+    const periodSupplyShippingTotal = periodSupplies.reduce(
+      (sum, supply) => sum + (typeof supply.shippingCost === 'number' ? supply.shippingCost : 0),
+      0,
+    )
+    const periodRows = analytics?.orderRows && analytics.orderRows.length > 0 ? analytics.orderRows : (analytics?.rows ?? [])
+    const periodOrdersCount = analytics?.salesTotalCount ?? countDistinctPostings(periodRows)
+    const periodOrderedAmount = analytics?.salesAmountTotal ?? 0
+    const periodPayoutTotal = analytics?.payoutTotal ?? 0
+    const periodCommissionTotal = Math.abs(analytics?.commissionTotal ?? 0)
+    const periodLogisticsTotal = Math.abs(analytics?.logisticsTotal ?? 0) + Math.abs(analytics?.cancelledLogisticsTotal ?? 0)
+    const periodServicesTotal = Math.abs(analytics?.servicesTotal ?? 0)
+    const periodDeductionsTotal = periodCommissionTotal + periodLogisticsTotal + periodServicesTotal
+    let periodSoldCostTotal = 0
+    let periodSoldCostedQuantity = 0
+    let periodSoldWithoutCostQuantity = 0
+
+    for (const row of periodRows) {
+      if (normalizeOrderStatus(row.status) !== 'delivered') {
+        continue
+      }
+
+      const quantity = Math.max(0, row.quantity ?? 0)
+      if (quantity <= 0) {
+        continue
+      }
+
+      const offerKey = row.offerId?.trim().toLowerCase() ?? ''
+      const cost = productCostBySku.get(row.sku) ?? productCostByOfferId.get(offerKey)
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) {
+        periodSoldCostTotal += cost * quantity
+        periodSoldCostedQuantity += quantity
+      } else {
+        periodSoldWithoutCostQuantity += quantity
+      }
+    }
+
+    const periodExpensesTotal = internalSupplyExpensesTotal
+    const periodExpensesCount = internalSupplyExpenses.length
+    const periodNetProfit =
+      periodPayoutTotal - periodSoldCostTotal - periodSupplyShippingTotal - periodExpensesTotal
+
+    return {
+      stockCostTotal,
+      stockSalesNetTotal: stockSalesGrossTotal * 0.55,
+      stockProfitTotal: stockSalesGrossTotal * 0.55 - stockCostTotal,
+      stockQuantity,
+      costedStockQuantity,
+      productsWithStock: productsWithStockIds.size,
+      productsWithoutCost: productsWithoutCostIds.size,
+      suppliesShippingTotal,
+      suppliesCount: sentOrAcceptedSupplies.length,
+      suppliesItemQuantity,
+      suppliesWithoutShippingCost,
+      periodDateFrom: analyticsDateFrom,
+      periodDateTo: analyticsDateTo,
+      periodOrdersCount,
+      periodOrderedAmount,
+      periodPayoutTotal,
+      periodCommissionTotal,
+      periodLogisticsTotal,
+      periodServicesTotal,
+      periodDeductionsTotal,
+      periodSupplyShippingTotal,
+      periodExpensesTotal,
+      periodExpensesCount,
+      periodSoldCostTotal,
+      periodSoldCostedQuantity,
+      periodSoldWithoutCostQuantity,
+      periodNetProfit,
+    }
+  }, [
+    analytics,
+    analyticsDateFrom,
+    analyticsDateTo,
+    internalSupplyExpenses.length,
+    internalSupplyExpensesTotal,
+    ozonProducts,
+    ozonStocks,
+    supplies,
+  ])
   const selectedChatThread = chatThreads.find(
     (item) => item.type === selectedChatType && isSameChatId(item.id, selectedChatId),
   )
@@ -2252,11 +3817,25 @@ function App() {
   const canManageIntegrationUsers =
     canViewIntegrationsNotifications() || canViewIntegrationsReports()
   const canEditProductionTasks = () => hasFeature('production.editTasks')
-  const canCreateProductionTasks = () => hasFeature('production.createTask')
+  const canChangeProductionTaskType = () => hasFeature('production.changeTaskType')
+  const canCreateProductionTasks = () =>
+    user?.role === 'Admin' || Boolean(user?.allowedFeatures?.includes('production.createTask'))
+  const canManageProductionTaskDeadline = () => hasFeature('production.taskDeadline')
   const canCancelProductionTasks = () => hasFeature('production.cancelTasks')
   const canEditProductionProducts = () => hasFeature('production.editProducts')
+  const canPackProductionItems = () => hasFeature('production.packItems')
   const canDeleteProductionFiles = () => hasFeature('production.deleteFiles')
   const canArchiveProductionTasks = () => hasFeature('production.archive')
+  const designerTransferUsers = productionDesigners.filter(
+    (item) => item.id !== user?.id && item.role === 'Designer',
+  )
+  const currentUserAliases = useMemo(
+    () =>
+      [user?.displayName, user?.userName].filter(
+        (value): value is string => Boolean(value?.trim()),
+      ),
+    [user?.displayName, user?.userName],
+  )
   const canEditChats = () => hasFeature('chats.edit')
   const canManageChatGroups = () => hasFeature('chats.groups')
   const canEditPoolingPrices = () => hasFeature('pooling.editPrices')
@@ -2388,6 +3967,12 @@ function App() {
         : `Задач в работе пока нет${productionRegionSuffix}`
     }
 
+    if (productionSubTab === 'readyToShip') {
+      return allReadyToShipProductionTasks.length
+        ? `Готовы к отгрузке: ${allReadyToShipProductionTasks.length}${productionRegionSuffix}`
+        : `Готовых к отгрузке задач пока нет${productionRegionSuffix}`
+    }
+
     if (productionSubTab === 'cancelled') {
       return allCancelledProductionTasks.length
         ? `Отменённых: ${allCancelledProductionTasks.length}${productionRegionSuffix}`
@@ -2417,6 +4002,7 @@ function App() {
     productionStatus,
     allNewProductionTasks.length,
     allInProgressProductionTasks.length,
+    allReadyToShipProductionTasks.length,
     allCancelledProductionTasks.length,
     allCompletedProductionTasks.length,
     filteredProductionCatalog.length,
@@ -2604,6 +4190,7 @@ function App() {
       ['all', 'supplies.all'],
       ['archive', 'supplies.archive'],
       ['analytics', 'supplies.analytics'],
+      ['expenses', 'supplies.expenses'],
     ]
     if (activeTab === 'supplies' && !hasSubFeature(`supplies.${supplySubTab}`, 'supplies')) {
       setSupplySubTab(supplyFallbacks.find(([, feature]) => hasSubFeature(feature, 'supplies'))?.[0] ?? 'create')
@@ -2614,6 +4201,9 @@ function App() {
       ['topProducts', 'analytics.topProducts'],
       ['noSales', 'analytics.noSales'],
       ['production', 'analytics.production'],
+      ['internal', 'analytics.internal'],
+      ['calculator', 'analytics.calculator'],
+      ['finances', 'analytics.finances'],
     ]
     if (activeTab === 'analytics' && !hasSubFeature(`analytics.${analyticsSubTab}`, 'analytics')) {
       setAnalyticsSubTab(analyticsFallbacks.find(([, feature]) => hasSubFeature(feature, 'analytics'))?.[0] ?? 'summary')
@@ -2747,6 +4337,9 @@ function App() {
 
     connection.on('SuppliesChanged', () => {
       void loadSupplies()
+      void loadSupplyAnalytics()
+      void loadSupplyFboDefects()
+      void loadSupplyExpenses()
     })
 
     connection.on('ChatMessagesChanged', (senderId: string, receiverId: string | null, groupId: string | null) => {
@@ -2786,9 +4379,37 @@ function App() {
 
     loadProductionFiles('')
     loadProductionTasks()
+    if (canSeeNovinkaProductionTasks(user.role, user.allowedFeatures)) {
+      loadProductionDesigners()
+    }
     loadSupplies()
     loadSupplyAnalytics()
+    loadOzonSupplyShipments()
+    loadSupplyFboDefects()
+    loadSupplyExpenses()
   }, [token, user?.id, user?.role])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'supplies' || supplySubTab !== 'analytics' || shopRegion !== 'rf') {
+      return
+    }
+
+    if (ozonSupplyShipments.length === 0) {
+      void loadOzonSupplyShipments()
+    }
+
+    if (supplyFboDefects.length === 0) {
+      void loadSupplyFboDefects()
+    }
+  }, [token, activeTab, supplySubTab, shopRegion, ozonSupplyShipments.length, supplyFboDefects.length])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'supplies' || supplySubTab !== 'expenses' || shopRegion !== 'rf') {
+      return
+    }
+
+    void loadSupplyExpenses()
+  }, [token, activeTab, supplySubTab, shopRegion, supplyExpenseSearch, supplyExpenseDateFrom, supplyExpenseDateTo])
 
   useEffect(() => {
     if (shopRegion !== 'kz' || productionCatalogTab !== 'ozon') {
@@ -2818,6 +4439,34 @@ function App() {
 
     loadOzonProducts()
   }, [token, user?.role, user?.allowedFeatures, shopRegion])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'analytics' || analyticsSubTab !== 'internal' || shopRegion !== 'rf') {
+      return
+    }
+
+    void loadOzonProducts()
+
+    if (ozonStocks.length === 0) {
+      void loadOzonStocks()
+    }
+
+    if (supplies.length === 0) {
+      void loadSupplies()
+    }
+
+    void loadInternalSupplyExpenses()
+  }, [
+    token,
+    activeTab,
+    analyticsSubTab,
+    shopRegion,
+    analyticsDateFrom,
+    analyticsDateTo,
+    ozonProducts.length,
+    ozonStocks.length,
+    supplies.length,
+  ])
 
   useEffect(() => {
     if (!token || shopRegion !== 'kz') {
@@ -2980,7 +4629,6 @@ function App() {
 
     setAnalyticsDateFrom(getDefaultAnalyticsDateFrom())
     setAnalyticsDateTo(getDefaultAnalyticsDateTo())
-    void loadAnalyticsSnapshot()
   }, [activeTab, token, user?.role, user?.allowedFeatures, shopRegion])
 
   useEffect(() => {
@@ -3075,6 +4723,7 @@ function App() {
 
     if (integrationsSubTab === 'telegram-notifications') {
       void loadUserTelegram(integrationAdminUserId)
+      void loadUserReport(integrationAdminUserId)
     }
 
     if (integrationsSubTab === 'telegram-reports') {
@@ -3369,6 +5018,13 @@ function App() {
     setUserTelegramStatus((current) => ({ ...current, [userId]: 'Оповещения сохранены' }))
   }
 
+  async function saveUserTelegramAndAccountingPreferences(userId: string) {
+    await saveUserTelegramPreferences(userId)
+    if (canEditIntegrationsReports() && userReportData[userId]) {
+      await saveUserReport(userId)
+    }
+  }
+
   async function loadReportSections() {
     const response = await fetch('/api/admin/report-sections', {
       headers: { Authorization: `Bearer ${token}` },
@@ -3392,6 +5048,7 @@ function App() {
     const data: AdminUserReport = await response.json()
     setUserReportData((current) => ({ ...current, [userId]: data }))
     setUserReportSections((current) => ({ ...current, [userId]: data.enabledSections }))
+    setUserMonthlyReportSections((current) => ({ ...current, [userId]: data.monthlyEnabledSections }))
     setUserReportStatus((current) => ({ ...current, [userId]: '' }))
   }
 
@@ -3412,6 +5069,12 @@ function App() {
         reportTime: report.reportTime,
         timezone: report.timezone,
         sections: userReportSections[userId] ?? report.enabledSections,
+        monthlyEnabled: report.monthlyEnabled,
+        monthlyReportTime: report.monthlyReportTime,
+        monthlyTimezone: report.monthlyTimezone,
+        monthlySections: (userMonthlyReportSections[userId] ?? report.monthlyEnabledSections).filter((sectionId) =>
+          reportSections.some((section) => section.id === sectionId && isRegularReportSection(section)),
+        ),
       }),
     })
     if (!response.ok) {
@@ -3425,6 +5088,7 @@ function App() {
     const data: AdminUserReport = await response.json()
     setUserReportData((current) => ({ ...current, [userId]: data }))
     setUserReportSections((current) => ({ ...current, [userId]: data.enabledSections }))
+    setUserMonthlyReportSections((current) => ({ ...current, [userId]: data.monthlyEnabledSections }))
     setUserReportStatus((current) => ({ ...current, [userId]: 'Настройки отчёта сохранены' }))
   }
 
@@ -3443,6 +5107,23 @@ function App() {
       return
     }
     setUserReportStatus((current) => ({ ...current, [userId]: 'Тестовый отчёт отправлен' }))
+  }
+
+  async function testUserMonthlyReport(userId: string) {
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Отправляем тестовый ежемесячный отчёт...' }))
+    const response = await fetch(`/api/admin/users/${userId}/telegram/report/test-monthly`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      const message = (await response.text()) || 'Не удалось отправить ежемесячный отчёт'
+      setUserReportStatus((current) => ({
+        ...current,
+        [userId]: message,
+      }))
+      return
+    }
+    setUserReportStatus((current) => ({ ...current, [userId]: 'Тестовый ежемесячный отчёт отправлен' }))
   }
 
   async function changeOwnPassword(event: FormEvent<HTMLFormElement>) {
@@ -4655,6 +6336,316 @@ function App() {
     setOzonStatus(`Загружено товаров Ozon: ${data.length}`)
   }
 
+  function fillProductCostTypeEditForm(costType?: ProductCostType | null) {
+    setProductCostTypeEditForm({
+      id: costType?.id ?? '',
+      name: costType?.name ?? '',
+      isPurchased: costType?.isPurchased ?? false,
+      purchaseCost: costType?.purchaseCost ? String(costType.purchaseCost) : '',
+      packagingCost: costType?.packagingCost ? String(costType.packagingCost) : '',
+      productionCost: costType?.productionCost ? String(costType.productionCost) : '',
+    })
+  }
+
+  function openProductCostTypeEditModal(costType?: ProductCostType | null) {
+    if (!costType) {
+      setProductCostStatus('Выберите тип себестоимости для редактирования.')
+      return
+    }
+
+    fillProductCostTypeEditForm(costType)
+    setProductCostStatus('')
+    setProductCostTypeEditModalOpen(true)
+  }
+
+  function closeProductCostTypeEditModal() {
+    setProductCostTypeEditModalOpen(false)
+  }
+
+  async function openProductCostModal(product: OzonProduct) {
+    setProductCostModalProduct(product)
+    setProductCostStatus('Загружаем карточку товара...')
+    setProductCostForm({
+      useIndividualCost: true,
+      costTypeId: '',
+      isPurchased: false,
+      purchaseCost: '',
+      packagingCost: '',
+      productionCost: '',
+    })
+    fillProductCostTypeEditForm(null)
+    setProductCostTypeEditModalOpen(false)
+    const loadedCostTypes = await loadProductCostTypes()
+
+    const response = await fetch(`/api/ozon/products/${product.productId}/cost`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductCostStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить карточку товара'))
+      return
+    }
+
+    const data: ProductCostProfile = await response.json()
+    const selectedCostTypeId = data.costTypeId ?? ''
+    setProductCostForm({
+      useIndividualCost: data.useIndividualCost ?? true,
+      costTypeId: selectedCostTypeId,
+      isPurchased: data.isPurchased,
+      purchaseCost: data.purchaseCost ? String(data.purchaseCost) : '',
+      packagingCost: data.packagingCost ? String(data.packagingCost) : '',
+      productionCost: data.productionCost ? String(data.productionCost) : '',
+    })
+    fillProductCostTypeEditForm(loadedCostTypes.find((type) => type.id === selectedCostTypeId))
+    setProductCostStatus('')
+  }
+
+  async function loadProductCostTypes() {
+    const response = await fetch('/api/ozon/product-cost-types', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductCostStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить типы себестоимости'))
+      return [] as ProductCostType[]
+    }
+
+    const data: ProductCostType[] = await response.json()
+    setProductCostTypes(data)
+    return data
+  }
+
+  async function loadProductCostProfiles() {
+    if (!token) {
+      return [] as ProductCostProfile[]
+    }
+
+    const response = await fetch('/api/ozon/product-cost-profiles', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setProductCostTypesStatus(getApiErrorMessage(await response.text(), 'Не удалось загрузить товары по типам себестоимости'))
+      return [] as ProductCostProfile[]
+    }
+
+    const data: ProductCostProfile[] = await response.json()
+    setProductCostProfiles(data)
+    setProductCostTypesStatus('')
+    return data
+  }
+
+  async function openProductCostTypesTab() {
+    setProductsInnerTab('costTypes')
+    setProductCostTypesStatus('Загружаем типы себестоимости...')
+    const [types] = await Promise.all([loadProductCostTypes(), loadProductCostProfiles()])
+    if (types.length > 0 && !expandedProductCostTypeId) {
+      setExpandedProductCostTypeId(types[0].id)
+    }
+    if (ozonProducts.length === 0) {
+      void loadOzonProducts()
+    }
+  }
+
+  function parseCostInput(value: string) {
+    const normalized = value.trim().replace(',', '.')
+    if (!normalized) {
+      return null
+    }
+
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  }
+
+  function getProductCostFormTotal() {
+    if (!productCostForm.useIndividualCost) {
+      return productCostTypes.find((type) => type.id === productCostForm.costTypeId)?.costTotal ?? null
+    }
+
+    if (productCostForm.isPurchased) {
+      return parseCostInput(productCostForm.purchaseCost)
+    }
+
+    const packaging = parseCostInput(productCostForm.packagingCost) ?? 0
+    const production = parseCostInput(productCostForm.productionCost) ?? 0
+    const total = packaging + production
+    return total > 0 ? total : null
+  }
+
+  async function saveProductCostProfile() {
+    if (!productCostModalProduct) {
+      return
+    }
+
+    if (!productCostForm.useIndividualCost && !productCostForm.costTypeId) {
+      setProductCostStatus('Выберите тип себестоимости.')
+      return
+    }
+
+    setProductCostSaving(true)
+    setProductCostStatus('Сохраняем...')
+
+    try {
+      const selectedCostType = productCostForm.useIndividualCost
+        ? null
+        : productCostTypes.find((type) => type.id === productCostForm.costTypeId)
+      const resolvedIsPurchased = productCostForm.useIndividualCost
+        ? productCostForm.isPurchased
+        : (selectedCostType?.isPurchased ?? productCostForm.isPurchased)
+      const response = await fetch(`/api/ozon/products/${productCostModalProduct.productId}/cost`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          offerId: productCostModalProduct.offerId,
+          productName: productCostModalProduct.name,
+          isPurchased: resolvedIsPurchased,
+          costTypeId: productCostForm.useIndividualCost ? null : productCostForm.costTypeId,
+          useIndividualCost: productCostForm.useIndividualCost,
+          purchaseCost: parseCostInput(productCostForm.purchaseCost),
+          packagingCost: parseCostInput(productCostForm.packagingCost),
+          productionCost: parseCostInput(productCostForm.productionCost),
+        }),
+      })
+
+      if (!response.ok) {
+        setProductCostStatus(
+          response.status === 403
+            ? 'Нет доступа к редактированию себестоимости'
+            : getApiErrorMessage(await response.text(), 'Не удалось сохранить себестоимость'),
+        )
+        return
+      }
+
+      const data: ProductCostProfile = await response.json()
+      setOzonProducts((current) =>
+        current.map((item) =>
+          item.productId === productCostModalProduct.productId
+            ? { ...item, costTotal: data.costTotal, isPurchased: data.isPurchased }
+            : item,
+        ),
+      )
+      setProductCostProfiles((current) =>
+        [...current.filter((item) => item.productId !== data.productId), data].sort((a, b) =>
+          (a.productName || a.offerId).localeCompare(b.productName || b.offerId),
+        ),
+      )
+      setProductCostModalProduct((current) =>
+        current ? { ...current, costTotal: data.costTotal, isPurchased: data.isPurchased } : current,
+      )
+      setProductCostStatus('Сохранено')
+    } finally {
+      setProductCostSaving(false)
+    }
+  }
+
+  async function saveProductCostType() {
+    const name = productCostTypeForm.name.trim()
+    if (!name) {
+      setProductCostStatus('Укажите название типа себестоимости.')
+      return
+    }
+
+    setProductCostTypeSaving(true)
+    setProductCostStatus('Сохраняем тип себестоимости...')
+
+    try {
+      const response = await fetch('/api/ozon/product-cost-types', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name,
+          isPurchased: productCostTypeForm.isPurchased,
+          purchaseCost: parseCostInput(productCostTypeForm.purchaseCost),
+          packagingCost: parseCostInput(productCostTypeForm.packagingCost),
+          productionCost: parseCostInput(productCostTypeForm.productionCost),
+        }),
+      })
+
+      if (!response.ok) {
+        setProductCostStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить тип себестоимости'))
+        return
+      }
+
+      const data: ProductCostType = await response.json()
+      setProductCostTypes((current) => [...current.filter((type) => type.id !== data.id), data].sort((a, b) => a.name.localeCompare(b.name)))
+      setProductCostForm((current) => ({
+        ...current,
+        useIndividualCost: false,
+        costTypeId: data.id,
+      }))
+      fillProductCostTypeEditForm(data)
+      setProductCostTypeForm({
+        name: '',
+        isPurchased: false,
+        purchaseCost: '',
+        packagingCost: '',
+        productionCost: '',
+      })
+      setExpandedProductCostTypeId(data.id)
+      void loadProductCostProfiles()
+      void loadOzonProducts()
+      setProductCostStatus('Тип себестоимости создан')
+    } finally {
+      setProductCostTypeSaving(false)
+    }
+  }
+
+  async function saveProductCostTypeEdit() {
+    const id = productCostTypeEditForm.id
+    const name = productCostTypeEditForm.name.trim()
+    if (!id || !name) {
+      setProductCostStatus('Выберите тип себестоимости и укажите название.')
+      return
+    }
+
+    setProductCostTypeSaving(true)
+    setProductCostStatus('Сохраняем тип себестоимости...')
+
+    try {
+      const response = await fetch(`/api/ozon/product-cost-types/${id}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name,
+          isPurchased: productCostTypeEditForm.isPurchased,
+          purchaseCost: parseCostInput(productCostTypeEditForm.purchaseCost),
+          packagingCost: parseCostInput(productCostTypeEditForm.packagingCost),
+          productionCost: parseCostInput(productCostTypeEditForm.productionCost),
+        }),
+      })
+
+      if (!response.ok) {
+        setProductCostStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить тип себестоимости'))
+        return
+      }
+
+      const data: ProductCostType = await response.json()
+      setProductCostTypes((current) => [...current.filter((type) => type.id !== data.id), data].sort((a, b) => a.name.localeCompare(b.name)))
+      fillProductCostTypeEditForm(data)
+      setProductCostTypeEditModalOpen(false)
+      void loadProductCostProfiles()
+      void loadOzonProducts()
+      setProductCostStatus('Тип себестоимости сохранен')
+    } finally {
+      setProductCostTypeSaving(false)
+    }
+  }
+
   async function loadKzCatalogSummary(
     marketplace: KzMarketplace = kzMarketplace,
   ): Promise<{ total: number; selling: number; ready: number; archived: number } | null> {
@@ -4802,7 +6793,7 @@ function App() {
     if (statusFilter !== 'all') {
       params.set('status', statusFilter)
     }
-    if (useLocalCatalog && search.trim()) {
+    if (search.trim()) {
       params.set('search', search.trim())
     }
 
@@ -4829,6 +6820,7 @@ function App() {
         archived: number
         matchedTotal: number
         items: OzonProduct[]
+        message?: string | null
       } = await response.json()
 
       const summaryStatsTotal = data.selling + data.ready + data.archived
@@ -4873,7 +6865,9 @@ function App() {
       setKzProductsStatus((current) => ({
         ...current,
         [marketplace]:
-          useLocalCatalog
+          data.message?.trim()
+            ? data.message
+            : useLocalCatalog
             ? data.matchedTotal > 0
               ? `Страница ${page + 1}: показано ${data.items.length} из ${data.matchedTotal} товаров ${label}`
               : kzSatuSyncStatus?.status === 'InProgress'
@@ -5179,7 +7173,7 @@ function App() {
     setHomeAnalyticsStatus(`Обновлено: ${new Date(data.timestamp).toLocaleString('ru-RU')}`)
   }
 
-  async function loadHomeKzAnalytics(marketplace: KzMarketplace) {
+  async function loadHomeKzAnalytics(marketplace: KzMarketplace, forceRefresh = false) {
     const label = getKzMarketplaceLabel(marketplace)
     setHomeKzAnalyticsStatus((current) => ({
       ...current,
@@ -5190,6 +7184,9 @@ function App() {
       dateFrom: getDefaultAnalyticsDateFrom(),
       dateTo: getDefaultAnalyticsDateTo(),
     })
+    if (forceRefresh) {
+      params.set('forceRefresh', 'true')
+    }
 
     const response = await fetch(`/api/kz/${marketplace}/analytics?${params.toString()}`, {
       headers: {
@@ -5269,6 +7266,7 @@ function App() {
 
   async function loadKzAnalyticsSnapshot(marketplace: KzMarketplace = kzMarketplace) {
     const label = getKzMarketplaceLabel(marketplace)
+    setAnalyticsSnapshot(null)
     setAnalyticsStatus(`Загружаем сводку каталога ${label}...`)
 
     const response = await fetch(`/api/kz/${marketplace}/analytics/snapshot`, {
@@ -5287,9 +7285,9 @@ function App() {
     setAnalyticsStatus(`Каталог ${label}: ${data.totalProductsCount} позиций. Загружаем заказы...`)
   }
 
-  async function loadKzAnalyticsBundle(marketplace: KzMarketplace = kzMarketplace) {
+  async function loadKzAnalyticsBundle(marketplace: KzMarketplace = kzMarketplace, forceRefresh = false) {
     await loadKzAnalyticsSnapshot(marketplace)
-    await loadKzAnalytics(marketplace)
+    await loadKzAnalytics(marketplace, forceRefresh)
   }
 
   async function loadKzUnsoldProducts(marketplace: KzMarketplace = kzMarketplace) {
@@ -5349,8 +7347,9 @@ function App() {
     setAnalyticsStatus(`Без продаж OZON: ${data.total} товаров · обновлено ${data.timestamp}`)
   }
 
-  async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace) {
+  async function loadKzAnalytics(marketplace: KzMarketplace = kzMarketplace, forceRefresh = false) {
     const label = getKzMarketplaceLabel(marketplace)
+    setAnalytics(null)
     setAnalyticsStatus(`Загружаем заказы ${label}...`)
 
     const params = new URLSearchParams()
@@ -5359,6 +7358,9 @@ function App() {
     }
     if (analyticsDateTo) {
       params.set('dateTo', analyticsDateTo)
+    }
+    if (forceRefresh) {
+      params.set('forceRefresh', 'true')
     }
 
     const response = await fetch(`/api/kz/${marketplace}/analytics?${params.toString()}`, {
@@ -5377,23 +7379,9 @@ function App() {
     setAnalyticsStatus(`Аналитика ${label} за период обновлена: ${data.timestamp}`)
   }
 
-  async function loadAnalyticsSnapshot() {
-    const response = await fetch('/api/ozon/analytics/snapshot', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      setAnalyticsStatus(getApiErrorMessage(await response.text(), 'Не удалось получить сводку Ozon'))
-      return
-    }
-
-    const data: OzonAnalyticsSnapshot = await response.json()
-    setAnalyticsSnapshot(data)
-  }
-
   async function loadAnalytics() {
+    setAnalytics(null)
+    setAnalyticsSnapshot(null)
     setAnalyticsStatus('Загружаем аналитику Ozon за период...')
 
     const params = new URLSearchParams()
@@ -5417,6 +7405,16 @@ function App() {
 
     const data: OzonAnalytics = await response.json()
     setAnalytics(data)
+    setAnalyticsSnapshot({
+      totalProductsCount:
+        data.sellingProductsCount + data.readyForSaleProductsCount + data.archivedProductsCount,
+      sellingProductsCount: data.sellingProductsCount,
+      readyForSaleProductsCount: data.readyForSaleProductsCount,
+      archivedProductsCount: data.archivedProductsCount,
+      accountBalance: data.accountBalance ?? null,
+      accountBalanceCurrency: data.accountBalanceCurrency,
+      timestamp: data.timestamp,
+    })
     setAnalyticsStatus(`Аналитика за период обновлена: ${data.timestamp}`)
   }
 
@@ -5433,7 +7431,7 @@ function App() {
       }
 
       if (showKzFullAnalytics) {
-        await loadKzAnalyticsBundle()
+        await loadKzAnalyticsBundle(kzMarketplace, true)
       }
 
       return
@@ -5444,12 +7442,18 @@ function App() {
       return
     }
 
+    if (analyticsSubTab === 'internal') {
+      await Promise.all([loadAnalytics(), loadOzonProducts(), loadOzonStocks(), loadSupplies(), loadInternalSupplyExpenses()])
+      setAnalyticsStatus(`Внутренняя аналитика обновлена: ${new Date().toLocaleString('ru-RU')}`)
+      return
+    }
+
     if (analyticsSubTab === 'noSales') {
       await loadRfUnsoldProducts()
       return
     }
 
-    await Promise.all([loadAnalyticsSnapshot(), loadAnalytics()])
+    await loadAnalytics()
   }
 
   async function loadProductionAnalyticsAssignees() {
@@ -5624,7 +7628,7 @@ function App() {
 
   function exportAnalyticsProductExcel(group: AnalyticsProductGroup) {
     const rows = group.byDate.flatMap((dateGroup) => dateGroup.rows)
-    const safeName = group.productName.replace(/[^\wа-яА-ЯёЁ\s-]+/gi, '').trim().slice(0, 40) || 'product'
+    const safeName = group.productName.replace(/[^\p{L}\p{N}_\s-]+/gu, '').trim().slice(0, 40) || 'product'
     const period =
       analyticsDateFrom && analyticsDateTo ? `${analyticsDateFrom}_${analyticsDateTo}` : 'period'
     void exportAnalyticsOrderRowsExcel(rows, `analytics-${safeName}-${period}`, safeName)
@@ -5655,8 +7659,14 @@ function App() {
     file: File,
     taskType?: ProductionTask['taskType'],
   ) {
+    if (!file.type.startsWith('image/')) {
+      setTaskStatus('Для дизайнерской задачи загрузите изображение-превью')
+      return
+    }
+
     const marketplace = resolveNovinkaMarketplaceFromTaskType(taskType, shopRegion, kzTaskMarketplace)
     const formData = new FormData()
+    formData.append('taskItemId', item.id)
     formData.append('ozonProductId', item.ozonProductId > 0 ? String(item.ozonProductId) : '0')
     formData.append('offerId', item.offerId)
     formData.append('productName', item.productName)
@@ -5667,11 +7677,11 @@ function App() {
     const response = await productionApi.uploadProductionFile(token, formData)
 
     if (!response.ok) {
-      setTaskStatus('Не удалось загрузить файл')
+      setTaskStatus('Не удалось загрузить превью')
       return
     }
 
-    setTaskStatus('Файл загружен')
+    setTaskStatus('Превью загружено')
     await loadProductionFiles(productionSearch)
   }
 
@@ -5688,6 +7698,19 @@ function App() {
     }
 
     setTaskStatus('Путь к файлу сохранён')
+    await loadProductionTasks()
+    await loadProductionFiles(productionSearch)
+  }
+
+  async function deleteProductionTaskItemFilePath(taskId: string, item: ProductionTaskItem) {
+    const response = await productionApi.deleteProductionTaskItemFilePath(token, taskId, item.id)
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось удалить путь'))
+      return
+    }
+
+    setTaskStatus('Путь к файлу удалён')
     await loadProductionTasks()
     await loadProductionFiles(productionSearch)
   }
@@ -5717,6 +7740,76 @@ function App() {
     await loadProductionTasks()
   }
 
+  async function packProductionTaskItem(task: ProductionTask, item: ProductionTaskItem) {
+    const response = await productionApi.packProductionTaskItem(token, task.id, item.id)
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось упаковать товар'))
+      return
+    }
+
+    setTaskStatus(`Товар упакован: ${item.productName}`)
+    await loadProductionTasks()
+    await loadSupplies()
+  }
+
+  function openTransferDesignerItemModal(task: ProductionTask, item: ProductionTaskItem) {
+    setTransferDesignerItem({ task, item })
+    setTransferDesignerUserId(designerTransferUsers[0]?.id ?? '')
+  }
+
+  function closeTransferDesignerItemModal() {
+    setTransferDesignerItem(null)
+    setTransferDesignerUserId('')
+  }
+
+  async function transferDesignerTaskItem() {
+    if (!transferDesignerItem || !transferDesignerUserId) {
+      setTaskStatus('Выберите дизайнера')
+      return
+    }
+
+    const response = await productionApi.transferDesignerTaskItem(
+      token,
+      transferDesignerItem.task.id,
+      transferDesignerItem.item.id,
+      transferDesignerUserId,
+    )
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось передать товар'))
+      return
+    }
+
+    const targetUser = designerTransferUsers.find((item) => item.id === transferDesignerUserId)
+    setTaskStatus(
+      `Товар передан: ${transferDesignerItem.item.productName}${targetUser ? ` · ${targetUser.displayName || targetUser.userName}` : ''}`,
+    )
+    closeTransferDesignerItemModal()
+    await loadProductionTasks()
+  }
+
+  async function saveProductionTaskItemRequiredQuantity(
+    taskId: string,
+    item: ProductionTaskItem,
+    requiredQuantity: number,
+  ) {
+    const response = await productionApi.saveProductionTaskItemRequiredQuantity(
+      token,
+      taskId,
+      item.id,
+      requiredQuantity,
+    )
+
+    if (!response.ok) {
+      setTaskStatus(getApiErrorMessage(await response.text(), 'Не удалось сохранить план'))
+      return
+    }
+
+    setTaskStatus(`План сохранён: ${item.productName} — ${requiredQuantity} шт.`)
+    await loadProductionTasks()
+  }
+
   async function downloadProductionFile(id: string) {
     const response = await productionApi.downloadProductionFile(token, id)
 
@@ -5741,7 +7834,7 @@ function App() {
   }
 
   async function deleteProductionFile(id: string) {
-    if (!window.confirm('Удалить файл производства?')) {
+    if (!window.confirm('Удалить превью?')) {
       return
     }
 
@@ -5775,8 +7868,8 @@ function App() {
 
       notify(
         reworkTaskCreated
-          ? 'Файл удалён. Товар убран из списка, создана новая задача для новинки.'
-          : 'Файл удалён',
+          ? 'Превью удалено. Товар убран из списка, создана новая задача для новинки.'
+          : 'Превью удалено',
       )
 
       if (reworkTaskCreated) {
@@ -5943,6 +8036,17 @@ function App() {
     setProductionTasks(data)
   }
 
+  async function loadProductionDesigners() {
+    const response = await productionApi.fetchProductionDesigners(token)
+
+    if (!response.ok) {
+      return
+    }
+
+    const data = (await response.json()) as User[]
+    setProductionDesigners(data)
+  }
+
   function resetTaskForm() {
     setDraftTaskItems([])
     setTaskIsUrgent(false)
@@ -5950,6 +8054,8 @@ function App() {
     setSelectedTaskNovinkaOfferId('')
     setTaskQuantity('')
     setTaskNovinkaQuantity('')
+    setTaskDueAt('')
+    setTaskEditorKind('production')
     setEditingTaskId(null)
   }
 
@@ -5958,6 +8064,8 @@ function App() {
     setNovinkaProductName('')
     setNovinkaProductLink('')
     setTaskIsUrgent(false)
+    setTaskDueAt('')
+    setTaskEditorKind('novinka')
     setEditingTaskId(null)
     setTaskFormStatus('')
   }
@@ -5984,8 +8092,13 @@ function App() {
       return
     }
 
-    if (selectedNovinka.fileCount <= 0) {
-      setTaskFormStatus('У выбранной новинки нет файлов производства')
+    const selectedNovinkaPreviewCount = getProductionFilesForCatalogItem(
+      selectedNovinka,
+      productionFiles,
+    ).filter((file) => file.contentType.startsWith('image/')).length
+
+    if (selectedNovinkaPreviewCount <= 0) {
+      setTaskFormStatus('У выбранной новинки нет превью')
       return
     }
 
@@ -6067,8 +8180,8 @@ function App() {
       setProductionCatalogTab(shopRegion === 'rf' ? 'ozon' : kzMarketplace)
       setProductEditorStatus(
         shopRegion === 'rf'
-          ? `Тип изменён на Ozon: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`
-          : `Тип изменён на ${getKzMarketplaceLabel(kzMarketplace)}: ${result.productName} (${result.offerId}). Файлов сохранено: ${result.updatedFileCount}.`,
+          ? `Тип изменён на Ozon: ${result.productName} (${result.offerId}). Превью сохранено: ${result.updatedFileCount}.`
+          : `Тип изменён на ${getKzMarketplaceLabel(kzMarketplace)}: ${result.productName} (${result.offerId}). Превью сохранено: ${result.updatedFileCount}.`,
       )
     } finally {
       setProductEditorSaving(false)
@@ -6078,9 +8191,15 @@ function App() {
   function addDraftNovinkaItem() {
     const productName = novinkaProductName.trim()
     const productLink = novinkaProductLink.trim()
+    const quantity = Number(taskNovinkaQuantity)
 
-    if (!productName || !productLink) {
+    if (!productName) {
       setTaskFormStatus('Укажите наименование и ссылку на товар')
+      return
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setTaskFormStatus('Укажите количество товара')
       return
     }
 
@@ -6090,16 +8209,22 @@ function App() {
         tempId: createTempId(),
         productName,
         productLink,
+        requiredQuantity: quantity,
       },
     ])
     setNovinkaProductName('')
     setNovinkaProductLink('')
+    setTaskNovinkaQuantity('')
     setTaskFormStatus('')
     setTaskStatus('Новинка добавлена в задачу')
   }
 
   function getTaskFormProducts(mode: TaskFormMode = taskFormMode): OzonProduct[] {
     if (shopRegion === 'rf') {
+      if (mode === 'packaging') {
+        return ozonProducts.filter((product) => product.isPurchased === true)
+      }
+
       return ozonProducts
     }
 
@@ -6108,6 +8233,66 @@ function App() {
     }
 
     return kzProducts[kzTaskMarketplace] ?? []
+  }
+
+  function getTaskFormTaskType(): ProductionTaskType {
+    if (shopRegion === 'rf') {
+      if (taskFormMode === 'packaging') {
+        return 'Packaging'
+      }
+
+      return 'Ozon'
+    }
+
+    return isMarketplaceTaskFormMode(taskFormMode)
+      ? getKzTaskType(taskFormMode as KzMarketplace)
+      : getKzTaskType(kzTaskMarketplace)
+  }
+
+  function switchEditingTaskKind(nextKind: ProductionTaskEditorKind) {
+    if (!editingTaskId || !canChangeProductionTaskType() || nextKind === taskEditorKind) {
+      return
+    }
+
+    setTaskEditorKind(nextKind)
+    setTaskFormStatus('')
+
+    if (nextKind === 'novinka') {
+      setDraftNovinkaItems(
+        draftTaskItems.map((item) => ({
+          tempId: createTempId(),
+          productName: item.productName,
+          productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
+          offerId: item.offerId ?? '',
+          requiredQuantity: item.requiredQuantity,
+        })),
+      )
+      setShowCreateTaskModal(false)
+      setShowCreateNovinkaTaskModal(true)
+      return
+    }
+
+    setDraftTaskItems(
+      draftNovinkaItems.map((item) => ({
+        tempId: createTempId(),
+        ozonProductId: 0,
+        offerId: item.offerId ?? '',
+        productName: item.productName,
+        productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
+        imageUrl: '',
+        requiredQuantity: item.requiredQuantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+      })),
+    )
+    setSelectedTaskProductId('')
+    setSelectedTaskNovinkaOfferId('')
+    setTaskQuantity('')
+    setTaskNovinkaQuantity('')
+    setShowCreateNovinkaTaskModal(false)
+    setShowCreateTaskModal(true)
+    void loadProductionFiles('')
+    void loadSupplies()
   }
 
   function openCreateTaskModal() {
@@ -6135,6 +8320,17 @@ function App() {
     void loadSupplies()
   }
 
+  function openCreatePackagingTaskModal() {
+    resetTaskForm()
+    setTaskFormMode('packaging')
+    setTaskFormStatus('')
+    setShowCreateTaskModal(true)
+    if (ozonProducts.length === 0) {
+      void loadOzonProducts()
+    }
+    void loadSupplies()
+  }
+
   function closeTaskFormModal() {
     setShowCreateTaskModal(false)
     setTaskFormStatus('')
@@ -6147,8 +8343,10 @@ function App() {
     }
 
     setTaskIsUrgent(task.isUrgent)
+    setTaskDueAt(toDatetimeLocalValue(task.dueAt))
 
     if (isNovinkaTask(task)) {
+      setTaskEditorKind('novinka')
       setEditingTaskId(task.id)
       setNovinkaTaskMarketplace(
         resolveNovinkaMarketplaceForTask(task, productionFiles) ??
@@ -6160,12 +8358,14 @@ function App() {
           productName: item.productName,
           productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
           offerId: item.offerId ?? '',
+          requiredQuantity: item.requiredQuantity,
         })),
       )
       setShowCreateNovinkaTaskModal(true)
       return
     }
 
+    setTaskEditorKind('production')
     setEditingTaskId(task.id)
     const taskType = task.taskType ?? 'Ozon'
     if (shopRegion === 'kz' && isKzMarketplaceTaskType(taskType)) {
@@ -6195,6 +8395,94 @@ function App() {
     setSelectedTaskProductId('')
     setTaskQuantity('')
     setShowCreateTaskModal(true)
+    void loadSupplies()
+  }
+
+  function openProductionTaskFromCompletedNovinka(sourceTask: ProductionTask) {
+    const sourceItems = getProductionTaskItems(sourceTask)
+
+    if (sourceItems.length === 0) {
+      setTaskStatus('В задаче нет товаров для переноса в производство')
+      return
+    }
+
+    resetTaskForm()
+    setEditingTaskId(null)
+    setTaskFormMode(shopRegion === 'rf' ? 'ozon' : kzTaskMarketplace)
+    setDraftTaskItems(
+      sourceItems.map((item) => ({
+        tempId: createTempId(),
+        sourceTaskItemId: item.id,
+        ozonProductId: item.ozonProductId ?? 0,
+        offerId: item.offerId ?? '',
+        productName: item.productName,
+        productLink: stripNovinkaMarketplaceNote(item.productLink ?? ''),
+        imageUrl: '',
+        requiredQuantity: item.requiredQuantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+        productionSummary: item.productionSummary,
+      })),
+    )
+    setSelectedTaskProductId('')
+    setSelectedTaskNovinkaOfferId('')
+    setTaskQuantity('')
+    setTaskNovinkaQuantity('')
+    setTaskIsUrgent(false)
+    setTaskDueAt('')
+    setTaskFormStatus('Товары из новинки перенесены. Укажите количество по каждой позиции и нажмите "Создать".')
+    setShowCreateNovinkaTaskModal(false)
+    setProductionSubTab('tasks')
+    setShowCreateTaskModal(true)
+    void loadProductionFiles('')
+    void loadSupplies()
+  }
+
+  function openProductionTaskFromNovinkaItem(sourceTask: ProductionTask, sourceItem: ProductionTaskItem) {
+    if (!canCreateProductionTasks()) {
+      setTaskStatus('Нет доступа к созданию задачи производства')
+      return
+    }
+
+    const itemFiles = getProductionFilesForTaskItem(sourceItem, productionFiles).filter((file) =>
+      file.contentType.startsWith('image/'),
+    )
+    const itemPaths = getProductionPathsForTaskItem(sourceItem, productionFilePaths)
+
+    if (itemFiles.length === 0 || itemPaths.length === 0) {
+      setTaskStatus('Для переноса в производство нужен путь и превью товара')
+      return
+    }
+
+    resetTaskForm()
+    setEditingTaskId(null)
+    setTaskFormMode(shopRegion === 'rf' ? 'ozon' : kzTaskMarketplace)
+    setDraftTaskItems([
+      {
+        tempId: createTempId(),
+        sourceTaskItemId: sourceItem.id,
+        ozonProductId: sourceItem.ozonProductId ?? 0,
+        offerId: sourceItem.offerId ?? '',
+        productName: sourceItem.productName,
+        productLink: stripNovinkaMarketplaceNote(sourceItem.productLink ?? ''),
+        imageUrl: '',
+        requiredQuantity: sourceItem.requiredQuantity,
+        enforceMinimumQuantity: false,
+        isNovinka: true,
+        productionSummary: sourceItem.productionSummary,
+      },
+    ])
+    setSelectedTaskProductId('')
+    setSelectedTaskNovinkaOfferId('')
+    setTaskQuantity('')
+    setTaskNovinkaQuantity('')
+    setTaskIsUrgent(sourceTask.isUrgent)
+    setTaskDueAt('')
+    setTaskFormStatus('Товар перенесен из задачи дизайна. Укажите количество и создайте задачу производства.')
+    setShowCreateNovinkaTaskModal(false)
+    setProductionSubTab('tasks')
+    setShowCreateTaskModal(true)
+    void loadProductionFiles('')
     void loadSupplies()
   }
 
@@ -6236,19 +8524,31 @@ function App() {
 
     const productName = novinkaProductName.trim()
     const productLink = novinkaProductLink.trim()
-    if (productName && productLink) {
+    const quantity = Number(taskNovinkaQuantity)
+    if (productName) {
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setTaskFormStatus('Укажите количество товара')
+        return
+      }
+
       novinkaItems = [
         ...novinkaItems,
         {
           tempId: createTempId(),
           productName,
           productLink,
+          requiredQuantity: quantity,
         },
       ]
     }
 
     if (novinkaItems.length === 0) {
       setTaskFormStatus('Добавьте новинку или заполните наименование и ссылку')
+      return
+    }
+
+    if (novinkaItems.some((item) => !Number.isFinite(item.requiredQuantity) || item.requiredQuantity <= 0)) {
+      setTaskFormStatus('Укажите количество по каждой позиции')
       return
     }
 
@@ -6260,13 +8560,23 @@ function App() {
       offerId: item.offerId ?? '',
       productName: (item.productName ?? '').trim(),
       productLink: appendNovinkaMarketplaceNote(item.productLink ?? '', novinkaTaskMarketplace),
-      requiredQuantity: 0,
+      requiredQuantity: item.requiredQuantity,
       enforceMinimumQuantity: false,
     }))
 
     const payload = taskIdBeingEdited
-      ? { isUrgent: taskIsUrgent, items: itemPayload }
-      : { taskType: 'Novinka', isUrgent: taskIsUrgent, items: itemPayload }
+      ? {
+          taskType: 'Novinka',
+          isUrgent: taskIsUrgent,
+          ...(canManageProductionTaskDeadline() ? { dueAt: fromDatetimeLocalValue(taskDueAt) } : {}),
+          items: itemPayload,
+        }
+      : {
+          taskType: 'Novinka',
+          isUrgent: taskIsUrgent,
+          ...(canManageProductionTaskDeadline() ? { dueAt: fromDatetimeLocalValue(taskDueAt) } : {}),
+          items: itemPayload,
+        }
 
     try {
       const response = await productionApi.saveProductionTask(token, taskIdBeingEdited, payload)
@@ -6306,7 +8616,7 @@ function App() {
     const taskIdBeingEdited = editingTaskId
     let ozonItems = [...draftTaskItems]
 
-    const product = ozonProducts.find((item) => String(item.productId) === selectedTaskProductId)
+    const product = getTaskFormProducts().find((item) => String(item.productId) === selectedTaskProductId)
     const quantity = Number(taskQuantity)
     if (product && Number.isFinite(quantity) && quantity > 0) {
       ozonItems = [
@@ -6325,7 +8635,18 @@ function App() {
 
     const novinka = taskFormNovinkaCatalogItems.find((item) => item.offerId === selectedTaskNovinkaOfferId)
     const novinkaQuantity = Number(taskNovinkaQuantity)
-    if (novinka && Number.isFinite(novinkaQuantity) && novinkaQuantity > 0 && novinka.fileCount > 0) {
+    const novinkaPreviewCount = novinka
+      ? getProductionFilesForCatalogItem(novinka, productionFiles).filter((file) =>
+          file.contentType.startsWith('image/'),
+        ).length
+      : 0
+    if (
+      taskFormMode !== 'packaging' &&
+      novinka &&
+      Number.isFinite(novinkaQuantity) &&
+      novinkaQuantity > 0 &&
+      novinkaPreviewCount > 0
+    ) {
       ozonItems = [
         ...ozonItems,
         {
@@ -6364,13 +8685,9 @@ function App() {
     setTaskFormStatus('')
 
     const payload = {
-      taskType:
-        shopRegion === 'rf'
-          ? 'Ozon'
-          : isMarketplaceTaskFormMode(taskFormMode)
-            ? getKzTaskType(taskFormMode as KzMarketplace)
-            : getKzTaskType(kzTaskMarketplace),
+      taskType: getTaskFormTaskType(),
       isUrgent: taskIsUrgent,
+      ...(canManageProductionTaskDeadline() ? { dueAt: fromDatetimeLocalValue(taskDueAt) } : {}),
       items: normalizedOzonItems.map((item) => ({
         ozonProductId: item.ozonProductId ?? 0,
         offerId: item.offerId,
@@ -6378,6 +8695,7 @@ function App() {
         productLink: item.productLink,
         requiredQuantity: item.requiredQuantity,
         enforceMinimumQuantity: item.enforceMinimumQuantity ?? false,
+        sourceTaskItemId: item.sourceTaskItemId,
       })),
     }
 
@@ -6453,13 +8771,16 @@ function App() {
 
     if (task && isNovinkaTask(task)) {
       const missingFiles = taskItems.filter(
-        (item) => getProductionFilesForTaskItem(item, productionFiles).length === 0,
+        (item) =>
+          getProductionFilesForTaskItem(item, productionFiles).filter((file) =>
+            file.contentType.startsWith('image/'),
+          ).length === 0,
       )
       const missingPaths = taskItems.filter(
-        (item) => getProductionPathsForTaskItem(item, productionFilePaths).length === 0,
+        (item) => !item.filePath?.trim() && getProductionPathsForTaskItem(item, productionFilePaths).length === 0,
       )
       if (missingFiles.length > 0) {
-        setTaskStatus(`Добавьте файлы: ${missingFiles.map((item) => item.productName).join(', ')}`)
+        setTaskStatus(`Добавьте превью: ${missingFiles.map((item) => item.productName).join(', ')}`)
         return
       }
       if (missingPaths.length > 0) {
@@ -6626,6 +8947,254 @@ function App() {
     setSupplyAnalytics(data)
   }
 
+  async function loadOzonSupplyShipments() {
+    const response = await fetch('/api/ozon/supply-shipments', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSupplyStatus('Не удалось загрузить отгрузки FBO Ozon')
+      return
+    }
+
+    const data: OzonSupplyShipmentQuantity[] = await response.json()
+    setOzonSupplyShipments(data)
+  }
+
+  async function loadSupplyFboDefects() {
+    const response = await fetch('/api/supplies/fbo-defects', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      return
+    }
+
+    const data: SupplyFboDefect[] = await response.json()
+    setSupplyFboDefects(data)
+  }
+
+  async function loadSupplyExpenses() {
+    const params = new URLSearchParams()
+    const search = supplyExpenseSearch.trim()
+    if (search) {
+      params.set('search', search)
+    }
+    if (supplyExpenseDateFrom) {
+      params.set('from', supplyExpenseDateFrom)
+    }
+    if (supplyExpenseDateTo) {
+      params.set('to', supplyExpenseDateTo)
+    }
+
+    const response = await fetch(`/api/supplies/expenses?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось загрузить расходники')
+      return
+    }
+
+    const data: SupplyExpensesResponse = await response.json()
+    setSupplyExpenses(data.items)
+    setSupplyExpensesTotal(data.totalAmount)
+  }
+
+  async function loadInternalSupplyExpenses() {
+    const params = new URLSearchParams()
+    if (analyticsDateFrom) {
+      params.set('from', analyticsDateFrom)
+    }
+    if (analyticsDateTo) {
+      params.set('to', analyticsDateTo)
+    }
+
+    const response = await fetch(`/api/supplies/expenses?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setInternalSupplyExpenses([])
+      setInternalSupplyExpensesTotal(0)
+      return
+    }
+
+    const data: SupplyExpensesResponse = await response.json()
+    setInternalSupplyExpenses(data.items)
+    setInternalSupplyExpensesTotal(data.totalAmount)
+  }
+
+  async function createSupplyExpense() {
+    const name = supplyExpenseName.trim()
+    const amount = parseMoneyInput(supplyExpenseAmount)
+
+    if (!name) {
+      setSupplyStatus('Укажите что купили')
+      return
+    }
+
+    if (amount === null) {
+      setSupplyStatus('Укажите сумму покупки больше 0')
+      return
+    }
+
+    if (!supplyExpenseDate) {
+      setSupplyStatus('Укажите дату покупки')
+      return
+    }
+
+    const response = await fetch('/api/supplies/expenses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        name,
+        amount,
+        purchasedAt: `${supplyExpenseDate}T12:00:00.000Z`,
+      }),
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось добавить расходник')
+      return
+    }
+
+    setSupplyExpenseName('')
+    setSupplyExpenseAmount('')
+    setSupplyStatus('Расходник добавлен')
+    await loadSupplyExpenses()
+  }
+
+  async function updateSupplyExpense(row: SupplyExpense, amountValue: string, purchasedAtValue: string) {
+    const amount = parseMoneyInput(amountValue)
+    if (amount === null) {
+      setSupplyStatus('Укажите сумму покупки больше 0')
+      return
+    }
+
+    if (!purchasedAtValue) {
+      setSupplyStatus('Укажите дату покупки')
+      return
+    }
+
+    const response = await fetch(`/api/supplies/expenses/${row.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        amount,
+        purchasedAt: `${purchasedAtValue}T12:00:00.000Z`,
+      }),
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось сохранить расходник')
+      return
+    }
+
+    setSupplyStatus('Расходник сохранен')
+    await loadSupplyExpenses()
+    await loadInternalSupplyExpenses()
+  }
+
+  async function deleteSupplyExpense(row: SupplyExpense) {
+    const confirmed = window.confirm(`Удалить расходник "${row.name}"?`)
+    if (!confirmed) {
+      return
+    }
+
+    const response = await fetch(`/api/supplies/expenses/${row.id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось удалить расходник')
+      return
+    }
+
+    setSupplyStatus('Расходник удален')
+    await loadSupplyExpenses()
+    await loadInternalSupplyExpenses()
+  }
+
+  async function markSupplyFboDefect(row: SupplyFboRemainingItem) {
+    const quantityInput = window.prompt(
+      `Сколько штук пометить как брак?\n\n${row.productName}`,
+      String(row.remainingQuantity),
+    )
+    if (quantityInput === null) {
+      return
+    }
+
+    const quantity = Math.floor(Number(quantityInput.replace(',', '.')))
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setSupplyStatus('Укажите количество брака больше 0')
+      return
+    }
+
+    const response = await fetch('/api/supplies/fbo-defects', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        productKey: row.key,
+        offerId: row.offerId,
+        productName: row.productName,
+        quantity,
+      }),
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось отметить товар как брак')
+      return
+    }
+
+    setSupplyStatus('Товар отмечен как брак и убран из остатка к отгрузке')
+    await loadSupplyFboDefects()
+  }
+
+  async function removeSupplyFboDefect(defect: SupplyFboDefect) {
+    const confirmed = window.confirm(
+      `Вернуть товар в остаток к отгрузке?\n\n${defect.productName}\nКоличество брака: ${defect.quantity}`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    const response = await fetch(`/api/supplies/fbo-defects/${encodeURIComponent(defect.productKey)}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось вернуть товар в остаток к отгрузке')
+      return
+    }
+
+    setSupplyStatus('Товар возвращен в остаток к отгрузке')
+    await loadSupplyFboDefects()
+  }
+
   function addSupplyProduct() {
     const product = ozonProducts.find((item) => String(item.productId) === supplyProductId)
     const quantity = Number(supplyQuantity)
@@ -6645,6 +9214,7 @@ function App() {
         imageUrl: product.imageUrl,
         quantity,
         isReserve: false,
+        itemKind: 'Product',
       },
     ])
     setSupplyProductId('')
@@ -6653,11 +9223,11 @@ function App() {
   }
 
   function addReserveSupplyProduct() {
-    const quantity = Number(reserveQuantity)
-    const selectedNovinka = supplyNovinkaCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const selectedNovinka = supplyPackedCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const quantity = Number(reserveQuantity || selectedNovinka?.packedQuantity || '')
 
     if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Выберите новинку из списка и укажите количество')
+      setSupplyStatus('Выберите упакованный товар из списка и укажите количество')
       return
     }
 
@@ -6669,11 +9239,37 @@ function App() {
         productName: selectedNovinka.productName,
         quantity,
         isReserve: true,
+        itemKind: 'Product',
       },
     ])
     setSelectedNovinkaOfferId('')
     setReserveQuantity('')
-    setSupplyStatus('Новинка добавлена в поставку')
+    setSupplyStatus('Упакованный товар добавлен в поставку')
+  }
+
+  function addSupplyMaterialItem() {
+    const productName = supplyMaterialName.trim()
+    const quantity = Number(supplyMaterialQuantity)
+
+    if (!productName || !Number.isFinite(quantity) || quantity <= 0) {
+      setSupplyStatus('Укажите название и количество расходника или мат. ценности')
+      return
+    }
+
+    setDraftSupplyItems((current) => [
+      ...current,
+      {
+        tempId: createTempId(),
+        offerId: '',
+        productName,
+        quantity,
+        isReserve: true,
+        itemKind: supplyMaterialKind,
+      },
+    ])
+    setSupplyMaterialName('')
+    setSupplyMaterialQuantity('')
+    setSupplyStatus('Позиция добавлена в поставку')
   }
 
   async function createSupply() {
@@ -6761,7 +9357,7 @@ function App() {
     await loadSupplyAnalytics()
   }
 
-  async function updateSupplyDates(id: string, sentAt?: string, acceptedAt?: string) {
+  async function updateSupplyDates(id: string, sentAt?: string, acceptedAt?: string, shippingCost?: number | null) {
     const response = await fetch(`/api/supplies/${id}/dates`, {
       method: 'PATCH',
       headers: {
@@ -6771,6 +9367,7 @@ function App() {
       body: JSON.stringify({
         sentAt: sentAt ?? null,
         acceptedAt: acceptedAt ?? null,
+        shippingCost: shippingCost ?? null,
       }),
     })
 
@@ -6787,27 +9384,32 @@ function App() {
     return true
   }
 
-  async function updateSupplyStatus(id: string, status: SupplyStatus) {
-    if (
-      status === 'Sent' &&
-      !window.confirm('Подтвердите отправку поставки. После этого обычный пользователь уже не сможет ее редактировать.')
-    ) {
-      return
-    }
-
+  async function updateSupplyStatus(id: string, status: SupplyStatus, shippingCost?: number | null) {
     const response = await fetch(`/api/supplies/${id}/status`, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, shippingCost: shippingCost ?? null }),
     })
 
     if (!response.ok) {
-      const message = await response.text()
+      const rawMessage = await response.text()
+      let message = rawMessage
+      try {
+        message = JSON.parse(rawMessage)
+      } catch {
+        message = rawMessage
+      }
+      if (status === 'Sent' && message.includes('сумму отправки')) {
+        const supply = supplies.find((item) => item.id === id)
+        if (supply) {
+          openShippingCostModal(supply)
+        }
+      }
       setSupplyStatus(message || 'Не удалось сохранить статус поставки')
-      return
+      return false
     }
 
     setSupplyStatus('Статус поставки сохранен')
@@ -6815,6 +9417,32 @@ function App() {
     if (user?.role === 'Admin') {
       await loadSupplyAnalytics()
     }
+    return true
+  }
+
+  function openShippingCostModal(supply: Supply) {
+    setShippingCostModalSupply(supply)
+    setShippingCostDraft(supply.shippingCost ? String(supply.shippingCost) : '')
+    setSupplyStatus('')
+  }
+
+  async function confirmSupplySent() {
+    if (!shippingCostModalSupply) {
+      return
+    }
+
+    const shippingCost = parseMoneyInput(shippingCostDraft)
+    if (!shippingCost) {
+      setSupplyStatus('Укажите сумму отправки поставки')
+      return
+    }
+
+    const saved = await updateSupplyStatus(shippingCostModalSupply.id, 'Sent', shippingCost)
+    if (!saved) {
+      return
+    }
+    setShippingCostModalSupply(null)
+    setShippingCostDraft('')
   }
 
   async function replaceReserveItem(itemId: string) {
@@ -6865,15 +9493,21 @@ function App() {
           productName: item.productName,
           quantity: item.quantity,
           isReserve: item.isReserve,
+          itemKind: item.itemKind ?? 'Product',
         }),
         quantity: item.quantity,
         isReserve: item.isReserve,
+        itemKind: item.itemKind ?? 'Product',
       })),
     )
     setEditSupplyProductId('')
     setEditSupplyQuantity('')
+    setEditSupplyShippingCost(supply.shippingCost ? String(supply.shippingCost) : '')
     setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
+    setEditSupplyMaterialName('')
+    setEditSupplyMaterialQuantity('')
+    setEditSupplyMaterialKind('Consumable')
   }
 
   function cancelEditSupply() {
@@ -6881,8 +9515,12 @@ function App() {
     setEditSupplyItems([])
     setEditSupplyProductId('')
     setEditSupplyQuantity('')
+    setEditSupplyShippingCost('')
     setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
+    setEditSupplyMaterialName('')
+    setEditSupplyMaterialQuantity('')
+    setEditSupplyMaterialKind('Consumable')
   }
 
   function addEditSupplyProduct() {
@@ -6904,6 +9542,7 @@ function App() {
         imageUrl: product.imageUrl,
         quantity,
         isReserve: false,
+        itemKind: 'Product',
       },
     ])
     setEditSupplyProductId('')
@@ -6911,11 +9550,11 @@ function App() {
   }
 
   function addEditReserveSupplyProduct() {
-    const quantity = Number(editReserveQuantity)
-    const selectedNovinka = supplyNovinkaCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const selectedNovinka = supplyPackedCatalogItems.find((item) => item.offerId === selectedNovinkaOfferId)
+    const quantity = Number(editReserveQuantity || selectedNovinka?.packedQuantity || '')
 
     if (!selectedNovinka || !Number.isFinite(quantity) || quantity <= 0) {
-      setSupplyStatus('Выберите новинку из списка и укажите количество')
+      setSupplyStatus('Выберите упакованный товар из списка и укажите количество')
       return
     }
 
@@ -6927,10 +9566,36 @@ function App() {
         productName: selectedNovinka.productName,
         quantity,
         isReserve: true,
+        itemKind: 'Product',
       },
     ])
     setSelectedNovinkaOfferId('')
     setEditReserveQuantity('')
+  }
+
+  function addEditSupplyMaterialItem() {
+    const productName = editSupplyMaterialName.trim()
+    const quantity = Number(editSupplyMaterialQuantity)
+
+    if (!productName || !Number.isFinite(quantity) || quantity <= 0) {
+      setSupplyStatus('Укажите название и количество расходника или мат. ценности')
+      return
+    }
+
+    setEditSupplyItems((current) => [
+      ...current,
+      {
+        tempId: createTempId(),
+        offerId: '',
+        productName,
+        quantity,
+        isReserve: true,
+        itemKind: editSupplyMaterialKind,
+      },
+    ])
+    setEditSupplyMaterialName('')
+    setEditSupplyMaterialQuantity('')
+    setSupplyStatus('Позиция добавлена в поставку')
   }
 
   async function saveSupplyEdit(id: string) {
@@ -6947,6 +9612,7 @@ function App() {
       },
       body: JSON.stringify({
         items: editSupplyItems.map(({ tempId: _tempId, id: _id, ...item }) => item),
+        shippingCost: parseMoneyInput(editSupplyShippingCost),
       }),
     })
 
@@ -7292,7 +9958,7 @@ function App() {
                           handleKzMarketplaceChange(marketplace)
                           openTab('analytics', { analytics: subTab })
                         }}
-                        onRefresh={() => void loadHomeKzAnalytics(marketplace)}
+                        onRefresh={() => void loadHomeKzAnalytics(marketplace, true)}
                       />
                     ))}
                   </div>
@@ -7429,6 +10095,54 @@ function App() {
                 </div>
               )}
 
+              {transferDesignerItem && (
+                <div className="modal-backdrop" role="presentation">
+                  <div className="modal-card transfer-designer-modal" role="dialog" aria-modal="true">
+                    <div className="modal-title-row">
+                      <h3>Передать товар дизайнеру</h3>
+                      <button type="button" onClick={closeTransferDesignerItemModal}>
+                        Закрыть
+                      </button>
+                    </div>
+                    <div className="transfer-designer-product">
+                      <span>Товар</span>
+                      <strong>{transferDesignerItem.item.productName}</strong>
+                    </div>
+                    <label className="field-label transfer-designer-field">
+                      <span>Дизайнер</span>
+                      <select
+                        value={transferDesignerUserId}
+                        onChange={(event) => setTransferDesignerUserId(event.target.value)}
+                      >
+                        <option value="" disabled>
+                          Выберите дизайнера
+                        </option>
+                        {designerTransferUsers.map((item) => (
+                          <option value={item.id} key={item.id}>
+                            {item.displayName || item.userName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {designerTransferUsers.length === 0 && (
+                      <p className="form-status form-status-error">Нет доступных дизайнеров для передачи.</p>
+                    )}
+                    <div className="transfer-designer-actions">
+                      <button type="button" className="secondary" onClick={closeTransferDesignerItemModal}>
+                        Отмена
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!transferDesignerUserId}
+                        onClick={() => void transferDesignerTaskItem()}
+                      >
+                        Передать
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="inner-tabs">
                 <button
                   type="button"
@@ -7486,6 +10200,14 @@ function App() {
                   Выполненные
                   {renderTabBadge(unseenCompletedProductionTasks.length)}
                 </button>
+                <button
+                  type="button"
+                  className={productionSubTab === 'readyToShip' ? 'active' : ''}
+                  onClick={() => setProductionSubTab('readyToShip')}
+                  hidden={!hasFeature('production.readyToShip') && !hasFeature('production.completed')}
+                >
+                  Готовые к отгрузке
+                </button>
               </div>
 
               {productionSubTab !== 'products' && (
@@ -7520,7 +10242,7 @@ function App() {
                   />
                   {canCreateProductionTasks() && productionSubTab === 'tasks' && (
                     <button type="button" className="production-novinka-create-btn" onClick={openCreateNovinkaTaskModal}>
-                      Новинка
+                      Задача дизайн
                     </button>
                   )}
                 </div>
@@ -7655,7 +10377,7 @@ function App() {
                     </h2>
                     <p>
                       {activeNovinkaCatalogMarketplace !== null
-                        ? `Новинки ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с файлами · ${filteredProductionCatalog.length}`
+                        ? `Новинки ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с превью · ${filteredProductionCatalog.length}`
                         : shopRegion === 'rf'
                           ? `Все товары Ozon · ${filteredProductionCatalog.length}`
                           : `Все товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} · ${filteredProductionCatalog.length}`}
@@ -7666,7 +10388,7 @@ function App() {
                     <div className="table-row production-product-row table-head">
                       <span>Товар</span>
                       <span>{isMarketplaceProductionCatalogTab ? 'Артикул' : 'Ссылка'}</span>
-                      <span>Файлы</span>
+                      <span>Превью</span>
                       <span>Пути к файлу</span>
                       <span>Действия</span>
                     </div>
@@ -7720,7 +10442,7 @@ function App() {
                                   className="production-files-trigger"
                                   onClick={() => openProductionFilesModal(item.productName, itemFiles)}
                                 >
-                                  Файлы ({itemFiles.length})
+                                  Превью ({itemFiles.length})
                                 </button>
                               ) : (
                                 '—'
@@ -7754,8 +10476,8 @@ function App() {
                               ? 'Товары Ozon пока не загружены.'
                               : `Товары ${getKzMarketplaceLabel(productionCatalogTab as KzMarketplace)} пока не загружены.`
                             : activeNovinkaCatalogMarketplace !== null
-                              ? `Пока нет новинок ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с файлами для производства.`
-                              : 'Пока нет новинок с файлами для производства.'}
+                              ? `Пока нет новинок ${getNovinkaMarketplaceLabel(activeNovinkaCatalogMarketplace)} с превью.`
+                              : 'Пока нет новинок с превью.'}
                         </strong>
                       </div>
                     )}
@@ -7775,12 +10497,17 @@ function App() {
                           className="production-novinka-create-btn"
                           onClick={openCreateNovinkaTaskModal}
                         >
-                          Новинка
+                          Задача дизайн
                         </button>
                       )}
                       <button type="button" onClick={openCreateTaskModal}>
-                        Создать задачу
+                        Задача производство
                       </button>
+                      {shopRegion === 'rf' && (
+                        <button type="button" onClick={openCreatePackagingTaskModal}>
+                          Задача упаковка
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -7788,11 +10515,36 @@ function App() {
                     <div className="modal-backdrop" role="presentation">
                       <div className="modal-card modal-card-wide" role="dialog" aria-modal="true">
                         <div className="modal-title-row">
-                          <h3>{editingTaskId ? 'Редактировать задачу' : 'Создать задачу'}</h3>
+                          <h3>
+                            {editingTaskId
+                              ? 'Редактировать задачу'
+                              : taskFormMode === 'packaging'
+                                ? 'Создать задачу упаковки'
+                                : 'Создать задачу'}
+                          </h3>
                           <button type="button" onClick={closeTaskFormModal}>
                             Закрыть
                           </button>
                         </div>
+
+                        {editingTaskId && canChangeProductionTaskType() && (
+                          <div className="task-type-switcher" aria-label="Сменить тип задачи">
+                            <button
+                              type="button"
+                              className={taskEditorKind === 'production' ? 'active' : ''}
+                              onClick={() => switchEditingTaskKind('production')}
+                            >
+                              Производство
+                            </button>
+                            <button
+                              type="button"
+                              className={taskEditorKind === 'novinka' ? 'active' : ''}
+                              onClick={() => switchEditingTaskKind('novinka')}
+                            >
+                              Дизайн
+                            </button>
+                          </div>
+                        )}
 
                         {!editingTaskId && shopRegion === 'kz' && (
                           <div className="task-form-mode-tabs">
@@ -7817,7 +10569,9 @@ function App() {
                               <div className="supply-form-block supply-form-block-ozon">
                                 <strong>
                                   {shopRegion === 'rf'
-                                    ? 'Товар из Ozon'
+                                    ? taskFormMode === 'packaging'
+                                      ? 'Закупной товар'
+                                      : 'Товар из Ozon'
                                     : `Товар из ${getKzMarketplaceLabel(
                                         taskFormMode === 'kaspi' ||
                                           taskFormMode === 'satu' ||
@@ -7860,18 +10614,23 @@ function App() {
                                       </div>
                                     ) : (
                                       <div className="task-form-modal-preview task-form-modal-preview-empty">
-                                        <span>Выберите товар для превью</span>
+                                        <span>
+                                          {taskFormMode === 'packaging'
+                                            ? 'Выберите закупной товар для превью'
+                                            : 'Выберите товар для превью'}
+                                        </span>
                                       </div>
                                     )
                                   })()}
                                   <div className="task-form-modal-actions">
                                     <input
                                       className="task-quantity-input task-form-modal-qty"
-                                      type="number"
-                                      min="1"
+                                      type="text"
+                                      inputMode="numeric"
+                                      pattern="[0-9]*"
                                       placeholder="Кол-во"
                                       value={taskQuantity}
-                                      onChange={(event) => setTaskQuantity(event.target.value)}
+                                      onChange={(event) => setTaskQuantity(event.target.value.replace(/\D/g, ''))}
                                     />
                                     <button type="button" className="task-form-modal-btn" onClick={addDraftTaskItem}>
                                       Добавить
@@ -7880,6 +10639,7 @@ function App() {
                                 </div>
                               </div>
 
+                              {taskFormMode !== 'packaging' && (
                               <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
                                 <strong>
                                   Новинки из каталога ·{' '}
@@ -7928,11 +10688,12 @@ function App() {
                                   <div className="task-form-modal-actions">
                                     <input
                                       className="task-quantity-input task-form-modal-qty"
-                                      type="number"
-                                      min="1"
+                                      type="text"
+                                      inputMode="numeric"
+                                      pattern="[0-9]*"
                                       placeholder="Кол-во"
                                       value={taskNovinkaQuantity}
-                                      onChange={(event) => setTaskNovinkaQuantity(event.target.value)}
+                                      onChange={(event) => setTaskNovinkaQuantity(event.target.value.replace(/\D/g, ''))}
                                     />
                                     <button
                                       type="button"
@@ -7944,6 +10705,7 @@ function App() {
                                   </div>
                                 </div>
                               </div>
+                              )}
                             </div>
                         </div>
 
@@ -7962,11 +10724,41 @@ function App() {
                               : formatProductSupplyHint(
                                   getProductSupplySummary(item.ozonProductId, item.offerId, supplies),
                                 )
+                            const draftCatalogItem: ProductionCatalogItem = {
+                              offerId: item.offerId,
+                              ozonProductId: item.ozonProductId || undefined,
+                              productName: item.productName,
+                              productLink: item.productLink ?? '',
+                              fileCount: 0,
+                            }
+                            const draftPreviewFile = item.isNovinka
+                              ? getProductionFilesForCatalogItem(draftCatalogItem, productionFiles).find((file) =>
+                                  file.contentType.startsWith('image/'),
+                                )
+                              : undefined
+                            const draftPaths = item.isNovinka
+                              ? getProductionPathsForCatalogItem(draftCatalogItem, productionFilePaths)
+                              : []
+                            const productionSummaryParts = item.productionSummary
+                              ? [
+                                  item.productionSummary.inProgressQuantity > 0
+                                    ? `в работе ${item.productionSummary.inProgressQuantity} шт.`
+                                    : '',
+                                  item.productionSummary.createdQuantity > 0
+                                    ? `в созданных ${item.productionSummary.createdQuantity} шт.`
+                                    : '',
+                                  item.productionSummary.completedQuantity > 0
+                                    ? `в выполненных ${item.productionSummary.completedQuantity} шт.`
+                                    : '',
+                                ].filter(Boolean)
+                              : []
 
                             return (
                             <div className="table-row task-draft-row" key={item.tempId}>
                               <span className="product-mini task-draft-product-mini">
-                                {item.isNovinka && item.productLink ? (
+                                {draftPreviewFile ? (
+                                  <ProductionFileThumb file={draftPreviewFile} token={token} name={item.productName} />
+                                ) : item.isNovinka && item.productLink ? (
                                   <LinkHoverPreview
                                     url={item.productLink}
                                     name={item.productName}
@@ -7979,28 +10771,23 @@ function App() {
                                   <strong>{item.productName}</strong>
                                   {item.isNovinka && (
                                     <>
-                                      <small className="task-product-supply-hint-inline">Новинка · файлы на товаре</small>
-                                      {(() => {
-                                        const catalogItem: ProductionCatalogItem = {
-                                          offerId: item.offerId,
-                                          ozonProductId: item.ozonProductId || undefined,
-                                          productName: item.productName,
-                                          productLink: item.productLink ?? '',
-                                          fileCount: 0,
-                                        }
-                                        const draftPaths = getProductionPathsForCatalogItem(catalogItem, productionFilePaths)
-                                        return (
-                                          <div className="task-draft-catalog-assets">
-                                            {draftPaths.length > 0 && (
-                                              <ProductionPathsPanel paths={draftPaths} showCopy />
-                                            )}
-                                          </div>
-                                        )
-                                      })()}
+                                      <small className="task-product-supply-hint-inline">
+                                        Новинка · {draftPreviewFile ? 'превью есть' : 'превью не найдено'}
+                                      </small>
+                                      <div className="task-draft-catalog-assets">
+                                        {draftPaths.length > 0 && (
+                                          <CompactProductionPathsPanel paths={draftPaths} />
+                                        )}
+                                      </div>
                                     </>
                                   )}
                                   {draftSupplyHint && (
                                     <small className="task-product-supply-hint-inline">{draftSupplyHint}</small>
+                                  )}
+                                  {productionSummaryParts.length > 0 && (
+                                    <small className="production-item-summary-hint">
+                                      Уже в производстве: {productionSummaryParts.join(' · ')}
+                                    </small>
                                   )}
                                 </span>
                               </span>
@@ -8008,21 +10795,24 @@ function App() {
                               <span>
                                 <input
                                   className="task-quantity-input"
-                                  type="number"
-                                  min="1"
-                                  value={item.requiredQuantity}
-                                  onChange={(event) =>
+                                  type="text"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  placeholder="0"
+                                  value={item.requiredQuantity > 0 ? String(item.requiredQuantity) : ''}
+                                  onChange={(event) => {
+                                    const nextValue = event.target.value.replace(/\D/g, '')
                                     setDraftTaskItems((current) =>
                                       current.map((entry) =>
                                         entry.tempId === item.tempId
                                           ? {
                                               ...entry,
-                                              requiredQuantity: Number(event.target.value) || 0,
+                                              requiredQuantity: Number(nextValue) || 0,
                                             }
                                           : entry,
                                       ),
                                     )
-                                  }
+                                  }}
                                 />
                               </span>
                               <span>
@@ -8069,6 +10859,16 @@ function App() {
 
                         <div className="supply-actions task-form-modal-footer">
                           {taskFormStatus && <p className="modal-status">{taskFormStatus}</p>}
+                          {canManageProductionTaskDeadline() && (
+                            <label className="task-deadline-field">
+                              <span>Выполнить до</span>
+                              <input
+                                type="datetime-local"
+                                value={taskDueAt}
+                                onChange={(event) => setTaskDueAt(event.target.value)}
+                              />
+                            </label>
+                          )}
                           <button
                             type="button"
                             disabled={taskFormSaving}
@@ -8099,6 +10899,25 @@ function App() {
                           </button>
                         </div>
 
+                        {editingTaskId && canChangeProductionTaskType() && (
+                          <div className="task-type-switcher" aria-label="Сменить тип задачи">
+                            <button
+                              type="button"
+                              className={taskEditorKind === 'production' ? 'active' : ''}
+                              onClick={() => switchEditingTaskKind('production')}
+                            >
+                              Производство
+                            </button>
+                            <button
+                              type="button"
+                              className={taskEditorKind === 'novinka' ? 'active' : ''}
+                              onClick={() => switchEditingTaskKind('novinka')}
+                            >
+                              Дизайн
+                            </button>
+                          </div>
+                        )}
+
                         {shopRegion === 'kz' && (
                           <div className="task-form-mode-tabs novinka-task-marketplace-tabs">
                             {(['kaspi', 'satu', 'halyk'] as const).map((marketplace) => (
@@ -8122,8 +10941,7 @@ function App() {
                                 : `Новая новинка · ${getNovinkaMarketplaceLabel(novinkaTaskMarketplace)}`}
                             </strong>
                             <span className="product-type-editor-hint">
-                              Укажите наименование и ссылку на товар. Превью и файлы производства появятся после
-                              загрузки макетов при выполнении задачи.
+                              Укажите наименование и ссылку на товар. Превью появится после загрузки изображения при выполнении задачи.
                             </span>
                             <div className="novinka-task-fields">
                               <label className="novinka-task-field">
@@ -8144,6 +10962,17 @@ function App() {
                                   onChange={(event) => setNovinkaProductLink(event.target.value)}
                                 />
                               </label>
+                              <label className="novinka-task-field">
+                                <span>Количество</span>
+                                <input
+                                  className="novinka-task-input"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  placeholder="Кол-во"
+                                  value={taskNovinkaQuantity}
+                                  onChange={(event) => setTaskNovinkaQuantity(event.target.value.replace(/\D/g, ''))}
+                                />
+                              </label>
                             </div>
                             <div className="novinka-task-compose-actions">
                               <button type="button" className="task-form-modal-btn novinka-add-btn" onClick={addDraftNovinkaItem}>
@@ -8157,6 +10986,7 @@ function App() {
                           <div className="table-row task-draft-row novinka-draft-row table-head">
                             <span>Товар</span>
                             <span>Ссылка</span>
+                            <span>Количество</span>
                             <span></span>
                           </div>
                           {draftNovinkaItems.map((item) => (
@@ -8177,6 +11007,25 @@ function App() {
                               </span>
                               <span>
                                 <NovinkaExternalLinkButton url={item.productLink} />
+                              </span>
+                              <span>
+                                <input
+                                  className="task-draft-quantity-input"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  placeholder="Кол-во"
+                                  value={item.requiredQuantity > 0 ? String(item.requiredQuantity) : ''}
+                                  onChange={(event) => {
+                                    const nextValue = event.target.value.replace(/\D/g, '')
+                                    setDraftNovinkaItems((current) =>
+                                      current.map((entry) =>
+                                        entry.tempId === item.tempId
+                                          ? { ...entry, requiredQuantity: Number(nextValue) || 0 }
+                                          : entry,
+                                      ),
+                                    )
+                                  }}
+                                />
                               </span>
                               <span>
                                 <button
@@ -8202,6 +11051,16 @@ function App() {
 
                         <div className="supply-actions task-form-modal-footer">
                           {taskFormStatus && <p className="modal-status">{taskFormStatus}</p>}
+                          {canManageProductionTaskDeadline() && (
+                            <label className="task-deadline-field">
+                              <span>Выполнить до</span>
+                              <input
+                                type="datetime-local"
+                                value={taskDueAt}
+                                onChange={(event) => setTaskDueAt(event.target.value)}
+                              />
+                            </label>
+                          )}
                           <button
                             type="button"
                             disabled={taskFormSaving}
@@ -8232,41 +11091,87 @@ function App() {
                     actualQuantities={actualQuantities}
                     setActualQuantities={setActualQuantities}
                     currentUserId={user?.id}
+                    currentUserName={user?.displayName || user?.userName}
+                    currentUserAliases={currentUserAliases}
                     isAdmin={user?.role === 'Admin'}
                     canCancelTasks={canCancelProductionTasks()}
+                    canManageTaskDeadline={canManageProductionTaskDeadline()}
                     onStart={startProductionTask}
                     onCancelRequest={setCancelTaskId}
                     onComplete={completeProductionTask}
                     onOpenFiles={openProductionFilesModal}
                     onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                     onEdit={canEditProductionTasks() ? openEditTaskModal : undefined}
                   />
                 </>
               )}
 
               {productionSubTab === 'inProgress' && (
-                <ProductionTaskTable
-                  tasks={inProgressProductionTasks}
-                  tableContext={roleTaskTableContext}
-                  products={productionLookupProducts}
-                  productionFiles={productionFiles}
-                  productionFilePaths={productionFilePaths}
-                  token={token}
-                  actualQuantities={actualQuantities}
-                  setActualQuantities={setActualQuantities}
-                  currentUserId={user?.id}
-                  isAdmin={user?.role === 'Admin'}
-                  canCancelTasks={canCancelProductionTasks()}
-                  onStart={startProductionTask}
-                  onCancelRequest={setCancelTaskId}
-                  onComplete={completeProductionTask}
-                  onOpenFiles={openProductionFilesModal}
-                  onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                  onSaveTaskItemFilePath={saveProductionTaskItemFilePath}
-                  onSaveTaskItemActualQuantity={saveProductionTaskItemActualQuantity}
-                  onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
-                />
+                <>
+                  <div className="subtabs-placeholder production-task-list-filters">
+                    <label>
+                      <span>Исполнитель</span>
+                      <select
+                        value={productionTaskAssigneeFilter}
+                        onChange={(event) => setProductionTaskAssigneeFilter(event.target.value)}
+                      >
+                        <option value="">Все</option>
+                        {productionTaskFilterAssignees.map((assignee) => (
+                          <option key={assignee} value={assignee}>
+                            {assignee}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Тип</span>
+                      <select
+                        value={productionTaskTypeFilter}
+                        onChange={(event) =>
+                          setProductionTaskTypeFilter(event.target.value as 'all' | 'design' | 'production')
+                        }
+                      >
+                        <option value="all">Все</option>
+                        <option value="design">Дизайн</option>
+                        <option value="production">Производство</option>
+                      </select>
+                    </label>
+                  </div>
+                  <ProductionTaskTable
+                    tasks={inProgressProductionTasks}
+                    tableContext={roleTaskTableContext}
+                    products={productionLookupProducts}
+                    productionFiles={productionFiles}
+                    productionFilePaths={productionFilePaths}
+                    token={token}
+                    actualQuantities={actualQuantities}
+                    setActualQuantities={setActualQuantities}
+                    currentUserId={user?.id}
+                    currentUserName={user?.displayName || user?.userName}
+                    currentUserAliases={currentUserAliases}
+                    isAdmin={user?.role === 'Admin'}
+                    canCancelTasks={canCancelProductionTasks()}
+                    canManageTaskDeadline={canManageProductionTaskDeadline()}
+                    canStartTask={canStartVisibleProductionTask}
+                    onStart={startProductionTask}
+                    onCancelRequest={setCancelTaskId}
+                    onComplete={completeProductionTask}
+                    onOpenFiles={openProductionFilesModal}
+                    onUploadTaskItemFile={uploadProductionFileForTaskItem}
+                    onSaveTaskItemFilePath={saveProductionTaskItemFilePath}
+                    onDeleteTaskItemFilePath={deleteProductionTaskItemFilePath}
+                    onSaveTaskItemActualQuantity={saveProductionTaskItemActualQuantity}
+                    onSaveTaskItemRequiredQuantity={
+                      canEditProductionTasks() ? saveProductionTaskItemRequiredQuantity : undefined
+                    }
+                    onCreateProductionFromNovinkaItem={
+                      canCreateProductionTasks() ? openProductionTaskFromNovinkaItem : undefined
+                    }
+                    onTransferNovinkaItem={
+                      canSeeDesignerProductionTasks ? openTransferDesignerItemModal : undefined
+                    }
+                  />
+                </>
               )}
 
               {productionSubTab === 'cancelled' && (
@@ -8280,33 +11185,84 @@ function App() {
                   actualQuantities={actualQuantities}
                   setActualQuantities={setActualQuantities}
                   currentUserId={user?.id}
+                  currentUserName={user?.displayName || user?.userName}
+                  currentUserAliases={currentUserAliases}
                   isAdmin={user?.role === 'Admin'}
                   canCancelTasks={canCancelProductionTasks()}
+                  canManageTaskDeadline={canManageProductionTaskDeadline()}
+                  canStartTask={canStartVisibleProductionTask}
                   onStart={startProductionTask}
                   onCancelRequest={setCancelTaskId}
                   onComplete={completeProductionTask}
                   onOpenFiles={openProductionFilesModal}
                   onUploadTaskItemFile={uploadProductionFileForTaskItem}
-                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                   onArchive={canArchiveProductionTasks() ? archiveProductionTask : undefined}
                   onRestore={user?.role === 'Admin' ? restoreProductionTask : undefined}
                   cancelled
                 />
               )}
 
-              {productionSubTab === 'completed' && (
+              {productionSubTab === 'readyToShip' && (
                 <ProductionTaskArchiveTable
-                  tasks={completedProductionTasks}
-                  tableContext={roleTaskTableContext}
+                  tasks={readyToShipProductionTasks}
+                  tableContext="ozon"
                   products={productionLookupProducts}
                   productionFiles={productionFiles}
                   productionFilePaths={productionFilePaths}
                   token={token}
                   onOpenFiles={openProductionFilesModal}
-                  onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                   onArchive={canArchiveProductionTasks() ? archiveProductionTask : undefined}
-                  emptyText="Выполненных задач пока нет."
+                  emptyText="Готовых к отгрузке задач пока нет."
                 />
+              )}
+
+              {productionSubTab === 'completed' && (
+                <>
+                  <div className="subtabs-placeholder production-task-list-filters">
+                    <label>
+                      <span>Исполнитель</span>
+                      <select
+                        value={productionTaskAssigneeFilter}
+                        onChange={(event) => setProductionTaskAssigneeFilter(event.target.value)}
+                      >
+                        <option value="">Все</option>
+                        {productionTaskFilterAssignees.map((assignee) => (
+                          <option key={assignee} value={assignee}>
+                            {assignee}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Тип</span>
+                      <select
+                        value={productionTaskTypeFilter}
+                        onChange={(event) =>
+                          setProductionTaskTypeFilter(event.target.value as 'all' | 'design' | 'production')
+                        }
+                      >
+                        <option value="all">Все</option>
+                        <option value="design">Дизайн</option>
+                        <option value="production">Производство</option>
+                      </select>
+                    </label>
+                  </div>
+                  <ProductionTaskArchiveTable
+                    tasks={completedProductionTasks}
+                    tableContext={roleTaskTableContext}
+                    products={productionLookupProducts}
+                    productionFiles={productionFiles}
+                    productionFilePaths={productionFilePaths}
+                    token={token}
+                    onOpenFiles={openProductionFilesModal}
+                    onArchive={canArchiveProductionTasks() ? archiveProductionTask : undefined}
+                    onCreateProductionFromNovinka={
+                      canCreateProductionTasks() ? openProductionTaskFromCompletedNovinka : undefined
+                    }
+                    onPackItem={canPackProductionItems() ? packProductionTaskItem : undefined}
+                    emptyText="Выполненных задач пока нет."
+                  />
+                </>
               )}
 
               {productionSubTab === 'archive' && (
@@ -8334,7 +11290,6 @@ function App() {
                     productionFilePaths={productionFilePaths}
                     token={token}
                     onOpenFiles={openProductionFilesModal}
-                    onDeleteFile={canDeleteProductionFiles() ? deleteProductionFile : undefined}
                     archiveView
                     onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
                     emptyText="В архиве задач пока нет."
@@ -8375,6 +11330,27 @@ function App() {
                 </div>
               )}
 
+              {shopRegion === 'rf' && (
+                <div className="inner-tabs products-inner-tabs">
+                  <button
+                    type="button"
+                    className={productsInnerTab === 'catalog' ? 'active' : ''}
+                    onClick={() => setProductsInnerTab('catalog')}
+                  >
+                    Каталог товаров
+                  </button>
+                  <button
+                    type="button"
+                    className={productsInnerTab === 'costTypes' ? 'active' : ''}
+                    onClick={() => void openProductCostTypesTab()}
+                  >
+                    Типы себестоимости
+                  </button>
+                </div>
+              )}
+
+              {(shopRegion !== 'rf' || productsInnerTab === 'catalog') && (
+              <>
               <div className="subtabs-placeholder products-toolbar">
                 {user?.role === 'Admin' && (
                   <button
@@ -8511,17 +11487,30 @@ function App() {
                   <span>Статус</span>
                   <span>Фото</span>
                   <span>Цена</span>
+                  <span>Себестоимость</span>
                   <span>Ссылка</span>
                 </div>
                 {filteredCatalogProducts.map((item) => (
-                  <div className="table-row ozon-product-row" key={item.productId}>
-                    <span>
+                  <div
+                    className={`table-row ozon-product-row${shopRegion === 'rf' ? ' ozon-product-row-clickable' : ''}`}
+                    key={item.productId}
+                    role={shopRegion === 'rf' ? 'button' : undefined}
+                    tabIndex={shopRegion === 'rf' ? 0 : undefined}
+                    onClick={() => shopRegion === 'rf' && void openProductCostModal(item)}
+                    onKeyDown={(event) => {
+                      if (shopRegion === 'rf' && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault()
+                        void openProductCostModal(item)
+                      }
+                    }}
+                  >
+                    <span data-label="Товар">
                       <strong>{item.name}</strong>
                       <small>{item.productId}</small>
                     </span>
                     <OfferIdCell offerId={item.offerId} />
-                    <span>{translateProductStatus(item.status)}</span>
-                    <span>
+                    <span data-label="Статус">{translateProductStatus(item.status)}</span>
+                    <span data-label="Фото">
                       {item.imageUrl ? (
                         <ProductImageHoverPreview imageUrl={item.imageUrl} name={item.name}>
                           <ProductThumb imageUrl={item.imageUrl} name={item.name} />
@@ -8530,10 +11519,13 @@ function App() {
                         '-'
                       )}
                     </span>
-                    <span>{formatMoney(item.price, item.currencyCode)}</span>
-                    <span>
+                    <span data-label="Цена">{formatMoney(item.price, item.currencyCode)}</span>
+                    <span data-label="Себестоимость">
+                      {item.costTotal ? formatMoney(item.costTotal, item.currencyCode || 'KZT') : '-'}
+                    </span>
+                    <span data-label="Ссылка">
                       {item.productUrl ? (
-                        <a href={item.productUrl} target="_blank" rel="noreferrer">
+                        <a href={item.productUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
                           Открыть
                         </a>
                       ) : (
@@ -8543,6 +11535,186 @@ function App() {
                   </div>
                 ))}
               </div>
+              </>
+              )}
+
+              {shopRegion === 'rf' && productsInnerTab === 'costTypes' && (() => {
+                const profilesByType = new Map<string, ProductCostProfile[]>()
+                productCostProfiles.forEach((profile) => {
+                  if (!profile.costTypeId || profile.useIndividualCost) {
+                    return
+                  }
+                  const current = profilesByType.get(profile.costTypeId) ?? []
+                  current.push(profile)
+                  profilesByType.set(profile.costTypeId, current)
+                })
+
+                return (
+                  <div className="product-cost-types-panel">
+                    <div className="product-cost-types-card">
+                      <div className="product-cost-types-head">
+                        <div>
+                          <h3>Типы себестоимости</h3>
+                          <p>Настройте общую себестоимость для группы товаров и смотрите, какие товары ее используют.</p>
+                        </div>
+                        <button type="button" onClick={() => void openProductCostTypesTab()}>
+                          Обновить
+                        </button>
+                      </div>
+
+                      <div className="product-cost-type-form product-cost-type-page-form">
+                        <label className="product-cost-field">
+                          <span>Название типа</span>
+                          <input
+                            value={productCostTypeForm.name}
+                            onChange={(event) => setProductCostTypeForm((current) => ({ ...current, name: event.target.value }))}
+                            placeholder="Например: магнит, значок, кружка"
+                          />
+                        </label>
+                        <label className="product-cost-purchase-toggle product-cost-type-toggle">
+                          <input
+                            type="checkbox"
+                            checked={productCostTypeForm.isPurchased}
+                            onChange={(event) =>
+                              setProductCostTypeForm((current) => ({ ...current, isPurchased: event.target.checked }))
+                            }
+                          />
+                          Закупной
+                        </label>
+                        {productCostTypeForm.isPurchased ? (
+                          <label className="product-cost-field">
+                            <span>Себестоимость</span>
+                            <input
+                              inputMode="decimal"
+                              value={productCostTypeForm.purchaseCost}
+                              onChange={(event) =>
+                                setProductCostTypeForm((current) => ({ ...current, purchaseCost: event.target.value }))
+                              }
+                              placeholder="Например: 450"
+                            />
+                          </label>
+                        ) : (
+                          <>
+                            <label className="product-cost-field">
+                              <span>Упаковка</span>
+                              <input
+                                inputMode="decimal"
+                                value={productCostTypeForm.packagingCost}
+                                onChange={(event) =>
+                                  setProductCostTypeForm((current) => ({ ...current, packagingCost: event.target.value }))
+                                }
+                                placeholder="0"
+                              />
+                            </label>
+                            <label className="product-cost-field">
+                              <span>Производство</span>
+                              <input
+                                inputMode="decimal"
+                                value={productCostTypeForm.productionCost}
+                                onChange={(event) =>
+                                  setProductCostTypeForm((current) => ({ ...current, productionCost: event.target.value }))
+                                }
+                                placeholder="0"
+                              />
+                            </label>
+                          </>
+                        )}
+                        <button type="button" disabled={productCostTypeSaving} onClick={() => void saveProductCostType()}>
+                          Добавить тип
+                        </button>
+                      </div>
+                    </div>
+
+                    {(productCostTypesStatus || productCostStatus) && (
+                      <p className="product-cost-status">{productCostTypesStatus || productCostStatus}</p>
+                    )}
+
+                    <div className="data-table product-cost-types-table">
+                      <div className="table-row product-cost-type-row table-head">
+                        <span>Тип</span>
+                        <span>Формат</span>
+                        <span>Упаковка</span>
+                        <span>Производство</span>
+                        <span>Себестоимость</span>
+                        <span>Товаров</span>
+                        <span>Действия</span>
+                      </div>
+                      {productCostTypes.length === 0 ? (
+                        <div className="empty-row">Типов себестоимости пока нет.</div>
+                      ) : (
+                        productCostTypes.map((costType) => {
+                          const linkedProfiles = (profilesByType.get(costType.id) ?? []).sort((a, b) =>
+                            (a.productName || a.offerId).localeCompare(b.productName || b.offerId),
+                          )
+                          const isExpanded = expandedProductCostTypeId === costType.id
+                          return (
+                            <div className="product-cost-type-entry" key={costType.id}>
+                              <div className="table-row product-cost-type-row">
+                                <span data-label="Тип">
+                                  <strong>{costType.name}</strong>
+                                </span>
+                                <span data-label="Формат">{costType.isPurchased ? 'Закупной' : 'Производственный'}</span>
+                                <span data-label="Упаковка">
+                                  {costType.isPurchased ? '-' : formatMoney(costType.packagingCost ?? 0, 'KZT')}
+                                </span>
+                                <span data-label="Производство">
+                                  {costType.isPurchased ? '-' : formatMoney(costType.productionCost ?? 0, 'KZT')}
+                                </span>
+                                <span data-label="Себестоимость">
+                                  <strong>{costType.costTotal ? formatMoney(costType.costTotal, 'KZT') : '-'}</strong>
+                                </span>
+                                <span data-label="Товаров">{linkedProfiles.length}</span>
+                                <span data-label="Действия" className="product-cost-type-actions">
+                                  <button type="button" onClick={() => openProductCostTypeEditModal(costType)}>
+                                    Изменить
+                                  </button>
+                                  <button type="button" className="secondary" onClick={() => setExpandedProductCostTypeId(isExpanded ? null : costType.id)}>
+                                    {isExpanded ? 'Скрыть товары' : 'Показать товары'}
+                                  </button>
+                                </span>
+                              </div>
+                              {isExpanded && (
+                                <div className="product-cost-type-products">
+                                  {linkedProfiles.length === 0 ? (
+                                    <p>К этому типу пока не привязан ни один товар.</p>
+                                  ) : (
+                                    linkedProfiles.map((profile) => {
+                                      const product = ozonProducts.find(
+                                        (item) => item.productId === profile.productId || item.offerId === profile.offerId,
+                                      )
+                                      return (
+                                        <div className="product-cost-type-product-row" key={`${profile.productId}-${profile.offerId}`}>
+                                          <span data-label="Фото">
+                                            {product?.imageUrl ? (
+                                              <ProductImageHoverPreview imageUrl={product.imageUrl} name={product.name}>
+                                                <ProductThumb imageUrl={product.imageUrl} name={product.name} />
+                                              </ProductImageHoverPreview>
+                                            ) : (
+                                              <span className="product-thumb-placeholder">Фото</span>
+                                            )}
+                                          </span>
+                                          <span data-label="Товар">
+                                            <strong>{profile.productName || product?.name || profile.offerId || profile.productId}</strong>
+                                            <small>{profile.productId}</small>
+                                          </span>
+                                          <OfferIdCell offerId={profile.offerId || product?.offerId || '-'} />
+                                          <span data-label="Себестоимость">
+                                            {profile.costTotal ? formatMoney(profile.costTotal, product?.currencyCode || 'KZT') : '-'}
+                                          </span>
+                                        </div>
+                                      )
+                                    })
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
             </section>
           )}
 
@@ -8596,9 +11768,38 @@ function App() {
                   Производство
                 </button>
                 )}
+                {hasFeature('analytics.internal') && (
+                <button
+                  type="button"
+                  className={analyticsSubTab === 'internal' ? 'active' : ''}
+                  onClick={() => setAnalyticsSubTab('internal')}
+                >
+                  Внутренняя
+                </button>
+                )}
+                {hasFeature('analytics.calculator') && (
+                <button
+                  type="button"
+                  className={analyticsSubTab === 'calculator' ? 'active' : ''}
+                  onClick={() => setAnalyticsSubTab('calculator')}
+                >
+                  Калькулятор
+                </button>
+                )}
+                {hasFeature('analytics.finances') && (
+                <button
+                  type="button"
+                  className={analyticsSubTab === 'finances' ? 'active' : ''}
+                  onClick={() => setAnalyticsSubTab('finances')}
+                >
+                  Финансы
+                </button>
+                )}
               </div>
               <div className="subtabs-placeholder analytics-toolbar">
-                {(analyticsSubTab === 'summary') && showFullAnalytics && (
+                {(((analyticsSubTab === 'summary' || analyticsSubTab === 'topProducts') && showFullAnalytics) ||
+                  analyticsSubTab === 'internal' ||
+                  analyticsSubTab === 'finances') && (
                   <div className="date-filter">
                     <label>
                       <span>С</span>
@@ -8616,6 +11817,16 @@ function App() {
                         onChange={(event) => setAnalyticsDateTo(event.target.value)}
                       />
                     </label>
+                    <button
+                      type="button"
+                      className="date-filter-preset"
+                      onClick={() => {
+                        setAnalyticsDateFrom(ALL_PERIOD_START)
+                        setAnalyticsDateTo(new Date().toISOString().slice(0, 10))
+                      }}
+                    >
+                      За весь период
+                    </button>
                   </div>
                 )}
                 {analyticsSubTab === 'production' && (
@@ -8654,7 +11865,11 @@ function App() {
                 )}
                 <div className="analytics-toolbar-actions">
                   <button type="button" onClick={() => void refreshAnalytics()}>
-                    {analyticsSubTab === 'production' ? 'Обновить отчёт' : 'Обновить аналитику'}
+                    {analyticsSubTab === 'production'
+                      ? 'Обновить отчёт'
+                      : analyticsSubTab === 'internal'
+                        ? 'Обновить данные'
+                        : 'Обновить аналитику'}
                   </button>
                   {analyticsSubTab === 'production' && (
                     <button
@@ -8674,7 +11889,7 @@ function App() {
                 <>
                   <AnalyticsPipelineBoard
                     snapshot={analyticsSnapshot}
-                    analytics={analytics}
+                    analytics={filteredAnalytics}
                     marketplaceLabel={analyticsMarketplaceLabel}
                   />
                   <div className="analytics-table-toolbar">
@@ -8756,6 +11971,15 @@ function App() {
                   <span>Полная аналитика пока доступна только для Satu.</span>
                 </div>
               )}
+              {analyticsSubTab === 'internal' && shopRegion === 'rf' && (
+                <InternalAnalyticsPanel data={internalAnalytics} />
+              )}
+              {analyticsSubTab === 'internal' && shopRegion === 'kz' && (
+                <div className="empty-state">
+                  <strong>Внутренняя аналитика</strong>
+                  <span>Склад по себестоимости сейчас считается для Ozon в LShop РФ.</span>
+                </div>
+              )}
               {analyticsSubTab === 'topProducts' && showFullAnalytics && (
                 <>
                   <div className="ozon-status">
@@ -8813,11 +12037,11 @@ function App() {
               {analyticsSubTab === 'noSales' && showFullAnalytics && (
                 <>
                   <div className="ozon-status">
-                    <strong>Товары без единой продажи</strong>
+                    <strong>Товары без продаж после отгрузки</strong>
                     <span>
-                      Каталог {analyticsMarketplaceLabel} без продаж за последние 3 года
+                      Каталог {analyticsMarketplaceLabel} без продаж с момента отгрузки
                       {shopRegion === 'rf'
-                        ? ' · дата поставки и дни — с последней FBO-поставки на склад Ozon на сегодня'
+                        ? ' · дата и дни считаются от последней отгрузки Ozon'
                         : ''}
                       {shopRegion === 'rf' && rfUnsoldTimestamp ? ` · обновлено ${rfUnsoldTimestamp}` : ''}
                       {' · '}
@@ -8855,7 +12079,7 @@ function App() {
                       <span>Товар</span>
                       <span>Артикул</span>
                       <span>SKU</span>
-                      <span>Поставка на склад</span>
+                      <span>Дата отгрузки</span>
                       <span>Дней без продаж</span>
                       <span>Статус</span>
                       <span>Остаток</span>
@@ -8993,7 +12217,7 @@ function App() {
                     </div>
                     {(visibleProductionAnalyticsReport?.tasks ?? []).flatMap((task) => {
                       const items = getProductionTaskItems(task)
-                      return items.map((item, itemIndex) => (
+                      return items.map((item) => (
                         <div
                           className={`production-analytics-task-row${user?.role === 'Admin' ? ' with-actions' : ''}`}
                           key={`${task.id}-${item.id ?? item.offerId}`}
@@ -9007,7 +12231,6 @@ function App() {
                           <span>{item.actualQuantity ?? 0}</span>
                           {user?.role === 'Admin' && (
                             <span className="production-analytics-row-actions">
-                              {itemIndex === 0 && (
                                 <button
                                   type="button"
                                   className="text-action-button"
@@ -9015,7 +12238,6 @@ function App() {
                                 >
                                   Изменить
                                 </button>
-                              )}
                             </span>
                           )}
                         </div>
@@ -9038,6 +12260,14 @@ function App() {
                     />
                   )}
                 </>
+              )}
+
+              {analyticsSubTab === 'calculator' && hasFeature('analytics.calculator') && (
+                <CalculatorPanel token={token} canEdit={hasFeature('analytics.calculator.edit')} />
+              )}
+
+              {analyticsSubTab === 'finances' && hasFeature('analytics.finances') && (
+                <FinancesPanel token={token} dateFrom={analyticsDateFrom} dateTo={analyticsDateTo} />
               )}
             </section>
           )}
@@ -9146,7 +12376,7 @@ function App() {
                   onClick={() => setSupplySubTab('create')}
                   hidden={!hasSubFeature('supplies.create', 'supplies')}
                 >
-                  Создать поставку
+                  Создать
                 </button>
                 {hasSubFeature('supplies.editor', 'supplies') && (
                   <button
@@ -9186,36 +12416,47 @@ function App() {
                     {renderTabBadge(unseenSupplyAnalytics.length)}
                   </button>
                 )}
-              </div>
-
-              <div className="toolbar-row">
-                <input
-                  className="toolbar-search"
-                  placeholder="Поиск по поставкам, товарам, артикулам"
-                  value={supplySearch}
-                  onChange={(event) => setSupplySearch(event.target.value)}
-                />
-                {supplySubTab === 'all' && (
-                  <select
-                    className="toolbar-select"
-                    value={supplyStatusFilter}
-                    onChange={(event) =>
-                      setSupplyStatusFilter(event.target.value as 'all' | SupplyStatus)
-                    }
+                {hasSubFeature('supplies.expenses', 'supplies') && (
+                  <button
+                    type="button"
+                    className={supplySubTab === 'expenses' ? 'active' : ''}
+                    onClick={() => setSupplySubTab('expenses')}
                   >
-                    <option value="all">Все статусы</option>
-                    <option value="Created">Создано</option>
-                    <option value="Sent">Отправлено</option>
-                    <option value="Accepted">Принято</option>
-                  </select>
+                    Расходники
+                  </button>
                 )}
               </div>
+
+              {supplySubTab !== 'expenses' && (
+                <div className="toolbar-row">
+                  <input
+                    className="toolbar-search"
+                    placeholder="Поиск по поставкам, товарам, артикулам"
+                    value={supplySearch}
+                    onChange={(event) => setSupplySearch(event.target.value)}
+                  />
+                  {supplySubTab === 'all' && (
+                    <select
+                      className="toolbar-select"
+                      value={supplyStatusFilter}
+                      onChange={(event) =>
+                        setSupplyStatusFilter(event.target.value as 'all' | SupplyStatus)
+                      }
+                    >
+                      <option value="all">Все статусы</option>
+                      <option value="Created">Создано</option>
+                      <option value="Sent">Отправлено</option>
+                      <option value="Accepted">Принято</option>
+                    </select>
+                  )}
+                </div>
+              )}
 
               {supplySubTab === 'create' && (
                 <>
                   <div className="supply-create-bar">
                     <button type="button" onClick={() => setShowCreateSupplyModal(true)}>
-                      Создать поставку
+                      Создать
                     </button>
                     {user?.role === 'Admin' && (
                       <>
@@ -9259,7 +12500,7 @@ function App() {
                       listIdPrefix="supply-products"
                       token={token}
                       ozonProducts={productionLookupProducts}
-                      novinkaProducts={supplyNovinkaCatalogItems}
+                      novinkaProducts={supplyPackedCatalogItems}
                       items={draftSupplyItems}
                       setItems={setDraftSupplyItems}
                       productId={supplyProductId}
@@ -9270,8 +12511,15 @@ function App() {
                       setSelectedNovinkaOfferId={setSelectedNovinkaOfferId}
                       reserveQuantity={reserveQuantity}
                       setReserveQuantity={setReserveQuantity}
+                      materialName={supplyMaterialName}
+                      setMaterialName={setSupplyMaterialName}
+                      materialQuantity={supplyMaterialQuantity}
+                      setMaterialQuantity={setSupplyMaterialQuantity}
+                      materialKind={supplyMaterialKind}
+                      setMaterialKind={setSupplyMaterialKind}
                       onAddProduct={addSupplyProduct}
                       onAddReserve={addReserveSupplyProduct}
+                      onAddMaterial={addSupplyMaterialItem}
                       onSave={createSupply}
                       onClose={() => setShowCreateSupplyModal(false)}
                     />
@@ -9287,6 +12535,7 @@ function App() {
                     onDeleteSupply={deleteSupply}
                     onArchiveSupply={archiveSupply}
                     onStatusChange={updateSupplyStatus}
+                    onRequestSent={openShippingCostModal}
                     onUpdateDates={updateSupplyDates}
                     onReplaceReserve={replaceReserveItem}
                     userRole={user?.role}
@@ -9305,6 +12554,7 @@ function App() {
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
+                  onRequestSent={openShippingCostModal}
                   onUpdateDates={updateSupplyDates}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
@@ -9325,6 +12575,7 @@ function App() {
                   onDeleteSupply={deleteSupply}
                   onArchiveSupply={archiveSupply}
                   onStatusChange={updateSupplyStatus}
+                  onRequestSent={openShippingCostModal}
                   onUpdateDates={updateSupplyDates}
                   onReplaceReserve={replaceReserveItem}
                   userRole={user?.role}
@@ -9332,8 +12583,99 @@ function App() {
                 />
               )}
 
+              {supplySubTab === 'expenses' && (
+                <div className="supply-expenses-panel">
+                  <div className="supply-expense-create">
+                    <label>
+                      Что купили
+                      <input
+                        value={supplyExpenseName}
+                        onChange={(event) => setSupplyExpenseName(event.target.value)}
+                        placeholder="Например: пакетики, бумага, скотч"
+                      />
+                    </label>
+                    <label>
+                      Сумма покупки
+                      <input
+                        inputMode="decimal"
+                        value={supplyExpenseAmount}
+                        onChange={(event) => setSupplyExpenseAmount(event.target.value)}
+                        placeholder="0,00"
+                      />
+                    </label>
+                    <label>
+                      Дата покупки
+                      <input
+                        type="date"
+                        value={supplyExpenseDate}
+                        onChange={(event) => setSupplyExpenseDate(event.target.value)}
+                      />
+                    </label>
+                    <button type="button" onClick={createSupplyExpense}>
+                      Добавить
+                    </button>
+                  </div>
+
+                  <div className="supply-fbo-summary">
+                    <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success">
+                      <span>Сумма покупок</span>
+                      <strong>{formatMoney(supplyExpensesTotal, 'KZT')}</strong>
+                    </div>
+                    <div className="analytics-pipeline-card">
+                      <span>Позиций</span>
+                      <strong>{supplyExpenses.length}</strong>
+                    </div>
+                  </div>
+
+                  <div className="toolbar-row">
+                    <input
+                      className="toolbar-search"
+                      placeholder="Поиск по расходникам"
+                      value={supplyExpenseSearch}
+                      onChange={(event) => setSupplyExpenseSearch(event.target.value)}
+                    />
+                    <label className="date-chip">
+                      С
+                      <input
+                        type="date"
+                        value={supplyExpenseDateFrom}
+                        onChange={(event) => setSupplyExpenseDateFrom(event.target.value)}
+                      />
+                    </label>
+                    <label className="date-chip">
+                      По
+                      <input
+                        type="date"
+                        value={supplyExpenseDateTo}
+                        onChange={(event) => setSupplyExpenseDateTo(event.target.value)}
+                      />
+                    </label>
+                    <button type="button" onClick={loadSupplyExpenses}>
+                      Обновить
+                    </button>
+                  </div>
+
+                  <SupplyExpensesTable
+                    rows={supplyExpenses}
+                    onSave={updateSupplyExpense}
+                    onDelete={deleteSupplyExpense}
+                  />
+                </div>
+              )}
+
               {supplySubTab === 'analytics' && (
                 <>
+                  <div className="supply-fbo-summary">
+                    <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success">
+                      <span>Отгружено на Ozon</span>
+                      <strong>{supplyFboSummary.shippedToOzon}</strong>
+                    </div>
+                    <div className="analytics-pipeline-card analytics-pipeline-card--text-progress">
+                      <span>Осталось отгрузить</span>
+                      <strong>{supplyFboSummary.remainingToShip}</strong>
+                    </div>
+                  </div>
+
                   <div className="supply-filter">
                     <select
                       value={analyticsProductKey}
@@ -9362,13 +12704,52 @@ function App() {
                         </option>
                       ))}
                     </select>
-                    <button type="button" onClick={loadSupplyAnalytics}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void Promise.all([
+                          loadSupplyAnalytics(),
+                          loadOzonSupplyShipments(),
+                          loadSupplyFboDefects(),
+                        ])
+                      }}
+                    >
                       Обновить
                     </button>
                     <button type="button" onClick={exportSupplyAnalytics}>
                       Скачать CSV
                     </button>
+                    <button
+                      type="button"
+                      className={showSupplyFboRemaining ? 'secondary active' : 'secondary'}
+                      onClick={() => setShowSupplyFboRemaining((current) => !current)}
+                    >
+                      {showSupplyFboRemaining
+                        ? 'Скрыть остаток к отгрузке'
+                        : 'Показать что осталось отгрузить'}
+                    </button>
+                    <button
+                      type="button"
+                      className={showSupplyFboDefects ? 'secondary active' : 'secondary'}
+                      onClick={() => setShowSupplyFboDefects((current) => !current)}
+                    >
+                      Брак ({supplyFboDefects.length})
+                    </button>
                   </div>
+
+                  {showSupplyFboRemaining && (
+                    <SupplyFboRemainingTable
+                      rows={supplyFboSummary.remainingItems}
+                      onMarkDefect={markSupplyFboDefect}
+                    />
+                  )}
+
+                  {showSupplyFboDefects && (
+                    <SupplyFboDefectsTable
+                      rows={supplyFboDefects}
+                      onRemoveDefect={removeSupplyFboDefect}
+                    />
+                  )}
 
                   <SupplyAnalyticsTable rows={filteredSupplyAnalytics} />
                 </>
@@ -9380,7 +12761,7 @@ function App() {
                   listIdPrefix={`edit-supply-${editingSupplyId}`}
                   token={token}
                   ozonProducts={ozonProducts}
-                  novinkaProducts={supplyNovinkaCatalogItems}
+                  novinkaProducts={supplyPackedCatalogItems}
                   items={editSupplyItems}
                   setItems={setEditSupplyItems}
                   productId={editSupplyProductId}
@@ -9391,13 +12772,79 @@ function App() {
                   setSelectedNovinkaOfferId={setSelectedNovinkaOfferId}
                   reserveQuantity={editReserveQuantity}
                   setReserveQuantity={setEditReserveQuantity}
+                  materialName={editSupplyMaterialName}
+                  setMaterialName={setEditSupplyMaterialName}
+                  materialQuantity={editSupplyMaterialQuantity}
+                  setMaterialQuantity={setEditSupplyMaterialQuantity}
+                  materialKind={editSupplyMaterialKind}
+                  setMaterialKind={setEditSupplyMaterialKind}
+                  shippingCost={editSupplyShippingCost}
+                  setShippingCost={setEditSupplyShippingCost}
                   onAddProduct={addEditSupplyProduct}
                   onAddReserve={addEditReserveSupplyProduct}
+                  onAddMaterial={addEditSupplyMaterialItem}
                   onSave={() => saveSupplyEdit(editingSupplyId)}
                   onClose={cancelEditSupply}
                   allowReserveNameEdit
+                  allowOzonProductRelink
                   itemsTableTitle="Товар в поставке"
                 />
+              )}
+
+              {shippingCostModalSupply && (
+                <div className="modal-backdrop" role="presentation">
+                  <div className="modal-card supply-shipping-modal" role="dialog" aria-modal="true">
+                    <div className="modal-title-row">
+                      <div>
+                        <h3>Отправить поставку</h3>
+                        <p>{formatSupplyTitle(shippingCostModalSupply)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShippingCostModalSupply(null)
+                          setShippingCostDraft('')
+                        }}
+                      >
+                        Закрыть
+                      </button>
+                    </div>
+                    <div className="supply-shipping-summary">
+                      <span>Товаров</span>
+                      <strong>{shippingCostModalSupply.items.reduce((sum, item) => sum + item.quantity, 0)} шт.</strong>
+                    </div>
+                    <label className="supply-shipping-field">
+                      <span>Сумма отправки</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={shippingCostDraft}
+                        placeholder="Например: 15000"
+                        onChange={(event) => setShippingCostDraft(event.target.value)}
+                        autoFocus
+                      />
+                    </label>
+                    <p className="supply-shipping-note">
+                      После отправки обычный пользователь уже не сможет редактировать поставку.
+                    </p>
+                    <div className="supply-shipping-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          setShippingCostModalSupply(null)
+                          setShippingCostDraft('')
+                        }}
+                      >
+                        Отмена
+                      </button>
+                      <button type="button" onClick={() => void confirmSupplySent()}>
+                        Отправить
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
             </section>
           )}
@@ -9632,6 +13079,7 @@ function App() {
                               avatarUrl={item.avatarUrl}
                               displayName={item.title}
                               nested
+                              hoverPreview={false}
                             />
                           </span>
                         </button>
@@ -9692,6 +13140,7 @@ function App() {
                               avatarUrl={selectedChatThread.avatarUrl}
                               displayName={selectedChatThread.title}
                               nested
+                              hoverPreview={false}
                             />
                           )}
                         </span>
@@ -10189,10 +13638,47 @@ function App() {
                             </div>
                           </fieldset>
                         ))}
+                        {(() => {
+                          const report = userReportData[integrationAdminUserId]
+                          const selectedSections = userReportSections[integrationAdminUserId] ?? report?.enabledSections ?? []
+                          const accountingSections = reportSections.filter(isAccountingReportSection)
+                          if (accountingSections.length === 0) {
+                            return null
+                          }
+
+                          return (
+                            <fieldset>
+                              <legend>{accountingReportGroup}</legend>
+                              <div className="integration-event-list">
+                                {accountingSections.map((section) => (
+                                  <label key={section.id}>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedSections.includes(section.id)}
+                                      disabled={!canEditIntegrationsReports()}
+                                      onChange={(changeEvent) =>
+                                        setUserReportSections((current) => {
+                                          const selected = current[integrationAdminUserId] ?? selectedSections
+                                          return {
+                                            ...current,
+                                            [integrationAdminUserId]: changeEvent.target.checked
+                                              ? [...selected, section.id]
+                                              : selected.filter((value) => value !== section.id),
+                                          }
+                                        })
+                                      }
+                                    />
+                                    {section.label}
+                                  </label>
+                                ))}
+                              </div>
+                            </fieldset>
+                          )
+                        })()}
                       </div>
                       {canEditIntegrationsNotifications() && (
                       <div className="integration-actions">
-                        <button type="button" className="header-action" onClick={() => void saveUserTelegramPreferences(integrationAdminUserId)}>
+                        <button type="button" className="header-action" onClick={() => void saveUserTelegramAndAccountingPreferences(integrationAdminUserId)}>
                           Сохранить оповещения ({telegramNotificationsRegion === 'rf' ? 'РФ' : 'КЗ'})
                         </button>
                       </div>
@@ -10214,7 +13700,7 @@ function App() {
                   <div className="integration-card-head">
                     <div>
                       <h3>Отчёты Telegram</h3>
-                      <p>{reportsStatus || 'Ежедневные отчёты настраиваются для каждого пользователя отдельно'}</p>
+                      <p>{reportsStatus || 'Ежедневные и ежемесячные отчёты настраиваются для каждого пользователя отдельно'}</p>
                     </div>
                     <button type="button" className="header-action secondary" onClick={() => void loadReportSections()}>
                       Обновить метрики
@@ -10240,125 +13726,187 @@ function App() {
                   {integrationAdminUserId && (() => {
                     const report = userReportData[integrationAdminUserId]
                     const selectedSections = userReportSections[integrationAdminUserId] ?? report?.enabledSections ?? []
+                    const selectedMonthlySections =
+                      userMonthlyReportSections[integrationAdminUserId] ?? report?.monthlyEnabledSections ?? []
                     const selectedUser = users.find((item) => item.id === integrationAdminUserId)
+                    const defaultReport: AdminUserReport = {
+                      enabled: false,
+                      reportTime: '19:00',
+                      timezone: 'Asia/Almaty',
+                      enabledSections: [],
+                      availableSections: reportSections.map((section) => section.id),
+                      lastSentOn: null,
+                      monthlyEnabled: false,
+                      monthlyReportTime: '19:00',
+                      monthlyTimezone: 'Asia/Almaty',
+                      monthlyEnabledSections: [],
+                      monthlyLastSentOn: null,
+                      telegramConnected: selectedUser?.telegramConnected ?? false,
+                    }
+                    const activeReport = report ?? defaultReport
+                    const updateReport = (patch: Partial<AdminUserReport>) =>
+                      setUserReportData((current) => ({
+                        ...current,
+                        [integrationAdminUserId]: {
+                          ...(current[integrationAdminUserId] ?? defaultReport),
+                          ...patch,
+                        },
+                      }))
+
                     return (
                       <div className="integration-report-form">
-                        <label className="integration-toggle">
-                          <input
-                            type="checkbox"
-                            checked={report?.enabled ?? false}
-                            disabled={!canEditIntegrationsReports()}
-                            onChange={(event) =>
-                              setUserReportData((current) => ({
-                                ...current,
-                                [integrationAdminUserId]: {
-                                  ...(report ?? {
-                                    enabled: false,
-                                    reportTime: '19:00',
-                                    timezone: 'Asia/Almaty',
-                                    enabledSections: [],
-                                    availableSections: reportSections.map((section) => section.id),
-                                    lastSentOn: null,
-                                    telegramConnected: selectedUser?.telegramConnected ?? false,
-                                  }),
-                                  enabled: event.target.checked,
-                                },
-                              }))
-                            }
-                          />
-                          Отправлять ежедневный отчёт
-                        </label>
+                        <section className="integration-report-block">
+                          <div className="integration-report-block-head">
+                            <label className="integration-toggle">
+                              <input
+                                type="checkbox"
+                                checked={activeReport.enabled}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ enabled: event.target.checked })}
+                              />
+                              Отправлять ежедневный отчёт
+                            </label>
+                            {activeReport.lastSentOn && (
+                              <span className="integration-hint">Последний: {activeReport.lastSentOn}</span>
+                            )}
+                          </div>
 
-                        <div className="integration-form-grid">
-                          <label>
-                            <span>Время отправки</span>
-                            <input
-                              type="time"
-                              value={report?.reportTime ?? '19:00'}
-                              disabled={!canEditIntegrationsReports()}
-                              onChange={(event) =>
-                                setUserReportData((current) => ({
-                                  ...current,
-                                  [integrationAdminUserId]: {
-                                    ...(report ?? {
-                                      enabled: false,
-                                      reportTime: '19:00',
-                                      timezone: 'Asia/Almaty',
-                                      enabledSections: [],
-                                      availableSections: reportSections.map((section) => section.id),
-                                      lastSentOn: null,
-                                      telegramConnected: selectedUser?.telegramConnected ?? false,
-                                    }),
-                                    reportTime: event.target.value,
-                                  },
-                                }))
-                              }
-                            />
-                          </label>
-                          <label>
-                            <span>Часовой пояс</span>
-                            <select
-                              value={normalizeReportTimezone(report?.timezone)}
-                              disabled={!canEditIntegrationsReports()}
-                              onChange={(event) =>
-                                setUserReportData((current) => ({
-                                  ...current,
-                                  [integrationAdminUserId]: {
-                                    ...(report ?? {
-                                      enabled: false,
-                                      reportTime: '19:00',
-                                      timezone: 'Asia/Almaty',
-                                      enabledSections: [],
-                                      availableSections: reportSections.map((section) => section.id),
-                                      lastSentOn: null,
-                                      telegramConnected: selectedUser?.telegramConnected ?? false,
-                                    }),
-                                    timezone: event.target.value,
-                                  },
-                                }))
-                              }
-                            >
-                              {reportTimezoneOptions.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </div>
-
-                        <div className="integration-event-grid">
-                          {groupItemsByField(reportSections, (section) => section.group).map(([group, sections]) => (
-                            <fieldset key={group}>
-                              <legend>{group}</legend>
-                              <div className="integration-event-list">
-                                {sections.map((section) => (
-                                  <label key={section.id}>
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedSections.includes(section.id)}
-                                      disabled={!canEditIntegrationsReports()}
-                                      onChange={(changeEvent) =>
-                                        setUserReportSections((current) => {
-                                          const selected = current[integrationAdminUserId] ?? selectedSections
-                                          return {
-                                            ...current,
-                                            [integrationAdminUserId]: changeEvent.target.checked
-                                              ? [...selected, section.id]
-                                              : selected.filter((value) => value !== section.id),
-                                          }
-                                        })
-                                      }
-                                    />
-                                    {section.label}
-                                  </label>
+                          <div className="integration-form-grid">
+                            <label>
+                              <span>Время отправки</span>
+                              <input
+                                type="time"
+                                value={activeReport.reportTime}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ reportTime: event.target.value })}
+                              />
+                            </label>
+                            <label>
+                              <span>Часовой пояс</span>
+                              <select
+                                value={normalizeReportTimezone(activeReport.timezone)}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ timezone: event.target.value })}
+                              >
+                                {reportTimezoneOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
                                 ))}
-                              </div>
-                            </fieldset>
-                          ))}
-                        </div>
+                              </select>
+                            </label>
+                          </div>
 
-                        {report?.lastSentOn && <p className="integration-hint">Последний отчёт: {report.lastSentOn}</p>}
+                          <div className="integration-event-grid">
+                            {groupItemsByField(reportSections.filter(isRegularReportSection), (section) => section.group).map(([group, sections]) => (
+                              <fieldset key={group}>
+                                <legend>{group}</legend>
+                                <div className="integration-event-list">
+                                  {sections.map((section) => (
+                                    <label key={section.id}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedSections.includes(section.id)}
+                                        disabled={!canEditIntegrationsReports()}
+                                        onChange={(changeEvent) =>
+                                          setUserReportSections((current) => {
+                                            const selected = current[integrationAdminUserId] ?? selectedSections
+                                            return {
+                                              ...current,
+                                              [integrationAdminUserId]: changeEvent.target.checked
+                                                ? [...selected, section.id]
+                                                : selected.filter((value) => value !== section.id),
+                                            }
+                                          })
+                                        }
+                                      />
+                                      {section.label}
+                                    </label>
+                                  ))}
+                                </div>
+                              </fieldset>
+                            ))}
+                          </div>
+                        </section>
+
+                        <section className="integration-report-block">
+                          <div className="integration-report-block-head">
+                            <label className="integration-toggle">
+                              <input
+                                type="checkbox"
+                                checked={activeReport.monthlyEnabled}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ monthlyEnabled: event.target.checked })}
+                              />
+                              Отправлять ежемесячный отчёт
+                            </label>
+                            {activeReport.monthlyLastSentOn && (
+                              <span className="integration-hint">Последний: {activeReport.monthlyLastSentOn}</span>
+                            )}
+                          </div>
+
+                          <div className="integration-form-grid">
+                            <label>
+                              <span>Время отправки</span>
+                              <input
+                                type="time"
+                                value={activeReport.monthlyReportTime}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ monthlyReportTime: event.target.value })}
+                              />
+                            </label>
+                            <label>
+                              <span>Часовой пояс</span>
+                              <select
+                                value={normalizeReportTimezone(activeReport.monthlyTimezone)}
+                                disabled={!canEditIntegrationsReports()}
+                                onChange={(event) => updateReport({ monthlyTimezone: event.target.value })}
+                              >
+                                {reportTimezoneOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+
+                          <p className="integration-hint">
+                            Отправляется в последний день месяца за период с 1 числа по последний день месяца.
+                          </p>
+
+                          <div className="integration-event-grid">
+                            {groupItemsByField(reportSections.filter(isRegularReportSection), (section) => section.group).map(([group, sections]) => (
+                              <fieldset key={group}>
+                                <legend>{group}</legend>
+                                <div className="integration-event-list">
+                                  {sections.map((section) => (
+                                    <label key={section.id}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedMonthlySections.includes(section.id)}
+                                        disabled={!canEditIntegrationsReports()}
+                                        onChange={(changeEvent) =>
+                                          setUserMonthlyReportSections((current) => {
+                                            const selected = current[integrationAdminUserId] ?? selectedMonthlySections
+                                            return {
+                                              ...current,
+                                              [integrationAdminUserId]: changeEvent.target.checked
+                                                ? [...selected, section.id]
+                                                : selected.filter((value) => value !== section.id),
+                                            }
+                                          })
+                                        }
+                                      />
+                                      {section.label}
+                                    </label>
+                                  ))}
+                                </div>
+                              </fieldset>
+                            ))}
+                          </div>
+                        </section>
+
                         {!selectedUser?.telegramConnected && !report?.telegramConnected && (
                           <p className="integration-hint">Для отчёта пользователь должен подключить Telegram.</p>
                         )}
@@ -10369,7 +13917,10 @@ function App() {
                             Сохранить отчёт
                           </button>
                           <button type="button" className="header-action secondary" onClick={() => void testUserReport(integrationAdminUserId)}>
-                            Тестовый отчёт
+                            Тестовый ежедневный
+                          </button>
+                          <button type="button" className="header-action secondary" onClick={() => void testUserMonthlyReport(integrationAdminUserId)}>
+                            Тестовый ежемесячный
                           </button>
                         </div>
                         )}
@@ -10383,6 +13934,8 @@ function App() {
               )}
             </section>
           )}
+
+          {activeTab === 'accounting' && hasFeature('accounting') && <AccountingReportsPrototype token={token} />}
 
           {activeTab === 'settings' && canViewSettings() && (
             <section className="admin-panel">
@@ -10410,7 +13963,7 @@ function App() {
                   <small>{systemHealthStatus || 'Работает внутри Docker Compose.'}</small>
                 </div>
                 <div>
-                  <span>Бэкапы</span>
+                  <span>Р‘СЌРєР°РїС‹</span>
                   <strong>{backupFiles.length ? `${backupFiles.length} файлов` : 'Нет файлов'}</strong>
                   <small>{backupStatus || 'Файлы складываются в папку backups рядом с проектом.'}</small>
                   <button type="button" className="settings-card-action" onClick={loadBackups}>
@@ -10663,9 +14216,421 @@ function App() {
               </details>
             </section>
           )}
+
+          {productCostModalProduct && (
+            <div className="modal-backdrop" role="presentation">
+              <div className="modal-card product-cost-modal" role="dialog" aria-modal="true">
+                <div className="modal-title-row">
+                  <div>
+                    <h3>Карточка товара</h3>
+                    <p className="product-cost-subtitle">{productCostModalProduct.name}</p>
+                  </div>
+                  <button type="button" onClick={() => setProductCostModalProduct(null)}>
+                    Закрыть
+                  </button>
+                </div>
+
+                <div className="product-cost-product">
+                  {productCostModalProduct.imageUrl ? (
+                    <ProductImageHoverPreview imageUrl={productCostModalProduct.imageUrl} name={productCostModalProduct.name}>
+                      <ProductThumb imageUrl={productCostModalProduct.imageUrl} name={productCostModalProduct.name} />
+                    </ProductImageHoverPreview>
+                  ) : (
+                    <span className="product-thumb product-thumb-empty">Фото</span>
+                  )}
+                  <div>
+                    <strong>{productCostModalProduct.offerId || '-'}</strong>
+                    <small>{productCostModalProduct.productId}</small>
+                    <small>{formatMoney(productCostModalProduct.price, productCostModalProduct.currencyCode)}</small>
+                  </div>
+                </div>
+
+                <div className="product-cost-source">
+                  <label className="product-cost-purchase-toggle">
+                    <input
+                      type="checkbox"
+                      checked={!productCostForm.useIndividualCost}
+                      onChange={(event) =>
+                        setProductCostForm((current) => ({
+                          ...current,
+                          useIndividualCost: !event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Брать себестоимость из типа товара</span>
+                  </label>
+
+                  {!productCostForm.useIndividualCost && (
+                    <label className="product-cost-field">
+                      <span>Тип себестоимости</span>
+                      <select
+                        value={productCostForm.costTypeId}
+                        onChange={(event) => {
+                          const nextCostTypeId = event.target.value
+                          setProductCostForm((current) => ({ ...current, costTypeId: nextCostTypeId }))
+                          fillProductCostTypeEditForm(productCostTypes.find((type) => type.id === nextCostTypeId))
+                        }}
+                      >
+                        <option value="">Выберите тип</option>
+                        {productCostTypes.map((type) => (
+                          <option key={type.id} value={type.id}>
+                            {type.name} · {type.costTotal ? formatMoney(type.costTotal, productCostModalProduct.currencyCode || 'KZT') : '-'}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+
+                {!productCostForm.useIndividualCost && productCostTypeEditForm.id && hasFeature('products.edit') && (
+                  <div className="product-cost-type-edit-compact">
+                    <div>
+                      <strong>Выбран тип: {productCostTypeEditForm.name}</strong>
+                      <span>Изменение этого типа пересчитает все товары, которые к нему привязаны.</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() =>
+                        openProductCostTypeEditModal(productCostTypes.find((type) => type.id === productCostTypeEditForm.id))
+                      }
+                    >
+                      Изменить тип
+                    </button>
+                  </div>
+                )}
+
+                {productCostForm.useIndividualCost && (
+                  <>
+                    <label className="product-cost-purchase-toggle">
+                      <input
+                        type="checkbox"
+                        checked={productCostForm.isPurchased}
+                        onChange={(event) =>
+                          setProductCostForm((current) => ({
+                            ...current,
+                            isPurchased: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Закупной товар</span>
+                    </label>
+
+                    {productCostForm.isPurchased ? (
+                      <label className="product-cost-field">
+                        <span>Себестоимость</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={productCostForm.purchaseCost}
+                          placeholder="Например: 450"
+                          onChange={(event) =>
+                            setProductCostForm((current) => ({ ...current, purchaseCost: event.target.value }))
+                          }
+                        />
+                      </label>
+                    ) : (
+                      <div className="product-cost-grid">
+                        <label className="product-cost-field">
+                          <span>Упаковка</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={productCostForm.packagingCost}
+                            placeholder="0"
+                            onChange={(event) =>
+                              setProductCostForm((current) => ({ ...current, packagingCost: event.target.value }))
+                            }
+                          />
+                        </label>
+                        <label className="product-cost-field">
+                          <span>Производство</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={productCostForm.productionCost}
+                            placeholder="0"
+                            onChange={(event) =>
+                              setProductCostForm((current) => ({ ...current, productionCost: event.target.value }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {hasFeature('products.edit') && (
+                  <div className="product-cost-type-editor">
+                    <div className="product-cost-type-title">
+                      <strong>Новый тип себестоимости</strong>
+                      <span>Например: магнит, значок, кружка</span>
+                    </div>
+                    <div className="product-cost-type-form">
+                      <label className="product-cost-field">
+                        <span>Название типа</span>
+                        <input
+                          type="text"
+                          value={productCostTypeForm.name}
+                          placeholder="Магнит"
+                          onChange={(event) =>
+                            setProductCostTypeForm((current) => ({ ...current, name: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="product-cost-purchase-toggle product-cost-type-toggle">
+                        <input
+                          type="checkbox"
+                          checked={productCostTypeForm.isPurchased}
+                          onChange={(event) =>
+                            setProductCostTypeForm((current) => ({ ...current, isPurchased: event.target.checked }))
+                          }
+                        />
+                        <span>Закупной</span>
+                      </label>
+                      {productCostTypeForm.isPurchased ? (
+                        <label className="product-cost-field">
+                          <span>Себестоимость</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={productCostTypeForm.purchaseCost}
+                            placeholder="0"
+                            onChange={(event) =>
+                              setProductCostTypeForm((current) => ({ ...current, purchaseCost: event.target.value }))
+                            }
+                          />
+                        </label>
+                      ) : (
+                        <>
+                          <label className="product-cost-field">
+                            <span>Упаковка</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={productCostTypeForm.packagingCost}
+                              placeholder="0"
+                              onChange={(event) =>
+                                setProductCostTypeForm((current) => ({ ...current, packagingCost: event.target.value }))
+                              }
+                            />
+                          </label>
+                          <label className="product-cost-field">
+                            <span>Производство</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={productCostTypeForm.productionCost}
+                              placeholder="0"
+                              onChange={(event) =>
+                                setProductCostTypeForm((current) => ({ ...current, productionCost: event.target.value }))
+                              }
+                            />
+                          </label>
+                        </>
+                      )}
+                      <button type="button" disabled={productCostTypeSaving} onClick={() => void saveProductCostType()}>
+                        {productCostTypeSaving ? 'Сохраняем...' : 'Добавить тип'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="product-cost-total">
+                  <span>Себестоимость</span>
+                  <strong>
+                    {(() => {
+                      const total = getProductCostFormTotal()
+                      return total ? formatMoney(total, productCostModalProduct.currencyCode || 'KZT') : '-'
+                    })()}
+                  </strong>
+                </div>
+
+                {(() => {
+                  const salePrice = Number(productCostModalProduct.price || 0)
+                  const costTotal = getProductCostFormTotal()
+                  const payout = salePrice > 0 ? salePrice * 0.55 : null
+                  const profit = payout !== null && costTotal !== null ? payout - costTotal : null
+                  const margin = salePrice > 0 && profit !== null ? (profit / salePrice) * 100 : null
+                  const moneyCurrency = productCostModalProduct.currencyCode || 'KZT'
+
+                  return (
+                    <div className="product-cost-margin">
+                      <div className="product-cost-margin-item">
+                        <span>К получение после продажи</span>
+                        <strong>{payout !== null ? formatMoney(payout, moneyCurrency) : '-'}</strong>
+                      </div>
+                      <div className="product-cost-margin-item">
+                        <span>Чистая с продажи</span>
+                        <strong className={profit !== null && profit < 0 ? 'negative' : 'positive'}>
+                          {profit !== null ? formatMoney(profit, moneyCurrency) : '-'}
+                        </strong>
+                      </div>
+                      <div className="product-cost-margin-item">
+                        <span>Маржинальность</span>
+                        <strong className={margin !== null && margin < 0 ? 'negative' : 'positive'}>
+                          {margin !== null
+                            ? `${margin.toLocaleString('ru-RU', {
+                                minimumFractionDigits: 1,
+                                maximumFractionDigits: 1,
+                              })}%`
+                            : '-'}
+                        </strong>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {productCostStatus && <p className="product-cost-status">{productCostStatus}</p>}
+
+                <div className="product-cost-actions">
+                  <p className="product-cost-note">
+                    Данные приблизительные. Могут отличаться в зависимости от стоимости логистики Ozon
+                  </p>
+                  <button type="button" className="secondary" onClick={() => setProductCostModalProduct(null)}>
+                    Закрыть
+                  </button>
+                  {hasFeature('products.edit') && (
+                    <button type="button" disabled={productCostSaving} onClick={() => void saveProductCostProfile()}>
+                      {productCostSaving ? 'Сохраняем...' : 'Сохранить'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+      {productCostTypeEditModalOpen && productCostTypeEditForm.id && (
+        <div className="modal-backdrop product-cost-type-backdrop" role="presentation">
+              <div className="modal-card product-cost-modal product-cost-type-modal">
+                <div className="modal-title-row">
+                  <div>
+                    <h3>Редактировать тип себестоимости</h3>
+                    <p className="product-cost-subtitle">{productCostTypeEditForm.name}</p>
+                  </div>
+                  <button type="button" onClick={closeProductCostTypeEditModal}>
+                    Закрыть
+                  </button>
+                </div>
+
+                <div className="product-cost-type-modal-body">
+                  <label className="product-cost-field">
+                    <span>Название типа</span>
+                    <input
+                      type="text"
+                      value={productCostTypeEditForm.name}
+                      onChange={(event) => setProductCostTypeEditForm((current) => ({ ...current, name: event.target.value }))}
+                    />
+                  </label>
+
+                  <label className="product-cost-purchase-toggle product-cost-type-toggle">
+                    <input
+                      type="checkbox"
+                      checked={productCostTypeEditForm.isPurchased}
+                      onChange={(event) =>
+                        setProductCostTypeEditForm((current) => ({ ...current, isPurchased: event.target.checked }))
+                      }
+                    />
+                    <span>Закупной</span>
+                  </label>
+
+                  {productCostTypeEditForm.isPurchased ? (
+                    <label className="product-cost-field">
+                      <span>Себестоимость</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={productCostTypeEditForm.purchaseCost}
+                        placeholder="0"
+                        onChange={(event) =>
+                          setProductCostTypeEditForm((current) => ({ ...current, purchaseCost: event.target.value }))
+                        }
+                      />
+                    </label>
+                  ) : (
+                    <div className="product-cost-grid">
+                      <label className="product-cost-field">
+                        <span>Упаковка</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={productCostTypeEditForm.packagingCost}
+                          placeholder="0"
+                          onChange={(event) =>
+                            setProductCostTypeEditForm((current) => ({ ...current, packagingCost: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="product-cost-field">
+                        <span>Производство</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={productCostTypeEditForm.productionCost}
+                          placeholder="0"
+                          onChange={(event) =>
+                            setProductCostTypeEditForm((current) => ({ ...current, productionCost: event.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="product-cost-total">
+                    <span>Себестоимость</span>
+                    <strong>
+                      {(() => {
+                        const total = productCostTypeEditForm.isPurchased
+                          ? parseCostInput(productCostTypeEditForm.purchaseCost)
+                          : (parseCostInput(productCostTypeEditForm.packagingCost) ?? 0) +
+                            (parseCostInput(productCostTypeEditForm.productionCost) ?? 0)
+
+                        return total ? formatMoney(total, productCostModalProduct?.currencyCode || 'KZT') : '-'
+                      })()}
+                    </strong>
+                  </div>
+
+                  {productCostStatus && <p className="product-cost-status">{productCostStatus}</p>}
+                </div>
+
+                <div className="product-cost-actions">
+                  <button type="button" className="secondary" onClick={closeProductCostTypeEditModal}>
+                    Закрыть
+                  </button>
+                  <button type="button" disabled={productCostTypeSaving} onClick={() => void saveProductCostTypeEdit()}>
+                    {productCostTypeSaving ? 'Сохраняем...' : 'Сохранить'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </main>
+  )
+}
+
+function CompactProductionPathsPanel({ paths }: { paths: ProductionFilePath[] }) {
+  if (paths.length === 0) {
+    return null
+  }
+
+  return (
+    <details className="compact-paths-panel">
+      <summary>
+        Пути ({paths.length})
+      </summary>
+      <ProductionPathsPanel paths={paths} showCopy />
+    </details>
   )
 }
 
@@ -11154,6 +15119,98 @@ function getAnalyticsRowDateKey(row: OzonAnalytics['rows'][number]) {
   return normalized && normalized !== '—' ? normalized : 'unknown'
 }
 
+function buildFilteredAnalytics(
+  analytics: OzonAnalytics | null,
+  rows: OzonAnalytics['rows'],
+): OzonAnalytics | null {
+  if (!analytics) {
+    return null
+  }
+
+  const normalizedRows = rows.map((row) => ({
+    ...row,
+    status: normalizeOrderStatus(row.status),
+  }))
+  const activeRows = normalizedRows.filter((row) => row.status !== 'cancelled')
+  const awaitingRows = normalizedRows.filter((row) => row.status === 'awaiting_deliver')
+  const deliveringRows = normalizedRows.filter((row) => row.status === 'delivering')
+  const deliveredRows = normalizedRows.filter((row) => row.status === 'delivered')
+  const cancelledRows = normalizedRows.filter((row) => row.status === 'cancelled')
+  const inTransitRows = [...awaitingRows, ...deliveringRows]
+  const cancelledLogisticsTotal = sumAnalyticsRows(cancelledRows, 'logisticsAmount')
+
+  return {
+    ...analytics,
+    rows,
+    orderRows: rows,
+    topProducts: buildTopProductsFromRows(activeRows, analytics.topProducts),
+    orderedUnitsTotal: sumAnalyticsRows(normalizedRows, 'quantity'),
+    revenueTotal: analytics.revenueTotal,
+    commissionTotal: analytics.commissionTotal,
+    payoutTotal: analytics.payoutTotal,
+    logisticsTotal: analytics.logisticsTotal,
+    servicesTotal: analytics.servicesTotal,
+    awaitingDeliverCount: countDistinctPostings(awaitingRows),
+    awaitingDeliverAmount: sumAnalyticsRows(awaitingRows, 'revenue'),
+    deliveringCount: countDistinctPostings(deliveringRows),
+    deliveredCount: countDistinctPostings(deliveredRows),
+    salesTotalCount: countDistinctPostings(normalizedRows),
+    salesAmountTotal: sumAnalyticsRows(normalizedRows, 'revenue'),
+    inTransitCount: sumAnalyticsRows(inTransitRows, 'quantity'),
+    inTransitAmount: sumAnalyticsRows(inTransitRows, 'revenue'),
+    deliveredProductCount: sumAnalyticsRows(deliveredRows, 'quantity'),
+    deliveredAmount: sumAnalyticsRows(deliveredRows, 'revenue'),
+    cancelledCount: countDistinctPostings(cancelledRows),
+    cancelledAmount: sumAnalyticsRows(cancelledRows, 'revenue'),
+    cancelledLogisticsTotal,
+    cancelledMissedProfitTotal: sumAnalyticsRows(cancelledRows, 'revenue') - cancelledLogisticsTotal,
+  }
+}
+
+function sumAnalyticsRows(
+  rows: OzonAnalytics['rows'],
+  field: 'quantity' | 'revenue' | 'commissionAmount' | 'payout' | 'logisticsAmount',
+) {
+  return rows.reduce((sum, row) => sum + (Number.isFinite(row[field]) ? row[field] : 0), 0)
+}
+
+function countDistinctPostings(rows: OzonAnalytics['rows']) {
+  const keys = new Set<string>()
+
+  rows.forEach((row, index) => {
+    keys.add(row.postingNumber?.trim() || `${row.offerId || row.productName}-${row.operationDate}-${index}`)
+  })
+
+  return keys.size
+}
+
+function buildTopProductsFromRows(
+  rows: OzonAnalytics['rows'],
+  sourceTopProducts: OzonAnalytics['topProducts'],
+): OzonAnalytics['topProducts'] {
+  const sourceByKey = new Map<string, OzonAnalytics['topProducts'][number]>()
+
+  sourceTopProducts.forEach((product) => {
+    sourceByKey.set(product.offerId || String(product.sku), product)
+  })
+
+  return groupAnalyticsProducts(rows)
+    .map((group) => {
+      const source = sourceByKey.get(group.offerId || String(group.sku))
+
+      return {
+        sku: group.sku,
+        offerId: group.offerId,
+        productName: group.productName,
+        quantity: group.quantity,
+        revenue: group.revenue,
+        currencyCode: group.currencyCode,
+        stockTotal: source?.stockTotal ?? 0,
+      }
+    })
+    .sort((left, right) => right.quantity - left.quantity || right.revenue - left.revenue)
+}
+
 function getAnalyticsRevenueLabel(isCancelled: boolean) {
   return isCancelled ? 'Упущенная сумма заказа' : 'Сумма заказа'
 }
@@ -11297,7 +15354,7 @@ function AnalyticsProductGroupCard({
                 </span>
               </div>
               <div className="analytics-order-list-head">
-                <span>Заказ</span>
+                <span>Р—Р°РєР°Р·</span>
                 <span>{dateRevenueLabel}</span>
                 <span>Комиссия</span>
                 <span>Логистика</span>
@@ -11417,8 +15474,8 @@ function ProductTypeEditorPanel({
           <h2>Редактор товаров</h2>
           <p>
             {shopRegion === 'rf'
-              ? 'Измените тип «Новинка» на «Ozon». Файлы производства останутся на товаре.'
-              : 'Измените тип «Новинка» на товар маркетплейса KZ. Файлы производства останутся на товаре.'}
+              ? 'Измените тип «Новинка» на «Ozon». Превью останется на товаре.'
+              : 'Измените тип «Новинка» на товар маркетплейса KZ. Превью останется на товаре.'}
           </p>
         </div>
       </div>
@@ -11683,7 +15740,7 @@ function matchesSupply(supply: Supply, search: string) {
       item.offerId,
       item.productName,
       item.quantity,
-      item.isReserve ? 'новый' : 'постоянный',
+      formatSupplyItemKind(item),
     ]),
   ]
     .filter((value) => value !== undefined && value !== null)
@@ -11706,12 +15763,22 @@ function SupplyItemsModal({
   setSelectedNovinkaOfferId,
   reserveQuantity,
   setReserveQuantity,
+  materialName,
+  setMaterialName,
+  materialQuantity,
+  setMaterialQuantity,
+  materialKind,
+  setMaterialKind,
   onAddProduct,
   onAddReserve,
+  onAddMaterial,
   onSave,
   onClose,
   allowReserveNameEdit = false,
+  allowOzonProductRelink = false,
   itemsTableTitle = 'Товар в новой поставке',
+  shippingCost,
+  setShippingCost,
 }: {
   title: string
   listIdPrefix: string
@@ -11728,15 +15795,59 @@ function SupplyItemsModal({
   setSelectedNovinkaOfferId: Dispatch<SetStateAction<string>>
   reserveQuantity: string
   setReserveQuantity: Dispatch<SetStateAction<string>>
+  materialName?: string
+  setMaterialName?: Dispatch<SetStateAction<string>>
+  materialQuantity?: string
+  setMaterialQuantity?: Dispatch<SetStateAction<string>>
+  materialKind?: Exclude<SupplyItemKind, 'Product'>
+  setMaterialKind?: Dispatch<SetStateAction<Exclude<SupplyItemKind, 'Product'>>>
   onAddProduct: () => void
   onAddReserve: () => void
+  onAddMaterial?: () => void
   onSave: () => void
   onClose: () => void
   allowReserveNameEdit?: boolean
+  allowOzonProductRelink?: boolean
   itemsTableTitle?: string
+  shippingCost?: string
+  setShippingCost?: Dispatch<SetStateAction<string>>
 }) {
   const selectedProduct = ozonProducts.find((item) => String(item.productId) === productId)
   const selectedNovinka = novinkaProducts.find((item) => item.offerId === selectedNovinkaOfferId)
+
+  useEffect(() => {
+    if (selectedNovinka?.packedQuantity && selectedNovinka.packedQuantity > 0) {
+      setReserveQuantity(String(selectedNovinka.packedQuantity))
+      return
+    }
+
+    if (!selectedNovinkaOfferId) {
+      setReserveQuantity('')
+    }
+  }, [selectedNovinkaOfferId, selectedNovinka?.packedQuantity, setReserveQuantity])
+
+  function relinkSupplyItemToOzon(tempId: string, nextProductId: string) {
+    const product = ozonProducts.find((candidate) => String(candidate.productId) === nextProductId)
+    if (!product) {
+      return
+    }
+
+    setItems((current) =>
+      current.map((draft) =>
+        draft.tempId === tempId
+          ? {
+              ...draft,
+              ozonProductId: product.productId,
+              offerId: product.offerId,
+              productName: product.name,
+              imageUrl: product.imageUrl,
+              isReserve: false,
+              itemKind: 'Product',
+            }
+          : draft,
+      ),
+    )
+  }
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -11785,7 +15896,7 @@ function SupplyItemsModal({
           </div>
 
           <div className="supply-form-block supply-form-block-ozon supply-form-block-novinka">
-            <strong>Новинка</strong>
+            <strong>Упакованные товары</strong>
             <NovinkaSearchInput
               listId={`${listIdPrefix}-novinka`}
               products={novinkaProducts}
@@ -11799,7 +15910,7 @@ function SupplyItemsModal({
                 <NovinkaProductPreview item={selectedNovinka} token={token} />
               ) : (
                 <div className="task-form-modal-preview task-form-modal-preview-empty">
-                  <span>Выберите новинку для превью</span>
+                  <span>Выберите упакованный товар для превью</span>
                 </div>
               )}
               <div className="task-form-modal-actions">
@@ -11811,27 +15922,91 @@ function SupplyItemsModal({
                   value={reserveQuantity}
                   onChange={(event) => setReserveQuantity(event.target.value)}
                 />
+                {selectedNovinka?.packedQuantity ? (
+                  <small className="task-product-supply-hint-inline">
+                    Упаковано всего: {selectedNovinka.packedQuantity}
+                  </small>
+                ) : null}
                 <button type="button" onClick={onAddReserve}>
                   Добавить
                 </button>
               </div>
             </div>
           </div>
+          {onAddMaterial && setMaterialName && setMaterialQuantity && materialKind && setMaterialKind && (
+            <div className="supply-form-block supply-form-block-ozon supply-form-block-material">
+              <strong>Расходники и мат. ценности</strong>
+              <input
+                value={materialName ?? ''}
+                onChange={(event) => setMaterialName(event.target.value)}
+                placeholder="Например: принтер, бумага, расходник"
+              />
+              <div className="task-form-modal-compose supply-form-compose">
+                <div className="task-form-modal-preview task-form-modal-preview-empty">
+                  <span>{materialKind === 'Consumable' ? 'Расходный материал' : 'Материальная ценность'}</span>
+                </div>
+                <div className="task-form-modal-actions">
+                  <select
+                    value={materialKind}
+                    onChange={(event) =>
+                      setMaterialKind(event.target.value as Exclude<SupplyItemKind, 'Product'>)
+                    }
+                  >
+                    <option value="Consumable">Расходный материал</option>
+                    <option value="MaterialAsset">Мат. ценность</option>
+                  </select>
+                  <input
+                    className="task-form-modal-qty"
+                    type="number"
+                    min="1"
+                    placeholder="Количество"
+                    value={materialQuantity ?? ''}
+                    onChange={(event) => setMaterialQuantity(event.target.value)}
+                  />
+                  <button type="button" onClick={onAddMaterial}>
+                    Добавить
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
+        {setShippingCost && (
+          <div className="supply-shipping-cost-editor">
+            <label>
+              <span>Сумма отправки</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={shippingCost ?? ''}
+                placeholder="KZT"
+                onChange={(event) => setShippingCost(event.target.value)}
+              />
+            </label>
+          </div>
+        )}
+
         <div className="data-table modal-table">
-          <div className="table-row supply-item-row table-head">
+          <div
+            className={`table-row supply-item-row${allowOzonProductRelink ? ' supply-item-row-editable' : ''} table-head`}
+          >
             <span>{itemsTableTitle}</span>
             <span>Артикул</span>
             <span>Количество</span>
             <span>Тип</span>
+            {allowOzonProductRelink && <span>Постоянный товар</span>}
             <span></span>
           </div>
           {items.map((item) => {
             const imageUrl = getSupplyItemImageUrl(ozonProducts, item)
 
             return (
-              <div className="table-row supply-item-row" key={item.tempId}>
+              <div
+                className={`table-row supply-item-row${allowOzonProductRelink ? ' supply-item-row-editable' : ''}`}
+                key={item.tempId}
+              >
                 <span className="unsold-product-name">
                   {imageUrl ? (
                     <ProductImageHoverPreview imageUrl={imageUrl} name={item.productName}>
@@ -11878,7 +16053,25 @@ function SupplyItemsModal({
                     }}
                   />
                 </span>
-                <span>{item.isReserve ? (item.offerId.startsWith('NV-') ? 'Новинка' : 'Новый') : 'Постоянный'}</span>
+                <span>{formatSupplyItemKind(item)}</span>
+                {allowOzonProductRelink && (
+                  <span className="supply-relink-cell">
+                    {!item.isReserve && item.itemKind === 'Product' ? (
+                      <ProductSearchInput
+                        listId={`${listIdPrefix}-relink-${item.tempId}`}
+                        products={ozonProducts}
+                        selectedProductId={item.ozonProductId ? String(item.ozonProductId) : ''}
+                        onProductIdChange={(nextProductId) =>
+                          relinkSupplyItemToOzon(item.tempId, nextProductId)
+                        }
+                        placeholder="Сменить постоянный товар"
+                        hideInlinePreview
+                      />
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </span>
+                )}
                 <span>
                   <button
                     type="button"
@@ -11915,18 +16108,20 @@ function SupplyDatesEditor({
   onUpdateDates,
 }: {
   supply: Supply
-  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string) => Promise<boolean>
+  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string, shippingCost?: number | null) => Promise<boolean>
 }) {
   const [editing, setEditing] = useState(false)
   const [sentAt, setSentAt] = useState(() => toDatetimeLocalValue(supply.sentAt))
   const [acceptedAt, setAcceptedAt] = useState(() => toDatetimeLocalValue(supply.acceptedAt))
+  const [shippingCost, setShippingCost] = useState(() => (supply.shippingCost ? String(supply.shippingCost) : ''))
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     setSentAt(toDatetimeLocalValue(supply.sentAt))
     setAcceptedAt(toDatetimeLocalValue(supply.acceptedAt))
+    setShippingCost(supply.shippingCost ? String(supply.shippingCost) : '')
     setEditing(false)
-  }, [supply.id, supply.sentAt, supply.acceptedAt])
+  }, [supply.id, supply.sentAt, supply.acceptedAt, supply.shippingCost])
 
   async function saveDates() {
     setSaving(true)
@@ -11934,6 +16129,7 @@ function SupplyDatesEditor({
       supply.id,
       fromDatetimeLocalValue(sentAt),
       fromDatetimeLocalValue(acceptedAt),
+      parseMoneyInput(shippingCost),
     )
     setSaving(false)
     if (saved) {
@@ -11945,9 +16141,10 @@ function SupplyDatesEditor({
     return (
       <small className="supply-dates-line">
         Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-        {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+        {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'} | Сумма отправки:{' '}
+        {supply.shippingCost ? formatMoney(supply.shippingCost, 'KZT') : '-'}
         <button type="button" className="link-button" onClick={() => setEditing(true)}>
-          Изменить даты
+          Изменить
         </button>
       </small>
     )
@@ -11967,6 +16164,17 @@ function SupplyDatesEditor({
           onChange={(event) => setAcceptedAt(event.target.value)}
         />
       </label>
+      <label>
+        Сумма отправки
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={shippingCost}
+          placeholder="KZT"
+          onChange={(event) => setShippingCost(event.target.value)}
+        />
+      </label>
       <button type="button" disabled={saving} onClick={() => void saveDates()}>
         {saving ? 'Сохранение...' : 'Сохранить'}
       </button>
@@ -11976,6 +16184,7 @@ function SupplyDatesEditor({
         onClick={() => {
           setSentAt(toDatetimeLocalValue(supply.sentAt))
           setAcceptedAt(toDatetimeLocalValue(supply.acceptedAt))
+          setShippingCost(supply.shippingCost ? String(supply.shippingCost) : '')
           setEditing(false)
         }}
       >
@@ -11995,6 +16204,7 @@ function SupplyTable({
   onDeleteSupply,
   onArchiveSupply,
   onStatusChange,
+  onRequestSent,
   onUpdateDates,
   onReplaceReserve,
   userRole,
@@ -12010,7 +16220,8 @@ function SupplyTable({
   onDeleteSupply: (id: string) => void
   onArchiveSupply: (id: string) => void
   onStatusChange: (id: string, status: SupplyStatus) => void
-  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string) => Promise<boolean>
+  onRequestSent: (supply: Supply) => void
+  onUpdateDates: (id: string, sentAt?: string, acceptedAt?: string, shippingCost?: number | null) => Promise<boolean>
   onReplaceReserve: (itemId: string) => void
   userRole?: string
   archiveMode?: boolean
@@ -12051,9 +16262,11 @@ function SupplyTable({
             productName: item.productName,
             quantity: item.quantity,
             isReserve: item.isReserve,
+            itemKind: item.itemKind ?? 'Product',
           }),
           quantity: item.quantity,
           isReserve: item.isReserve,
+          itemKind: item.itemKind ?? 'Product',
         }))
         const totalQuantity = rows.reduce((sum, item) => sum + item.quantity, 0)
 
@@ -12086,14 +16299,16 @@ function SupplyTable({
                     <small>
                       {rows.length} поз. · {totalQuantity} шт. | Отгрузка:{' '}
                       {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'} | Сумма отправки:{' '}
+                      {supply.shippingCost ? formatMoney(supply.shippingCost, 'KZT') : '-'}
                     </small>
                   ) : userRole === 'Admin' ? (
                     <SupplyDatesEditor supply={supply} onUpdateDates={onUpdateDates} />
                   ) : (
                     <small>
                       Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                      {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'} | Сумма отправки:{' '}
+                      {supply.shippingCost ? formatMoney(supply.shippingCost, 'KZT') : '-'}
                     </small>
                   )}
                 </span>
@@ -12115,7 +16330,7 @@ function SupplyTable({
                     </button>
                   )}
                   {!archiveMode && supply.status === 'Created' && (
-                    <button type="button" onClick={() => onStatusChange(supply.id, 'Sent')}>
+                    <button type="button" onClick={() => onRequestSent(supply)}>
                       Отправлено
                     </button>
                   )}
@@ -12186,7 +16401,7 @@ function SupplyTable({
                       </span>
                       <OfferIdCell offerId={item.offerId} />
                       <span>{item.quantity}</span>
-                      <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
+                      <span>{formatSupplyItemKind(item)}</span>
                       <span className="reserve-replace">
                         {item.isReserve && userRole === 'Admin' ? (
                           <>
@@ -12248,7 +16463,7 @@ function SupplyAnalyticsTable({ rows }: { rows: SupplyAnalyticsItem[] }) {
         <div className="table-row supply-analytics-row" key={`${row.supplyId}-${row.id}`}>
           <span>
             <strong>{row.productName}</strong>
-            <small>{row.isReserve ? 'Новый товар' : 'Постоянный товар'}</small>
+            <small>{formatSupplyItemKind(row)}</small>
           </span>
           <OfferIdCell offerId={row.offerId} />
           <span>{row.quantity}</span>
@@ -12261,6 +16476,180 @@ function SupplyAnalyticsTable({ rows }: { rows: SupplyAnalyticsItem[] }) {
       {rows.length === 0 && (
         <div className="empty-state">
           <strong>По этому товару поставок пока нет.</strong>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SupplyFboRemainingTable({
+  rows,
+  onMarkDefect,
+}: {
+  rows: SupplyFboRemainingItem[]
+  onMarkDefect: (row: SupplyFboRemainingItem) => void
+}) {
+  return (
+    <div className="data-table supply-fbo-remaining-table">
+      <div className="table-row supply-fbo-remaining-row table-head">
+        <span>Товар</span>
+        <span>Артикул</span>
+        <span>Принято на сайте</span>
+        <span>Отгружено в Ozon</span>
+        <span>Осталось отгрузить</span>
+        <span>Брак</span>
+      </div>
+      {rows.map((row) => (
+        <div className="table-row supply-fbo-remaining-row" key={row.key}>
+          <span data-label="Товар">
+            <strong>{row.productName}</strong>
+          </span>
+          <span data-label="Артикул">
+            <OfferIdCell offerId={row.offerId} />
+          </span>
+          <span data-label="Принято на сайте">{row.acceptedQuantity}</span>
+          <span data-label="Отгружено в Ozon">{row.shippedQuantity}</span>
+          <span data-label="Осталось отгрузить">
+            <strong>{row.remainingQuantity}</strong>
+          </span>
+          <span data-label="Брак">
+            <button type="button" className="danger" onClick={() => onMarkDefect(row)}>
+              Брак
+            </button>
+          </span>
+        </div>
+      ))}
+      {rows.length === 0 && (
+        <div className="empty-state">
+          <strong>Все принятые товары уже отгружены на Ozon.</strong>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SupplyFboDefectsTable({
+  rows,
+  onRemoveDefect,
+}: {
+  rows: SupplyFboDefect[]
+  onRemoveDefect: (row: SupplyFboDefect) => void
+}) {
+  return (
+    <div className="data-table supply-fbo-defects-table">
+      <div className="table-row supply-fbo-defect-row table-head">
+        <span>Товар</span>
+        <span>Артикул</span>
+        <span>Брак</span>
+        <span>Отмечено</span>
+        <span>Действия</span>
+      </div>
+      {rows.map((row) => (
+        <div className="table-row supply-fbo-defect-row" key={row.id}>
+          <span data-label="Товар">
+            <strong>{row.productName}</strong>
+          </span>
+          <span data-label="Артикул">
+            <OfferIdCell offerId={row.offerId} />
+          </span>
+          <span data-label="Брак">
+            <strong>{row.quantity}</strong>
+          </span>
+          <span data-label="Отмечено">{formatDateTime(row.createdAt)}</span>
+          <span data-label="Действия">
+            <button type="button" className="secondary" onClick={() => onRemoveDefect(row)}>
+              Вернуть
+            </button>
+          </span>
+        </div>
+      ))}
+      {rows.length === 0 && (
+        <div className="empty-state">
+          <strong>Брак пока не отмечен.</strong>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SupplyExpensesTable({
+  rows,
+  onSave,
+  onDelete,
+}: {
+  rows: SupplyExpense[]
+  onSave: (row: SupplyExpense, amountValue: string, purchasedAtValue: string) => void
+  onDelete: (row: SupplyExpense) => void
+}) {
+  const [drafts, setDrafts] = useState<Record<string, { amount: string; purchasedAt: string }>>({})
+
+  function getDraft(row: SupplyExpense) {
+    return drafts[row.id] ?? {
+      amount: String(row.amount).replace('.', ','),
+      purchasedAt: dateInputValue(row.purchasedAt),
+    }
+  }
+
+  function updateDraft(row: SupplyExpense, patch: Partial<{ amount: string; purchasedAt: string }>) {
+    const current = getDraft(row)
+    setDrafts((prev) => ({
+      ...prev,
+      [row.id]: {
+        ...current,
+        ...patch,
+      },
+    }))
+  }
+
+  return (
+    <div className="data-table supply-expenses-table">
+      <div className="table-row supply-expense-row table-head">
+        <span>Название</span>
+        <span>Сумма</span>
+        <span>Дата покупки</span>
+        <span>Добавил</span>
+        <span>Создано</span>
+        <span>Действия</span>
+      </div>
+      {rows.map((row) => {
+        const draft = getDraft(row)
+
+        return (
+          <div className="table-row supply-expense-row" key={row.id}>
+            <span data-label="Название">
+              <strong>{row.name}</strong>
+            </span>
+            <span data-label="Сумма">
+              <input
+                inputMode="decimal"
+                value={draft.amount}
+                onChange={(event) => updateDraft(row, { amount: event.target.value })}
+                placeholder="0,00"
+              />
+            </span>
+            <span data-label="Дата покупки">
+              <input
+                type="date"
+                value={draft.purchasedAt}
+                onChange={(event) => updateDraft(row, { purchasedAt: event.target.value })}
+              />
+            </span>
+            <span data-label="Добавил">{row.createdByDisplayName || '-'}</span>
+            <span data-label="Создано">{formatDateTime(row.createdAt)}</span>
+            <span data-label="Действия" className="supply-expense-actions">
+              <button type="button" onClick={() => onSave(row, draft.amount, draft.purchasedAt)}>
+                Сохранить
+              </button>
+              <button type="button" className="danger" onClick={() => onDelete(row)}>
+                Удалить
+              </button>
+            </span>
+          </div>
+        )
+      })}
+      {rows.length === 0 && (
+        <div className="empty-state">
+          <strong>Расходников пока нет.</strong>
         </div>
       )}
     </div>
@@ -12280,10 +16669,15 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
                 <strong>{formatSupplyTitle(supply)}</strong>
                 <small>
                   Отгрузка: {supply.sentAt ? formatDateTime(supply.sentAt) : '-'} | Приемка:{' '}
-                  {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'}
+                  {supply.acceptedAt ? formatDateTime(supply.acceptedAt) : '-'} | Сумма отправки:{' '}
+                  {supply.shippingCost ? formatMoney(supply.shippingCost, 'KZT') : '-'}
                 </small>
               </span>
               <span className="status-pill">{formatSupplyDisplayStatus(supply)}</span>
+              <span>
+                <strong>{supply.shippingCost ? formatMoney(supply.shippingCost, 'KZT') : '-'}</strong>
+                <small>сумма отправки</small>
+              </span>
               <span>
                 <strong>{totalQuantity}</strong>
                 <small>шт. всего</small>
@@ -12302,7 +16696,7 @@ function AllSuppliesTable({ supplies }: { supplies: Supply[] }) {
                   <span>{item.productName}</span>
                   <OfferIdCell offerId={item.offerId} />
                   <span>{item.quantity}</span>
-                  <span>{item.isReserve ? 'Новый' : 'Постоянный'}</span>
+                  <span>{formatSupplyItemKind(item)}</span>
                 </div>
               ))}
             </div>
@@ -12646,8 +17040,7 @@ function AnalyticsPipelineBoard({
   const totalDeductions = analytics
     ? analytics.commissionTotal +
       analytics.logisticsTotal +
-      analytics.servicesTotal +
-      analytics.cancelledLogisticsTotal
+      analytics.servicesTotal
     : null
 
   return (
@@ -12762,6 +17155,169 @@ function AnalyticsPipelineBoard({
   )
 }
 
+function InternalAnalyticsPanel({ data }: { data: InternalAnalyticsData }) {
+  const hasMissingCost = data.productsWithoutCost > 0
+  const missingCostTooltip =
+    'Данные могут быть неверными: у части товаров не заполнена себестоимость в карточке товара.'
+  const hasPeriodMissingCost = data.periodSoldWithoutCostQuantity > 0
+  const periodMissingCostTooltip =
+    'Данные могут быть неверными: у части выкупленных товаров за период не заполнена себестоимость.'
+
+  return (
+    <div className="internal-analytics">
+      <section className="internal-analytics-section">
+        <div className="internal-analytics-section-head">
+          <div>
+            <strong>Склад Ozon по себестоимости</strong>
+            <span>Считается по текущим остаткам FBO + FBS и себестоимости из карточки товара.</span>
+          </div>
+        </div>
+        <div className="internal-analytics-grid">
+          <div className={`analytics-pipeline-card analytics-pipeline-card--highlight-success${hasMissingCost ? ' analytics-pipeline-card--has-warning' : ''}`}>
+            <span>Сумма товаров на складе по себестоимости</span>
+            {hasMissingCost ? (
+              <span className="analytics-cost-warning" title={missingCostTooltip} aria-label={missingCostTooltip}>
+                !
+              </span>
+            ) : null}
+            <strong>{formatMoney(data.stockCostTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success">
+            <span>Товаров на складе на сумму с продаж</span>
+            <strong>{formatMoney(data.stockSalesNetTotal, 'KZT')}</strong>
+          </div>
+          <div className={`analytics-pipeline-card analytics-pipeline-card--highlight-success${hasMissingCost ? ' analytics-pipeline-card--has-warning' : ''}`}>
+            <span>Чистая прибыль</span>
+            {hasMissingCost ? (
+              <span className="analytics-cost-warning" title={missingCostTooltip} aria-label={missingCostTooltip}>
+                !
+              </span>
+            ) : null}
+            <strong>{formatMoney(data.stockProfitTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Остаток на складе Ozon</span>
+            <strong>{data.stockQuantity}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Товаров с остатком</span>
+            <strong>{data.productsWithStock}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-progress">
+            <span>Штук с заполненной себестоимостью</span>
+            <strong>{data.costedStockQuantity}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Товаров без себестоимости</span>
+            <strong>{data.productsWithoutCost}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="internal-analytics-section">
+        <div className="internal-analytics-section-head">
+          <div>
+            <strong>Аналитика поставок</strong>
+            <span>Суммируются поставки в статусах “Отправлено” и “Принято”.</span>
+          </div>
+        </div>
+        <div className="internal-analytics-grid internal-analytics-grid--supplies">
+          <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success">
+            <span>Сумма отправки поставок</span>
+            <strong>{formatMoney(data.suppliesShippingTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Поставок отправлено / принято</span>
+            <strong>{data.suppliesCount}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Товаров в этих поставках</span>
+            <strong>{data.suppliesItemQuantity}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Поставок без суммы отправки</span>
+            <strong>{data.suppliesWithoutShippingCost}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="internal-analytics-section">
+        <div className="internal-analytics-section-head">
+          <div>
+            <strong>Финансовый итог за период</strong>
+            <span>
+              {data.periodDateFrom || '—'} — {data.periodDateTo || '—'}. К выплате от Ozon уже учитывает комиссии,
+              логистику и услуги Ozon; ниже дополнительно вычитаются себестоимость, расходники и отправка поставок.
+            </span>
+          </div>
+        </div>
+        <div className="internal-analytics-grid internal-analytics-grid--finance">
+          <div className="analytics-pipeline-card analytics-pipeline-card--highlight-success">
+            <span>К получению от Ozon</span>
+            <strong>{formatMoney(data.periodPayoutTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Продаж на сумму</span>
+            <strong>{formatMoney(data.periodOrderedAmount, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Заказано товаров</span>
+            <strong>{data.periodOrdersCount}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Удержания Ozon внутри выплаты</span>
+            <strong>{formatLossMoney(data.periodDeductionsTotal, 'KZT')}</strong>
+          </div>
+          <div className={`analytics-pipeline-card analytics-pipeline-card--text-danger${hasPeriodMissingCost ? ' analytics-pipeline-card--has-warning' : ''}`}>
+            <span>Себестоимость выкупленных товаров</span>
+            {hasPeriodMissingCost ? (
+              <span className="analytics-cost-warning" title={periodMissingCostTooltip} aria-label={periodMissingCostTooltip}>
+                !
+              </span>
+            ) : null}
+            <strong>{formatLossMoney(data.periodSoldCostTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Расходники</span>
+            <strong>{formatLossMoney(data.periodExpensesTotal, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Отправка поставок</span>
+            <strong>{formatLossMoney(data.periodSupplyShippingTotal, 'KZT')}</strong>
+          </div>
+          <div
+            className={`analytics-pipeline-card ${
+              data.periodNetProfit < 0
+                ? 'analytics-pipeline-card--highlight-danger'
+                : 'analytics-pipeline-card--highlight-success'
+            }${hasPeriodMissingCost ? ' analytics-pipeline-card--has-warning' : ''}`}
+          >
+            <span>Чистая прибыль за период</span>
+            {hasPeriodMissingCost ? (
+              <span className="analytics-cost-warning" title={periodMissingCostTooltip} aria-label={periodMissingCostTooltip}>
+                !
+              </span>
+            ) : null}
+            <strong>{formatMoney(data.periodNetProfit, 'KZT')}</strong>
+          </div>
+          <div className="analytics-pipeline-card">
+            <span>Расходников в периоде</span>
+            <strong>{data.periodExpensesCount}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-progress">
+            <span>Выкуплено с себестоимостью</span>
+            <strong>{data.periodSoldCostedQuantity}</strong>
+          </div>
+          <div className="analytics-pipeline-card analytics-pipeline-card--text-danger">
+            <span>Выкуплено без себестоимости</span>
+            <strong>{data.periodSoldWithoutCostQuantity}</strong>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function normalizeOrderStatus(status: string) {
   const value = status.trim().toLowerCase()
 
@@ -12865,11 +17421,11 @@ function translateProductStatus(status: string) {
     on_display: 'Продается',
     on: 'Продается',
     published: 'Продается',
-    продается: 'Продается',
+    'продается': 'Продается',
     'продаётся': 'Продается',
     archived: 'Архив',
     archive: 'Архив',
-    архив: 'Архив',
+    'архив': 'Архив',
     'в архиве': 'Архив',
   }
 
@@ -13126,3 +17682,5 @@ function HomeSalesChartBlock({
 }
 
 export default App
+
+

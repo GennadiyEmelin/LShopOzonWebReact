@@ -25,26 +25,26 @@ public sealed class SatuProductSyncService(
 
         try
         {
-            var offset = 0;
+            long? lastId = null;
             var seenProductIds = new HashSet<long>();
             var reachedEnd = false;
 
             while (!reachedEnd && !cancellationToken.IsCancellationRequested)
             {
-                var page = await FetchPageWithRetryAsync(apiKey, offset, cancellationToken);
+                var page = await FetchPageWithRetryAsync(apiKey, lastId, cancellationToken);
                 if (page.Count == 0)
                 {
                     break;
                 }
 
-                var newUniqueCount = await UpsertBatchAsync(
+                await UpsertBatchAsync(
                     normalizedShopId,
                     page,
                     syncStartedAt,
                     seenProductIds,
                     cancellationToken);
 
-                if (newUniqueCount == 0)
+                if (!SatuApiClient.TryReadLastProductId(page, out var nextLastId) || nextLastId == lastId)
                 {
                     break;
                 }
@@ -55,7 +55,7 @@ public sealed class SatuProductSyncService(
                 }
                 else
                 {
-                    offset += SatuApiClient.PageSize;
+                    lastId = nextLastId;
                 }
 
                 state.SyncedProducts = seenProductIds.Count;
@@ -64,6 +64,9 @@ public sealed class SatuProductSyncService(
                     : seenProductIds.Count + SatuApiClient.PageSize;
                 state.LastSyncStartedAt = syncStartedAt;
                 await db.SaveChangesAsync(cancellationToken);
+                db.ChangeTracker.Clear();
+                state = await db.SatuSyncStates
+                    .FirstAsync(entry => entry.ShopId == normalizedShopId, cancellationToken);
 
                 // Satu/Prom API allows about one request per second.
                 await Task.Delay(TimeSpan.FromSeconds(1.1), cancellationToken);
@@ -135,7 +138,7 @@ public sealed class SatuProductSyncService(
 
     private async Task<List<JsonElement>> FetchPageWithRetryAsync(
         string apiKey,
-        int offset,
+        long? lastId,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
@@ -143,10 +146,10 @@ public sealed class SatuProductSyncService(
         {
             try
             {
-                return await SatuApiClient.GetProductsPageAsync(
+                return await SatuApiClient.GetProductsPageAfterIdAsync(
                     httpClientFactory.CreateClient(nameof(SatuProductSyncService)),
                     apiKey,
-                    offset,
+                    lastId,
                     cancellationToken);
             }
             catch (HttpRequestException exception) when (attempt < MaxRetries && IsTransient(exception))

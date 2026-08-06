@@ -143,10 +143,19 @@ public record AdminUserReportResponse(
     List<string> EnabledSections,
     List<string> AvailableSections,
     DateOnly? LastSentOn,
+    bool MonthlyEnabled,
+    string MonthlyReportTime,
+    string MonthlyTimezone,
+    List<string> MonthlyEnabledSections,
+    DateOnly? MonthlyLastSentOn,
     bool TelegramConnected);
 
 public record UpdateAdminUserReportRequest(
     bool Enabled,
     string? ReportTime,
     string? Timezone,
-    List<string>? Sections);
+    List<string>? Sections,
+    bool MonthlyEnabled,
+    string? MonthlyReportTime,
+    string? MonthlyTimezone,
+    List<string>? MonthlySections);

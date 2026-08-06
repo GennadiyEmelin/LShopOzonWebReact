@@ -137,6 +137,8 @@ public static class ProductionAnalyticsStore
             record.CreatedByUserId,
             record.CreatedByDisplayName,
             record.CreatedAt,
+            null,
+            null,
             record.StartedAt,
             null,
             null,

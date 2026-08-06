@@ -2,6 +2,7 @@
 
 record ProductionFileListItem(
     Guid Id,
+    Guid? ProductionTaskItemId,
     long? OzonProductId,
     string OfferId,
     string ProductName,
@@ -26,11 +27,12 @@ record UpsertCatalogFilePathRequest(
     string? ProductLink,
     string Path);
 record DeleteProductionFileResponse(bool ReworkTaskCreated, Guid? TaskId);
-record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
-record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink);
-record UpdateProductionTaskRequest(bool IsUrgent, List<CreateProductionTaskItemRequest>? Items);
+record CreateProductionTaskRequest(string? TaskType, long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool IsUrgent, DateTimeOffset? DueAt, List<CreateProductionTaskItemRequest>? Items);
+record CreateProductionTaskItemRequest(long OzonProductId, string OfferId, string ProductName, int RequiredQuantity, bool EnforceMinimumQuantity, string? ProductLink, Guid? SourceTaskItemId = null);
+record UpdateProductionTaskRequest(string? TaskType, bool IsUrgent, DateTimeOffset? DueAt, List<CreateProductionTaskItemRequest>? Items);
 record UpdateProductionTaskItemRequest(int RequiredQuantity);
 record UpdateProductionTaskItemActualQuantityRequest(int ActualQuantity);
+record TransferDesignerTaskItemRequest(Guid TargetUserId);
 record CancelProductionTaskRequest(string Comment);
 public record ProductionAnalyticsSummaryRow(
     Guid? UserId,
@@ -97,6 +99,8 @@ public record ProductionTaskListItem(
     Guid? CreatedByUserId,
     string? CreatedByDisplayName,
     DateTimeOffset CreatedAt,
+    DateTimeOffset? DueAt,
+    DateTimeOffset? OverdueNotifiedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CancelledAt,
     Guid? CancelledByUserId,
@@ -106,5 +110,24 @@ public record ProductionTaskListItem(
     bool IsArchived,
     DateTimeOffset? ArchivedAt,
     List<ProductionTaskItemListItem> Items);
-public record ProductionTaskItemListItem(Guid Id, long OzonProductId, string OfferId, string ProductName, string ProductLink, int RequiredQuantity, int? ActualQuantity, bool EnforceMinimumQuantity, string FilePath);
+public record ProductionTaskItemListItem(
+    Guid Id,
+    long OzonProductId,
+    string OfferId,
+    string ProductName,
+    string ProductLink,
+    int RequiredQuantity,
+    int? ActualQuantity,
+    bool EnforceMinimumQuantity,
+    string FilePath,
+    DateTimeOffset? PackedAt,
+    Guid? PackedByUserId,
+    string? PackedByDisplayName,
+    Guid? PackedSupplyId,
+    ProductionTaskItemProductionSummary? ProductionSummary = null);
+
+public record ProductionTaskItemProductionSummary(
+    int CreatedQuantity,
+    int InProgressQuantity,
+    int CompletedQuantity);
 

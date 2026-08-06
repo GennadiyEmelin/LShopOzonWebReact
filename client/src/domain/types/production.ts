@@ -2,6 +2,7 @@ import type { NovinkaCatalogTab, NovinkaMarketplace } from '../../shopRegion'
 
 export type ProductionFile = {
   id: string
+  productionTaskItemId?: string
   ozonProductId?: number
   offerId: string
   productName: string
@@ -30,11 +31,12 @@ export type ProductionCatalogItem = {
   fileCount: number
   completedAt?: string
   marketplace?: NovinkaMarketplace
+  packedQuantity?: number
 }
 
 export type ProductionTaskStatus = 'New' | 'InProgress' | 'Cancelled' | 'Completed'
 
-export type ProductionTaskType = 'Ozon' | 'Novinka' | 'Kaspi' | 'Satu' | 'Halyk'
+export type ProductionTaskType = 'Ozon' | 'Novinka' | 'Packaging' | 'Kaspi' | 'Satu' | 'Halyk'
 
 export type ProductionTask = {
   id: string
@@ -50,6 +52,8 @@ export type ProductionTask = {
   createdByUserId?: string
   createdByDisplayName?: string
   createdAt: string
+  dueAt?: string
+  overdueNotifiedAt?: string
   startedAt?: string
   cancelledAt?: string
   cancelledByUserId?: string
@@ -71,13 +75,33 @@ export type ProductionTaskItem = {
   actualQuantity?: number
   enforceMinimumQuantity?: boolean
   filePath?: string
+  packedAt?: string
+  packedByUserId?: string
+  packedByDisplayName?: string
+  packedSupplyId?: string
+  productionSummary?: ProductionTaskItemProductionSummary
 }
 
-export type ProductionSubTab = 'products' | 'tasks' | 'inProgress' | 'cancelled' | 'completed' | 'archive'
+export type ProductionTaskItemProductionSummary = {
+  createdQuantity: number
+  inProgressQuantity: number
+  completedQuantity: number
+}
+
+export type ProductionSubTab =
+  | 'products'
+  | 'tasks'
+  | 'inProgress'
+  | 'readyToShip'
+  | 'cancelled'
+  | 'completed'
+  | 'archive'
 
 export type ProductionCatalogTab = 'ozon' | 'kaspi' | 'satu' | 'halyk' | NovinkaCatalogTab | 'editor'
 
-export type TaskFormMode = 'ozon' | 'kaspi' | 'satu' | 'halyk'
+export type TaskFormMode = 'ozon' | 'packaging' | 'kaspi' | 'satu' | 'halyk'
+
+export type ProductionTaskEditorKind = 'production' | 'novinka'
 
 export type ProductionAnalyticsSummaryRow = {
   userId?: string
@@ -103,6 +127,7 @@ export type ProductionAnalyticsAssignee = {
 
 export type DraftTaskItem = {
   tempId: string
+  sourceTaskItemId?: string
   ozonProductId: number
   offerId: string
   productName: string
@@ -111,6 +136,7 @@ export type DraftTaskItem = {
   requiredQuantity: number
   enforceMinimumQuantity: boolean
   isNovinka?: boolean
+  productionSummary?: ProductionTaskItemProductionSummary
 }
 
 export type DraftNovinkaItem = {
@@ -118,6 +144,7 @@ export type DraftNovinkaItem = {
   productName: string
   productLink: string
   offerId?: string
+  requiredQuantity: number
 }
 
 export type ProductionTaskTableMode = 'ozon' | 'novinka' | 'mixed'

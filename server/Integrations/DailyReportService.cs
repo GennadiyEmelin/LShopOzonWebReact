@@ -11,18 +11,53 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
 {
     public async Task<string> BuildReportAsync(AppUser user, DateOnly reportDate, CancellationToken cancellationToken = default)
     {
-        var enabled = TelegramReportSections.Parse(user.TelegramDailyReportSections);
+        return await BuildReportForPeriodAsync(
+            user,
+            reportDate,
+            reportDate,
+            user.TelegramDailyReportTimezone,
+            user.TelegramDailyReportSections,
+            $"📊 Отчёт LShop · {reportDate:dd.MM.yyyy}",
+            cancellationToken);
+    }
+
+    public async Task<string> BuildMonthlyReportAsync(AppUser user, DateOnly reportDate, CancellationToken cancellationToken = default)
+    {
+        var monthStart = new DateOnly(reportDate.Year, reportDate.Month, 1);
+        return await BuildReportForPeriodAsync(
+            user,
+            monthStart,
+            reportDate,
+            user.TelegramMonthlyReportTimezone,
+            user.TelegramMonthlyReportSections,
+            $"📊 Ежемесячный отчёт LShop · {monthStart:dd.MM.yyyy}-{reportDate:dd.MM.yyyy}",
+            cancellationToken);
+    }
+
+    private async Task<string> BuildReportForPeriodAsync(
+        AppUser user,
+        DateOnly reportStart,
+        DateOnly reportEnd,
+        string timezoneId,
+        string sections,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        var enabled = TelegramReportSections.Parse(sections);
         if (enabled.Count == 0)
         {
             enabled = TelegramReportSections.All.Select(section => section.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
-        var timezone = ResolveTimeZone(user.TelegramDailyReportTimezone);
-        var dayStart = new DateTimeOffset(reportDate.ToDateTime(TimeOnly.MinValue), timezone.GetUtcOffset(reportDate.ToDateTime(TimeOnly.MinValue)));
-        var dayEnd = dayStart.AddDays(1);
+        var timezone = ResolveTimeZone(timezoneId);
+        var startDateTime = reportStart.ToDateTime(TimeOnly.MinValue);
+        var endDateTime = reportEnd.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var periodStart = new DateTimeOffset(startDateTime, timezone.GetUtcOffset(startDateTime));
+        var periodEnd = new DateTimeOffset(endDateTime, timezone.GetUtcOffset(endDateTime));
+        var periodLabel = reportStart == reportEnd ? "за день" : "за период";
 
         var builder = new System.Text.StringBuilder();
-        builder.AppendLine($"📊 Отчёт LShop · {reportDate:dd.MM.yyyy}");
+        builder.AppendLine(title);
         builder.AppendLine($"Пользователь: {user.DisplayName}");
         builder.AppendLine();
 
@@ -37,26 +72,26 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
             var tasks = await db.ProductionTasks.AsNoTracking().ToListAsync(cancellationToken);
             if (enabled.Contains("production.newTasks"))
             {
-                var count = tasks.Count(task => task.CreatedAt >= dayStart && task.CreatedAt < dayEnd);
-                builder.AppendLine($"Новые задачи: {count}");
+                var count = tasks.Count(task => task.CreatedAt >= periodStart && task.CreatedAt < periodEnd);
+                builder.AppendLine($"Новые задачи {periodLabel}: {count}");
             }
 
             if (enabled.Contains("production.completedTasks"))
             {
                 var count = tasks.Count(task =>
                     task.CompletedAt is not null &&
-                    task.CompletedAt >= dayStart &&
-                    task.CompletedAt < dayEnd);
-                builder.AppendLine($"Выполненные задачи: {count}");
+                    task.CompletedAt >= periodStart &&
+                    task.CompletedAt < periodEnd);
+                builder.AppendLine($"Выполненные задачи {periodLabel}: {count}");
             }
 
             if (enabled.Contains("production.cancelledTasks"))
             {
                 var count = tasks.Count(task =>
                     task.CancelledAt is not null &&
-                    task.CancelledAt >= dayStart &&
-                    task.CancelledAt < dayEnd);
-                builder.AppendLine($"Отменённые задачи: {count}");
+                    task.CancelledAt >= periodStart &&
+                    task.CancelledAt < periodEnd);
+                builder.AppendLine($"Отменённые задачи {periodLabel}: {count}");
             }
 
             if (enabled.Contains("production.inProgressTasks"))
@@ -79,9 +114,9 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
                 var count = tasks.Count(task =>
                     task.IsArchived &&
                     task.ArchivedAt is not null &&
-                    task.ArchivedAt >= dayStart &&
-                    task.ArchivedAt < dayEnd);
-                builder.AppendLine($"Архивировано задач: {count}");
+                    task.ArchivedAt >= periodStart &&
+                    task.ArchivedAt < periodEnd);
+                builder.AppendLine($"Архивировано задач {periodLabel}: {count}");
             }
 
             if (enabled.Contains("production.completedByAssignee"))
@@ -89,8 +124,8 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
                 var completedByAssignee = tasks
                     .Where(task =>
                         task.CompletedAt is not null &&
-                        task.CompletedAt >= dayStart &&
-                        task.CompletedAt < dayEnd)
+                        task.CompletedAt >= periodStart &&
+                        task.CompletedAt < periodEnd)
                     .GroupBy(task => string.IsNullOrWhiteSpace(task.AssignedUserName) ? "—" : task.AssignedUserName.Trim())
                     .OrderByDescending(group => group.Count())
                     .ThenBy(group => group.Key)
@@ -120,26 +155,26 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
             var supplies = await db.Supplies.AsNoTracking().Where(supply => !supply.IsArchived).ToListAsync(cancellationToken);
             if (enabled.Contains("supplies.created"))
             {
-                var count = supplies.Count(supply => supply.CreatedAt >= dayStart && supply.CreatedAt < dayEnd);
-                builder.AppendLine($"Создано поставок: {count}");
+                var count = supplies.Count(supply => supply.CreatedAt >= periodStart && supply.CreatedAt < periodEnd);
+                builder.AppendLine($"Создано поставок {periodLabel}: {count}");
             }
 
             if (enabled.Contains("supplies.sent"))
             {
                 var count = supplies.Count(supply =>
                     supply.SentAt is not null &&
-                    supply.SentAt >= dayStart &&
-                    supply.SentAt < dayEnd);
-                builder.AppendLine($"Отправлено поставок: {count}");
+                    supply.SentAt >= periodStart &&
+                    supply.SentAt < periodEnd);
+                builder.AppendLine($"Отправлено поставок {periodLabel}: {count}");
             }
 
             if (enabled.Contains("supplies.accepted"))
             {
                 var count = supplies.Count(supply =>
                     supply.AcceptedAt is not null &&
-                    supply.AcceptedAt >= dayStart &&
-                    supply.AcceptedAt < dayEnd);
-                builder.AppendLine($"Принято поставок: {count}");
+                    supply.AcceptedAt >= periodStart &&
+                    supply.AcceptedAt < periodEnd);
+                builder.AppendLine($"Принято поставок {periodLabel}: {count}");
             }
 
             builder.AppendLine();
@@ -149,14 +184,31 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
             section.StartsWith("orders.", StringComparison.OrdinalIgnoreCase) ||
             section.StartsWith("analytics.", StringComparison.OrdinalIgnoreCase));
 
+        if (enabled.Contains(TelegramReportSections.AccountingSales) ||
+            enabled.Contains(TelegramReportSections.AccountingMaterials))
+        {
+            builder.AppendLine("Учет / Отчетность:");
+            if (enabled.Contains(TelegramReportSections.AccountingSales))
+            {
+                builder.AppendLine("Отчет продаж включен для отправки из раздела «Учет / Отчетность».");
+            }
+
+            if (enabled.Contains(TelegramReportSections.AccountingMaterials))
+            {
+                builder.AppendLine("Отчет материалов включен для отправки из раздела «Учет / Отчетность».");
+            }
+
+            builder.AppendLine();
+        }
+
         if (needsOzon)
         {
             try
             {
                 var supplyArrivalDates = await SupplyAnalyticsHelper.BuildAcceptedSupplyArrivalDatesAsync(db);
                 var analytics = await ozonApi.GetAnalyticsAsync(
-                    reportDate,
-                    reportDate,
+                    reportStart,
+                    reportEnd,
                     supplyArrivalDates,
                     timezone,
                     cancellationToken);
@@ -165,7 +217,7 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
 
                 if (enabled.Contains("orders.count"))
                 {
-                    builder.AppendLine($"Заказов за день: {(int)analytics.SalesTotalCount}");
+                    builder.AppendLine($"Заказов {periodLabel}: {(int)analytics.SalesTotalCount}");
                 }
 
                 if (enabled.Contains("orders.revenue"))
@@ -180,7 +232,7 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
 
                 if (enabled.Contains("orders.cancelled"))
                 {
-                    builder.AppendLine($"Отменено за день: {(int)analytics.CancelledCount}");
+                    builder.AppendLine($"Отменено {periodLabel}: {(int)analytics.CancelledCount}");
                 }
 
                 if (enabled.Contains("analytics.balance"))
@@ -190,7 +242,7 @@ public class DailyReportService(AppDbContext db, OzonApiClient ozonApi, ILogger<
 
                 if (enabled.Contains("analytics.commission"))
                 {
-                    builder.AppendLine($"Комиссия Ozon: {analytics.CommissionTotal:N0} {currency}");
+                    builder.AppendLine($"Комиссия Ozon {periodLabel}: {analytics.CommissionTotal:N0} {currency}");
                 }
 
                 builder.AppendLine();

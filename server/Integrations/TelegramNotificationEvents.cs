@@ -26,6 +26,7 @@ public static class TelegramNotificationEvents
         new("production.task.archived", "Производство", "Задача отправлена в архив", ShopRegionBoth),
         new("production.task.restored", "Производство", "Задача восстановлена из архива", ShopRegionBoth),
         new("production.task.updated", "Производство", "Задача изменена", ShopRegionBoth),
+        new("production.task.overdue", "Производство", "Задача просрочена", ShopRegionBoth),
         new("production.file.added", "Производство", "Добавлен файл производства", ShopRegionBoth),
         new("production.file.deleted", "Производство", "Удалён файл производства", ShopRegionBoth),
         new("production.rework.created", "Производство", "Создана задача на доработку новинки", ShopRegionBoth),
@@ -70,7 +71,9 @@ public static class TelegramNotificationEvents
         };
 
     public static IEnumerable<string> DefaultEventIdsForShopRegion(string? shopRegion) =>
-        ForShopRegion(shopRegion).Select(definition => definition.Id);
+        ForShopRegion(shopRegion)
+            .Select(definition => definition.Id)
+            .Where(id => !string.Equals(id, "production.task.overdue", StringComparison.OrdinalIgnoreCase));
 
     public static string NormalizeShopRegion(string? shopRegion) =>
         string.Equals(shopRegion, ShopRegionKz, StringComparison.OrdinalIgnoreCase)

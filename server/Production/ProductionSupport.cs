@@ -25,19 +25,9 @@ static class ProductionTaskRoleFilter
         var seeNovinka = FeatureAccess.CanSeeNovinkaProductionTasks(role, allowed);
         var seeOzon = FeatureAccess.CanSeeOzonProductionTasks(role, allowed);
 
-        if (seeNovinka && seeOzon)
+        if (seeNovinka || seeOzon)
         {
             return query;
-        }
-
-        if (seeNovinka)
-        {
-            return query.Where(task => task.TaskType == ProductionTaskTypes.Novinka);
-        }
-
-        if (seeOzon)
-        {
-            return query.Where(task => task.TaskType != ProductionTaskTypes.Novinka);
         }
 
         return query.Where(_ => false);
@@ -75,9 +65,29 @@ static class ProductionTaskResponses
         }
 
         var normalized = value.Trim();
+        if (string.Equals(normalized, "Design", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "Дизайн", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionTaskTypes.Novinka;
+        }
+
+        if (string.Equals(normalized, "Production", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "Производство", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "Ozon - производство", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "Озон - производство", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "Озон", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionTaskTypes.Ozon;
+        }
+
         if (string.Equals(normalized, ProductionTaskTypes.Novinka, StringComparison.OrdinalIgnoreCase))
         {
             return ProductionTaskTypes.Novinka;
+        }
+
+        if (string.Equals(normalized, ProductionTaskTypes.Packaging, StringComparison.OrdinalIgnoreCase))
+        {
+            return ProductionTaskTypes.Packaging;
         }
 
         foreach (var taskType in ProductionTaskTypes.MarketplaceTypes)
@@ -93,10 +103,17 @@ static class ProductionTaskResponses
 
     public static string BuildNovinkaOfferId(Guid itemId) => $"NV-{itemId:N}";
 
-    public static bool MatchesProductionFile(ProductionFile file, ProductionTaskItem taskItem) =>
-        (!string.IsNullOrWhiteSpace(taskItem.OfferId) && file.OfferId == taskItem.OfferId) ||
-        (taskItem.OzonProductId > 0 && file.OzonProductId == taskItem.OzonProductId) ||
-        MatchesNovinkaProductionFile(file, taskItem.OfferId, taskItem.ProductName, taskItem.ProductLink);
+    public static bool MatchesProductionFile(ProductionFile file, ProductionTaskItem taskItem)
+    {
+        if (file.ProductionTaskItemId.HasValue && file.ProductionTaskItemId.Value == taskItem.Id)
+        {
+            return true;
+        }
+
+        return (!string.IsNullOrWhiteSpace(taskItem.OfferId) && file.OfferId == taskItem.OfferId) ||
+               (taskItem.OzonProductId > 0 && file.OzonProductId == taskItem.OzonProductId) ||
+               MatchesNovinkaProductionFile(file, taskItem.OfferId, taskItem.ProductName, taskItem.ProductLink);
+    }
 
     public static bool MatchesProductionFilePath(ProductionFilePath path, ProductionTaskItem taskItem) =>
         (!string.IsNullOrWhiteSpace(taskItem.OfferId) && path.OfferId == taskItem.OfferId) ||
@@ -280,7 +297,10 @@ static class ProductionTaskResponses
              string.Equals(item.OfferId, offerId, StringComparison.OrdinalIgnoreCase)));
     }
 
-    public static ProductionTaskListItem ToListItem(ProductionTask task) =>
+    public static ProductionTaskListItem ToListItem(
+        ProductionTask task,
+        bool includeDeadline = true,
+        IReadOnlyDictionary<Guid, ProductionTaskItemProductionSummary>? productionSummaries = null) =>
         new(
             task.Id,
             task.OzonProductId,
@@ -295,6 +315,8 @@ static class ProductionTaskResponses
             task.CreatedByUserId,
             task.CreatedByDisplayName,
             task.CreatedAt,
+            includeDeadline ? task.DueAt : null,
+            includeDeadline ? task.OverdueNotifiedAt : null,
             task.StartedAt,
             task.CancelledAt,
             task.CancelledByUserId,
@@ -303,7 +325,7 @@ static class ProductionTaskResponses
             task.CompletedAt,
             task.IsArchived,
             task.ArchivedAt,
-            MapItems(task));
+            MapItems(task, productionSummaries));
 
     public static string BuildNewTaskTelegramMessage(ProductionTask task)
     {
@@ -464,6 +486,24 @@ static class ProductionTaskResponses
     public static string BuildUpdatedTaskTelegramMessage(ProductionTask task) =>
         $"Задача изменена\n{BuildTaskHeadline(task)}";
 
+    public static string BuildOverdueTaskTelegramMessage(ProductionTask task)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("Задача просрочена");
+        builder.AppendLine(BuildTaskHeadline(task));
+        if (task.DueAt.HasValue)
+        {
+            builder.AppendLine($"Срок: {task.DueAt.Value.ToLocalTime():dd.MM.yyyy HH:mm}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.AssignedUserName))
+        {
+            builder.AppendLine($"Исполнитель: {task.AssignedUserName.Trim()}");
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
     public static string BuildArchivedTaskTelegramMessage(ProductionTask task) =>
         $"Задача отправлена в архив\n{BuildTaskHeadline(task)}";
 
@@ -549,9 +589,11 @@ static class ProductionTaskResponses
         return trimmed[..(maxLength - 1)].TrimEnd() + "…";
     }
 
-    public static List<ProductionTaskItemListItem> MapItems(ProductionTask task) =>
+    public static List<ProductionTaskItemListItem> MapItems(
+        ProductionTask task,
+        IReadOnlyDictionary<Guid, ProductionTaskItemProductionSummary>? productionSummaries = null) =>
         task.Items.Count == 0
-            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false, string.Empty)]
+            ? [new ProductionTaskItemListItem(task.Id, task.OzonProductId, task.OfferId, task.ProductName, string.Empty, task.RequiredQuantity, task.ActualQuantity, false, string.Empty, null, null, null, null)]
             : task.Items
                 .OrderBy(item => item.ProductName)
                 .Select(item => new ProductionTaskItemListItem(
@@ -563,8 +605,121 @@ static class ProductionTaskResponses
                     item.RequiredQuantity,
                     item.ActualQuantity,
                     item.EnforceMinimumQuantity,
-                    item.FilePath))
+                    item.FilePath,
+                    item.PackedAt,
+                    item.PackedByUserId,
+                    item.PackedByDisplayName,
+                    item.PackedSupplyId,
+                    productionSummaries is not null && productionSummaries.TryGetValue(item.Id, out var summary)
+                        ? summary
+                        : null))
                 .ToList();
+
+    public static IReadOnlyDictionary<Guid, ProductionTaskItemProductionSummary> BuildProductionSummaries(
+        IReadOnlyCollection<ProductionTask> sourceTasks,
+        IReadOnlyCollection<ProductionTask> allVisibleTasks)
+    {
+        var productionItems = allVisibleTasks
+            .Where(task =>
+                !task.IsArchived &&
+                NormalizeTaskType(task.TaskType) != ProductionTaskTypes.Novinka &&
+                task.Status is ProductionTaskStatuses.New or ProductionTaskStatuses.InProgress or ProductionTaskStatuses.Completed)
+            .SelectMany(task => task.Items.Count == 0
+                ? [new ProductionSummarySourceItem(task, new ProductionTaskItem
+                {
+                    Id = task.Id,
+                    OzonProductId = task.OzonProductId,
+                    OfferId = task.OfferId,
+                    ProductName = task.ProductName,
+                    RequiredQuantity = task.RequiredQuantity,
+                    ActualQuantity = task.ActualQuantity
+                })]
+                : task.Items.Select(item => new ProductionSummarySourceItem(task, item)))
+            .ToList();
+
+        var result = new Dictionary<Guid, ProductionTaskItemProductionSummary>();
+        foreach (var sourceItem in sourceTasks.SelectMany(task => task.Items))
+        {
+            var created = 0;
+            var inProgress = 0;
+            var completed = 0;
+
+            foreach (var productionItem in productionItems)
+            {
+                if (!IsSameProductionProduct(sourceItem, productionItem.Item))
+                {
+                    continue;
+                }
+
+                var quantity = productionItem.Task.Status == ProductionTaskStatuses.Completed
+                    ? productionItem.Item.ActualQuantity ?? productionItem.Item.RequiredQuantity
+                    : productionItem.Item.RequiredQuantity;
+
+                if (quantity <= 0)
+                {
+                    continue;
+                }
+
+                if (productionItem.Task.Status == ProductionTaskStatuses.New)
+                {
+                    created += quantity;
+                }
+                else if (productionItem.Task.Status == ProductionTaskStatuses.InProgress)
+                {
+                    inProgress += quantity;
+                }
+                else if (productionItem.Task.Status == ProductionTaskStatuses.Completed)
+                {
+                    completed += quantity;
+                }
+            }
+
+            if (created > 0 || inProgress > 0 || completed > 0)
+            {
+                result[sourceItem.Id] = new ProductionTaskItemProductionSummary(created, inProgress, completed);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsSameProductionProduct(ProductionTaskItem sourceItem, ProductionTaskItem productionItem)
+    {
+        if (sourceItem.OzonProductId > 0 &&
+            productionItem.OzonProductId > 0 &&
+            sourceItem.OzonProductId == productionItem.OzonProductId)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceItem.OfferId) &&
+            !string.IsNullOrWhiteSpace(productionItem.OfferId) &&
+            string.Equals(sourceItem.OfferId.Trim(), productionItem.OfferId.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var sourceName = sourceItem.ProductName.Trim();
+        var productionName = productionItem.ProductName.Trim();
+        if (string.IsNullOrWhiteSpace(sourceName) ||
+            !string.Equals(sourceName, productionName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceItem.ProductLink) &&
+            !string.IsNullOrWhiteSpace(productionItem.ProductLink))
+        {
+            return string.Equals(
+                NormalizeNovinkaLink(sourceItem.ProductLink),
+                NormalizeNovinkaLink(productionItem.ProductLink),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        return true;
+    }
+
+    private sealed record ProductionSummarySourceItem(ProductionTask Task, ProductionTaskItem Item);
 
     public static List<ProductionTaskItem> BuildTaskItems(
         string taskType,
@@ -583,7 +738,7 @@ static class ProductionTaskResponses
                     OfferId = BuildNovinkaOfferId(itemId),
                     ProductName = normalized.ProductName,
                     ProductLink = normalized.ProductLink,
-                    RequiredQuantity = 0,
+                    RequiredQuantity = normalized.RequiredQuantity,
                     EnforceMinimumQuantity = false
                 };
             }).ToList();
@@ -662,7 +817,7 @@ static class ProductionTaskResponses
                     : existing.OfferId;
                 existing.ProductName = normalized.ProductName;
                 existing.ProductLink = normalized.ProductLink;
-                existing.RequiredQuantity = 0;
+                existing.RequiredQuantity = normalized.RequiredQuantity;
                 existing.EnforceMinimumQuantity = false;
                 result.Add(existing);
                 continue;
@@ -677,7 +832,7 @@ static class ProductionTaskResponses
                 OfferId = BuildNovinkaOfferId(itemId),
                 ProductName = normalized.ProductName,
                 ProductLink = normalized.ProductLink,
-                RequiredQuantity = 0,
+                RequiredQuantity = normalized.RequiredQuantity,
                 EnforceMinimumQuantity = false,
             };
             task.Items.Add(newItem);
@@ -972,6 +1127,7 @@ static class ProductionTaskResponses
             ProductionTaskTypes.Kaspi => "Kaspi",
             ProductionTaskTypes.Satu => "Satu",
             ProductionTaskTypes.Halyk => "Halyk",
+            ProductionTaskTypes.Packaging => "Упаковка",
             _ => "Ozon"
         };
     }

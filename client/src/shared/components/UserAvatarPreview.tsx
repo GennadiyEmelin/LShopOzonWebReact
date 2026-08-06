@@ -5,11 +5,13 @@ export function UserAvatarPreview({
   displayName,
   nested = false,
   className = 'chat-avatar',
+  hoverPreview = true,
 }: {
   avatarUrl?: string
   displayName: string
   nested?: boolean
   className?: string
+  hoverPreview?: boolean
 }) {
   const content = avatarUrl ? (
     <img src={avatarUrl} alt={displayName} />
@@ -23,7 +25,7 @@ export function UserAvatarPreview({
     <span className={className}>{content}</span>
   )
 
-  if (!avatarUrl) {
+  if (!avatarUrl || !hoverPreview) {
     return avatar
   }
 

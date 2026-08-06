@@ -16,6 +16,8 @@ app.MapAdminEndpoints();
 app.MapSuppliesEndpoints();
 app.MapChatEndpoints();
 app.MapOzonEndpoints();
+app.MapCalculatorEndpoints();
+app.MapFinanceEndpoints();
 app.MapUtilityEndpoints();
 
 var hasStaticClient = !string.IsNullOrWhiteSpace(app.Environment.WebRootPath)
