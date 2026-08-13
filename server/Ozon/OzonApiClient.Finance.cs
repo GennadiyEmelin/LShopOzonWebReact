@@ -160,9 +160,36 @@ public partial class OzonApiClient
                 detail?.ServiceItems ?? Array.Empty<OzonPayoutServiceItem>()));
         }
 
-        // «Ожидается» — начисленное к выплате в самом свежем периоде.
-        // Именно эта сумма показана на карточке «Стандартный график» в кабинете.
-        var pendingTotal = periods.FirstOrDefault()?.PendingPayout ?? 0m;
+        // Ozon отражает начисление invoice_transfer в периоде, за который оно рассчитано,
+        // а фактический payments — в более позднем периоде, когда деньги перечислены.
+        // Сопоставляем одинаковые суммы, чтобы уже перечисленная выплата не оставалась
+        // одновременно в блоке «Ожидают выплаты».
+        var unmatchedPayments = periods
+            .Where(period => period.PaidOut > 0m)
+            .Select(period => new PendingPayment(period.PeriodBegin, period.PaidOut))
+            .ToList();
+
+        for (var index = 0; index < periods.Count; index++)
+        {
+            var period = periods[index];
+            if (period.PendingPayout <= 0m)
+            {
+                continue;
+            }
+
+            var paymentIndex = unmatchedPayments.FindIndex(payment =>
+                payment.PeriodBegin > period.PeriodBegin &&
+                Math.Abs(payment.Amount - period.PendingPayout) < 0.01m);
+            if (paymentIndex < 0)
+            {
+                continue;
+            }
+
+            periods[index] = period with { PendingPayout = 0m };
+            unmatchedPayments.RemoveAt(paymentIndex);
+        }
+
+        var pendingTotal = periods.Sum(period => period.PendingPayout);
         var paidTotal = periods.Sum(period => period.PaidOut);
         var currentBalance = periods.FirstOrDefault()?.EndBalance;
 
@@ -425,6 +452,8 @@ public partial class OzonApiClient
         decimal Payments,
         decimal CommissionDuplicate,
         IReadOnlyList<OzonPayoutServiceItem> ServiceItems);
+
+    private sealed record PendingPayment(DateOnly PeriodBegin, decimal Amount);
 }
 
 public record OzonPayoutServiceItem(
