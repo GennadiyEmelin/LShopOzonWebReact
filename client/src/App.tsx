@@ -58,6 +58,7 @@ import type {
   ProductionTask,
   ProductionTaskEditorKind,
   ProductionTaskItem,
+  ProductionTaskStatus,
   ProductionTaskType,
   TaskFormMode,
 } from './domain/types/production'
@@ -113,6 +114,13 @@ import { appRoles, getRoleLabel } from './shared/constants/appRoles'
 import './App.css'
 
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000001'
+
+const RESTORE_PRODUCTION_TASK_STATUS_LABELS: Record<ProductionTaskStatus, string> = {
+  New: 'Новая',
+  InProgress: 'В работе',
+  Completed: 'Выполненная',
+  Cancelled: 'Отменённая',
+}
 
 type HomeBlockConfig = {
   id: string
@@ -8353,7 +8361,7 @@ function App() {
   }
 
   function openEditTaskModal(task: ProductionTask) {
-    if (task.status !== 'New') {
+    if (task.status !== 'New' && !(user?.role === 'Admin' && task.status === 'InProgress')) {
       return
     }
 
@@ -8966,16 +8974,17 @@ function App() {
     await loadProductionTasks()
   }
 
-  async function restoreProductionTask(id: string) {
-    const response = await productionApi.restoreProductionTask(token, id)
+  async function restoreProductionTask(id: string, status: ProductionTaskStatus = 'New') {
+    const response = await productionApi.restoreProductionTask(token, id, status)
 
     if (!response.ok) {
       const message = await response.text()
-      setTaskStatus(message || 'Не удалось вернуть задачу в новые')
+      setTaskStatus(message || 'Не удалось восстановить задачу')
       return
     }
 
-    setTaskStatus('Задача возвращена в новые')
+    const statusLabel = RESTORE_PRODUCTION_TASK_STATUS_LABELS[status]
+    setTaskStatus(`Задача восстановлена: ${statusLabel}`)
     await loadProductionTasks()
   }
 
@@ -11346,6 +11355,7 @@ function App() {
                     onSaveTaskItemRequiredQuantity={
                       canEditProductionTasks() ? saveProductionTaskItemRequiredQuantity : undefined
                     }
+                    onEdit={user?.role === 'Admin' ? openEditTaskModal : undefined}
                     onCreateProductionFromNovinkaItem={
                       canCreateProductionTasks() ? openProductionTaskFromNovinkaItem : undefined
                     }
@@ -11473,6 +11483,7 @@ function App() {
                     token={token}
                     onOpenFiles={openProductionFilesModal}
                     archiveView
+                    onRestore={user?.role === 'Admin' ? restoreProductionTask : undefined}
                     onDelete={user?.role === 'Admin' ? deleteProductionTask : undefined}
                     emptyText="В архиве задач пока нет."
                   />
@@ -17867,5 +17878,3 @@ function HomeSalesChartBlock({
 }
 
 export default App
-
-

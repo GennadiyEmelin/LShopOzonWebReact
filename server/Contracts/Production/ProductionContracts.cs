@@ -34,6 +34,7 @@ record UpdateProductionTaskItemRequest(int RequiredQuantity);
 record UpdateProductionTaskItemActualQuantityRequest(int ActualQuantity);
 record TransferDesignerTaskItemRequest(Guid TargetUserId);
 record CancelProductionTaskRequest(string Comment);
+record RestoreProductionTaskRequest(string? Status);
 public record ProductionAnalyticsSummaryRow(
     Guid? UserId,
     string UserName,

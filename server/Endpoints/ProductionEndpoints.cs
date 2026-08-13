@@ -1200,9 +1200,11 @@ public static class ProductionEndpoints
                 return Results.NotFound();
             }
 
-            if (task.Status != ProductionTaskStatuses.New)
+            var isAdmin = await UserRoleResolver.IsInRoleAsync(db, principal, UserRoles.Admin);
+            if (task.Status != ProductionTaskStatuses.New &&
+                !(isAdmin && task.Status == ProductionTaskStatuses.InProgress))
             {
-                return Results.BadRequest("Редактировать можно только задачу, которая ещё не взята в работу.");
+                return Results.BadRequest("Редактировать можно новую задачу, а администраторам — также задачу в работе.");
             }
 
             var previousTaskType = ProductionTaskResponses.NormalizeTaskType(task.TaskType);
@@ -1724,6 +1726,7 @@ public static class ProductionEndpoints
 
         app.MapPut("/api/production/tasks/{id:guid}/restore", async (
             Guid id,
+            RestoreProductionTaskRequest request,
             AppDbContext db,
             ClaimsPrincipal principal,
             IHubContext<AppHub> hub) =>
@@ -1736,30 +1739,63 @@ public static class ProductionEndpoints
                 return Results.NotFound();
             }
 
-            if (task.Status != ProductionTaskStatuses.Cancelled)
+            var targetStatus = string.IsNullOrWhiteSpace(request.Status)
+                ? ProductionTaskStatuses.New
+                : request.Status.Trim();
+            if (targetStatus is not (ProductionTaskStatuses.New or
+                ProductionTaskStatuses.InProgress or
+                ProductionTaskStatuses.Completed or
+                ProductionTaskStatuses.Cancelled))
             {
-                return Results.BadRequest("Вернуть в новые можно только отменённую задачу.");
+                return Results.BadRequest("Выберите допустимый статус для восстановления задачи.");
             }
 
-            if (task.IsArchived)
+            if (!task.IsArchived && task.Status != ProductionTaskStatuses.Cancelled)
             {
-                return Results.BadRequest("Архивированную задачу нельзя вернуть в новые.");
+                return Results.BadRequest("Восстановить можно архивированную или отменённую задачу.");
             }
 
-            task.Status = ProductionTaskStatuses.New;
-            task.CancelledAt = null;
-            task.CancelledByUserId = null;
-            task.CancelledByDisplayName = null;
-            task.CancellationComment = null;
-            task.StartedAt = null;
-            task.AssignedUserName = null;
-            task.ActualQuantity = null;
-            foreach (var item in task.Items)
+            task.Status = targetStatus;
+            task.IsArchived = false;
+            task.ArchivedAt = null;
+
+            if (targetStatus != ProductionTaskStatuses.Cancelled)
             {
-                item.ActualQuantity = null;
+                task.CancelledAt = null;
+                task.CancelledByUserId = null;
+                task.CancelledByDisplayName = null;
+                task.CancellationComment = null;
             }
 
-            AuditLogWriter.Add(db, principal, "Задача возвращена в новые", "ProductionTask", task.Id.ToString(), task.ProductName);
+            if (targetStatus != ProductionTaskStatuses.Completed)
+            {
+                task.CompletedAt = null;
+            }
+
+            if (targetStatus == ProductionTaskStatuses.New)
+            {
+                task.StartedAt = null;
+                task.AssignedUserName = null;
+                task.ActualQuantity = null;
+                foreach (var item in task.Items)
+                {
+                    item.ActualQuantity = null;
+                }
+            }
+            else if (targetStatus == ProductionTaskStatuses.InProgress)
+            {
+                task.StartedAt ??= DateTimeOffset.UtcNow;
+            }
+            else if (targetStatus == ProductionTaskStatuses.Completed)
+            {
+                task.CompletedAt ??= DateTimeOffset.UtcNow;
+            }
+            else
+            {
+                task.CancelledAt ??= DateTimeOffset.UtcNow;
+            }
+
+            AuditLogWriter.Add(db, principal, $"Задача восстановлена со статусом {targetStatus}", "ProductionTask", task.Id.ToString(), task.ProductName);
             await db.SaveChangesAsync();
             await hub.Clients.All.SendAsync("ProductionTasksChanged");
 

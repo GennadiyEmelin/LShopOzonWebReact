@@ -5,6 +5,7 @@ import type {
   ProductionFile,
   ProductionFilePath,
   ProductionTask,
+  ProductionTaskStatus,
 } from '../../domain/types/production'
 
 export async function fetchProductionTasks(token: string) {
@@ -51,8 +52,12 @@ export async function archiveProductionTask(token: string, id: string) {
   return apiFetch(`/api/production/tasks/${id}/archive`, token, { method: 'PUT' })
 }
 
-export async function restoreProductionTask(token: string, id: string) {
-  return apiFetch(`/api/production/tasks/${id}/restore`, token, { method: 'PUT' })
+export async function restoreProductionTask(token: string, id: string, status: ProductionTaskStatus = 'New') {
+  return apiFetch(`/api/production/tasks/${id}/restore`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
 }
 
 export async function deleteProductionTask(token: string, id: string) {

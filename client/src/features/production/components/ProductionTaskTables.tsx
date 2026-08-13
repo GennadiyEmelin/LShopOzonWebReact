@@ -4,6 +4,7 @@ import type {
   ProductionFilePath,
   ProductionTask,
   ProductionTaskItem,
+  ProductionTaskStatus,
 } from '../../../domain/types/production'
 import { stripNovinkaMarketplaceNote } from '../../../shopRegion'
 import { LinkHoverPreview } from '../../../shared/components/LinkPreview'
@@ -33,6 +34,34 @@ export type ProductionTaskTableProduct = {
   imageUrl?: string
   name?: string
 }
+
+const RESTORE_PRODUCTION_TASK_OPTIONS: Array<{
+  value: ProductionTaskStatus
+  label: string
+  hint: string
+}> = [
+  {
+    value: 'New',
+    label: 'В задачи',
+    hint: 'Вернет задачу в список новых задач.',
+  },
+  {
+    value: 'InProgress',
+    label: 'В работу',
+    hint: 'Задача снова будет активной у текущего исполнителя.',
+  },
+  {
+    value: 'Completed',
+    label: 'В выполненные / готовые к отгрузке',
+    hint: 'Вернет задачу в выполненные. Готовность к отгрузке зависит от упаковки товаров.',
+  },
+  {
+    value: 'Cancelled',
+    label: 'В отмененные',
+    hint: 'Вернет задачу в отмененные.',
+  },
+]
+
 function renderNovinkaItemLink(item: ProductionTaskItem) {
   const productLink = stripNovinkaMarketplaceNote(item.productLink)
 
@@ -383,7 +412,7 @@ export function ProductionTaskTable({
   onTransferNovinkaItem?: (task: ProductionTask, item: ProductionTaskItem) => void
   onDelete?: (id: string) => void
   onArchive?: (id: string) => void
-  onRestore?: (id: string) => void
+  onRestore?: (id: string, status?: ProductionTaskStatus) => void
   onEdit?: (task: ProductionTask) => void
   completed?: boolean
   cancelled?: boolean
@@ -531,7 +560,10 @@ export function ProductionTaskTable({
           <span className="task-col-creator">{task.createdByDisplayName || '-'}</span>
           <span className="task-col-assignee">{task.assignedUserName || '-'}</span>
           <span className="task-actions">
-            {!completed && !cancelled && task.status === 'New' && onEdit && (
+            {!completed &&
+              !cancelled &&
+              (task.status === 'New' || (isAdmin && task.status === 'InProgress')) &&
+              onEdit && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
                 onEdit(task)
@@ -1212,6 +1244,7 @@ export function ProductionTaskArchiveTable({
   token = '',
   onOpenFiles,
   onArchive,
+  onRestore,
   onDelete,
   onCreateProductionFromNovinka,
   onPackItem,
@@ -1225,6 +1258,7 @@ export function ProductionTaskArchiveTable({
   token?: string
   onOpenFiles?: (productName: string, files: ProductionFile[]) => void
   onArchive?: (id: string) => void
+  onRestore?: (id: string, status: ProductionTaskStatus) => void
   onDelete?: (id: string) => void
   onCreateProductionFromNovinka?: (task: ProductionTask) => void
   onPackItem?: (task: ProductionTask, item: ProductionTaskItem) => void
@@ -1232,6 +1266,7 @@ export function ProductionTaskArchiveTable({
   emptyText?: string
   tableContext?: 'ozon' | 'novinka' | 'mixed'
 }) {
+  const [restoreStatuses, setRestoreStatuses] = useState<Record<string, ProductionTaskStatus>>({})
   const tableMode = getProductionTaskTableMode(tasks, tableContext)
   const { showQuantityColumns, showTypeColumn, skuHeaderLabel, neededHeaderLabel } =
     getProductionTaskTableLabels(tableMode)
@@ -1314,6 +1349,37 @@ export function ProductionTaskArchiveTable({
                 : '-'}
           </span>
           <span className="task-actions">
+            {archiveView && onRestore && (
+              <>
+                <select
+                  value={restoreStatuses[task.id] ?? 'New'}
+                  title={RESTORE_PRODUCTION_TASK_OPTIONS.find(
+                    (option) => option.value === (restoreStatuses[task.id] ?? 'New'),
+                  )?.hint}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation()
+                    setRestoreStatuses((current) => ({
+                      ...current,
+                      [task.id]: event.target.value as ProductionTaskStatus,
+                    }))
+                  }}
+                >
+                  {RESTORE_PRODUCTION_TASK_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onRestore(task.id, restoreStatuses[task.id] ?? 'New')
+                }}>
+                  Восстановить
+                </button>
+              </>
+            )}
             {!archiveView && novinka && task.status === 'Completed' && onCreateProductionFromNovinka && (
               <button type="button" className="task-create-production-button" onClick={(event) => {
                 event.preventDefault()
