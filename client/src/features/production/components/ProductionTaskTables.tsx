@@ -566,6 +566,7 @@ export function ProductionTaskTable({
               onEdit && (
               <button type="button" onClick={(event) => {
                 event.preventDefault()
+                event.stopPropagation()
                 onEdit(task)
               }}>
                 Редактировать

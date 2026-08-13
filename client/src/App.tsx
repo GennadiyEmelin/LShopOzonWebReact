@@ -8365,6 +8365,7 @@ function App() {
       return
     }
 
+    setProductionSubTab('tasks')
     setTaskIsUrgent(task.isUrgent)
     setTaskDueAt(toDatetimeLocalValue(task.dueAt))
 
