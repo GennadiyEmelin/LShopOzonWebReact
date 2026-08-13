@@ -47,6 +47,16 @@ public partial class OzonApiClient
         return periodEnd.AddDays(daysUntilPayday + Math.Max(0, delayWeeks) * 7);
     }
 
+    private static DateOnly? CalculatePaidOutDate(
+        DateOnly periodBegin,
+        DateOnly periodEnd,
+        DayOfWeek payoutDay)
+    {
+        var daysFromPeriodBegin = ((int)payoutDay - (int)periodBegin.DayOfWeek + 7) % 7;
+        var paidOutDate = periodBegin.AddDays(daysFromPeriodBegin);
+        return paidOutDate <= periodEnd ? paidOutDate : null;
+    }
+
     /// <summary>
     /// Перевод только для имён, смысл которых очевиден из самого названия.
     ///
@@ -154,6 +164,9 @@ public partial class OzonApiClient
                 Math.Max(0m, Math.Abs(flow.ServicesAmount) - (detail?.CommissionDuplicate ?? 0m)),
                 paid,
                 pending,
+                paid > 0m
+                    ? CalculatePaidOutDate(flow.PeriodBegin, flow.PeriodEnd, payoutDayOfWeek)
+                    : null,
                 CalculatePayoutDate(flow.PeriodEnd, payoutDelayWeeks, payoutDayOfWeek),
                 detail?.BeginBalance ?? 0m,
                 detail?.EndBalance ?? 0m,
@@ -473,6 +486,8 @@ public record OzonPayoutPeriod(
     decimal PaidOut,
     /// <summary>Начислено к выплате — деньги, которые ещё придут.</summary>
     decimal PendingPayout,
+    /// <summary>День фактической выплаты внутри периода, рассчитанный по графику кабинета.</summary>
+    DateOnly? PaidOutDate,
     /// <summary>Ориентировочная дата выплаты. Расчётная: API её не отдаёт.</summary>
     DateOnly? EstimatedPayoutDate,
     decimal BeginBalance,

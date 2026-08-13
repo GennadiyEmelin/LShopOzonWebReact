@@ -19,6 +19,8 @@ type PayoutPeriod = {
   paidOut: number
   /** Начислено к выплате — деньги, которые ещё придут. */
   pendingPayout: number
+  /** День перечисления внутри платёжного периода по графику кабинета. */
+  paidOutDate: string | null
   /** Дата выплаты по стандартному графику: среда через 3 недели после конца периода. */
   estimatedPayoutDate: string | null
   beginBalance: number
@@ -141,7 +143,9 @@ export function FinancesPanel({ token, dateFrom, dateTo }: FinancesPanelProps) {
               <div className="fin-payout-line" key={`d-${period.periodBegin}`}>
                 <div className="fin-payout-sum">{money(period.paidOut, currency)}</div>
                 <div className="fin-payout-meta">
-                  <span className="fin-badge fin-badge-paid">выплачено</span>
+                  <span className="fin-badge fin-badge-paid">
+                    выплачено {shortDate(period.paidOutDate)}
+                  </span>
                   <span className="fin-payout-period">в период {period.label}</span>
                 </div>
               </div>
