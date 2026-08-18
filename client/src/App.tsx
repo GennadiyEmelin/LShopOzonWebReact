@@ -681,6 +681,16 @@ type SupplyFboDefect = {
   createdAt: string
 }
 
+type SupplyFboDiscrepancy = {
+  id: string
+  productKey: string
+  offerId: string
+  productName: string
+  quantity: number
+  comment: string
+  createdAt: string
+}
+
 type SupplyExpense = {
   id: string
   name: string
@@ -2875,6 +2885,8 @@ function App() {
   const [showSupplyFboRemaining, setShowSupplyFboRemaining] = useState(false)
   const [showSupplyFboDefects, setShowSupplyFboDefects] = useState(false)
   const [supplyFboDefects, setSupplyFboDefects] = useState<SupplyFboDefect[]>([])
+  const [showSupplyFboDiscrepancies, setShowSupplyFboDiscrepancies] = useState(false)
+  const [supplyFboDiscrepancies, setSupplyFboDiscrepancies] = useState<SupplyFboDiscrepancy[]>([])
   const [supplyExpenses, setSupplyExpenses] = useState<SupplyExpense[]>([])
   const [supplyExpensesTotal, setSupplyExpensesTotal] = useState(0)
   const [internalSupplyExpenses, setInternalSupplyExpenses] = useState<SupplyExpense[]>([])
@@ -3467,6 +3479,9 @@ function App() {
     const defectQuantityByKey = new Map(
       supplyFboDefects.map((defect) => [defect.productKey, Math.max(0, defect.quantity)]),
     )
+    const discrepancyQuantityByKey = new Map(
+      supplyFboDiscrepancies.map((item) => [item.productKey, Math.max(0, item.quantity)]),
+    )
     const remainingItems: SupplyFboRemainingItem[] = []
     for (const [key, accepted] of acceptedProductQuantities) {
       const shippedQuantity = Math.min(
@@ -3477,7 +3492,14 @@ function App() {
         ...accepted.keys.map((itemKey) => defectQuantityByKey.get(itemKey) ?? 0),
         defectQuantityByKey.get(key) ?? 0,
       )
-      const visibleRemainingQuantity = Math.max(0, accepted.quantity - shippedQuantity - defectQuantity)
+      const discrepancyQuantity = Math.max(
+        ...accepted.keys.map((itemKey) => discrepancyQuantityByKey.get(itemKey) ?? 0),
+        discrepancyQuantityByKey.get(key) ?? 0,
+      )
+      const visibleRemainingQuantity = Math.max(
+        0,
+        accepted.quantity - shippedQuantity - defectQuantity - discrepancyQuantity,
+      )
 
       if (visibleRemainingQuantity > 0) {
         remainingItems.push({
@@ -3496,7 +3518,7 @@ function App() {
       remainingToShip: remainingItems.reduce((sum, item) => sum + item.remainingQuantity, 0),
       remainingItems: remainingItems.sort((first, second) => second.remainingQuantity - first.remainingQuantity),
     }
-  }, [supplyAnalytics, ozonSupplyShipments, ozonProducts, supplyFboDefects])
+  }, [supplyAnalytics, ozonSupplyShipments, ozonProducts, supplyFboDefects, supplyFboDiscrepancies])
   const normalizedSupplySearch = supplySearch.trim().toLowerCase()
   const searchedSupplies = normalizedSupplySearch
     ? supplies.filter((supply) => matchesSupply(supply, normalizedSupplySearch))
@@ -4358,6 +4380,7 @@ function App() {
       void loadSupplies()
       void loadSupplyAnalytics()
       void loadSupplyFboDefects()
+      void loadSupplyFboDiscrepancies()
       void loadSupplyExpenses()
     })
 
@@ -4405,6 +4428,7 @@ function App() {
     loadSupplyAnalytics()
     loadOzonSupplyShipments()
     loadSupplyFboDefects()
+    loadSupplyFboDiscrepancies()
     loadSupplyExpenses()
   }, [token, user?.id, user?.role])
 
@@ -4420,7 +4444,10 @@ function App() {
     if (supplyFboDefects.length === 0) {
       void loadSupplyFboDefects()
     }
-  }, [token, activeTab, supplySubTab, shopRegion, ozonSupplyShipments.length, supplyFboDefects.length])
+    if (supplyFboDiscrepancies.length === 0) {
+      void loadSupplyFboDiscrepancies()
+    }
+  }, [token, activeTab, supplySubTab, shopRegion, ozonSupplyShipments.length, supplyFboDefects.length, supplyFboDiscrepancies.length])
 
   useEffect(() => {
     if (!token || activeTab !== 'supplies' || supplySubTab !== 'expenses' || shopRegion !== 'rf') {
@@ -9088,6 +9115,15 @@ function App() {
     setSupplyFboDefects(data)
   }
 
+  async function loadSupplyFboDiscrepancies() {
+    const response = await fetch('/api/supplies/fbo-discrepancies', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) return
+    const data: SupplyFboDiscrepancy[] = await response.json()
+    setSupplyFboDiscrepancies(data)
+  }
+
   async function loadSupplyExpenses() {
     const params = new URLSearchParams()
     const search = supplyExpenseSearch.trim()
@@ -9303,6 +9339,50 @@ function App() {
 
     setSupplyStatus('Товар возвращен в остаток к отгрузке')
     await loadSupplyFboDefects()
+  }
+
+  async function markSupplyFboDiscrepancy(row: SupplyFboRemainingItem) {
+    const quantityInput = window.prompt(
+      `Сколько штук не соответствует заявленной поставке?\n\n${row.productName}`,
+      String(row.remainingQuantity),
+    )
+    if (quantityInput === null) return
+    const quantity = Math.floor(Number(quantityInput.replace(',', '.')))
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > row.remainingQuantity) {
+      setSupplyStatus(`Укажите количество от 1 до ${row.remainingQuantity}`)
+      return
+    }
+    const commentInput = window.prompt('Комментарий к несоответствию (обязательно):')
+    if (commentInput === null) return
+    const comment = commentInput.trim()
+    if (!comment) {
+      setSupplyStatus('Добавьте комментарий к несоответствию')
+      return
+    }
+    const response = await fetch('/api/supplies/fbo-discrepancies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ productKey: row.key, offerId: row.offerId, productName: row.productName, quantity, comment }),
+    })
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось отметить несоответствие')
+      return
+    }
+    setSupplyStatus('Несоответствие сохранено и убрано из остатка к отгрузке')
+    await loadSupplyFboDiscrepancies()
+  }
+
+  async function removeSupplyFboDiscrepancy(item: SupplyFboDiscrepancy) {
+    if (!window.confirm(`Вернуть товар в остаток к отгрузке?\n\n${item.productName}\nКоличество: ${item.quantity}\nКомментарий: ${item.comment}`)) return
+    const response = await fetch(`/api/supplies/fbo-discrepancies/${encodeURIComponent(item.productKey)}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      setSupplyStatus((await response.text()) || 'Не удалось удалить несоответствие')
+      return
+    }
+    setSupplyStatus('Несоответствие удалено, товар возвращен в остаток')
+    await loadSupplyFboDiscrepancies()
   }
 
   function addSupplyProduct() {
@@ -12908,6 +12988,7 @@ function App() {
                           loadSupplyAnalytics(),
                           loadOzonSupplyShipments(),
                           loadSupplyFboDefects(),
+                          loadSupplyFboDiscrepancies(),
                         ])
                       }}
                     >
@@ -12932,12 +13013,20 @@ function App() {
                     >
                       Брак ({supplyFboDefects.length})
                     </button>
+                    <button
+                      type="button"
+                      className={showSupplyFboDiscrepancies ? 'secondary active' : 'secondary'}
+                      onClick={() => setShowSupplyFboDiscrepancies((current) => !current)}
+                    >
+                      Несоответствие ({supplyFboDiscrepancies.length})
+                    </button>
                   </div>
 
                   {showSupplyFboRemaining && (
                     <SupplyFboRemainingTable
                       rows={supplyFboSummary.remainingItems}
                       onMarkDefect={markSupplyFboDefect}
+                      onMarkDiscrepancy={markSupplyFboDiscrepancy}
                     />
                   )}
 
@@ -12946,6 +13035,10 @@ function App() {
                       rows={supplyFboDefects}
                       onRemoveDefect={removeSupplyFboDefect}
                     />
+                  )}
+
+                  {showSupplyFboDiscrepancies && (
+                    <SupplyFboDiscrepanciesTable rows={supplyFboDiscrepancies} onRemove={removeSupplyFboDiscrepancy} />
                   )}
 
                   <SupplyAnalyticsTable rows={filteredSupplyAnalytics} />
@@ -16682,9 +16775,11 @@ function SupplyAnalyticsTable({ rows }: { rows: SupplyAnalyticsItem[] }) {
 function SupplyFboRemainingTable({
   rows,
   onMarkDefect,
+  onMarkDiscrepancy,
 }: {
   rows: SupplyFboRemainingItem[]
   onMarkDefect: (row: SupplyFboRemainingItem) => void
+  onMarkDiscrepancy: (row: SupplyFboRemainingItem) => void
 }) {
   return (
     <div className="data-table supply-fbo-remaining-table">
@@ -16694,7 +16789,7 @@ function SupplyFboRemainingTable({
         <span>Принято на сайте</span>
         <span>Отгружено в Ozon</span>
         <span>Осталось отгрузить</span>
-        <span>Брак</span>
+        <span>Действия</span>
       </div>
       {rows.map((row) => (
         <div className="table-row supply-fbo-remaining-row" key={row.key}>
@@ -16709,9 +16804,12 @@ function SupplyFboRemainingTable({
           <span data-label="Осталось отгрузить">
             <strong>{row.remainingQuantity}</strong>
           </span>
-          <span data-label="Брак">
+          <span data-label="Действия" className="supply-fbo-actions">
             <button type="button" className="danger" onClick={() => onMarkDefect(row)}>
               Брак
+            </button>
+            <button type="button" className="secondary" onClick={() => onMarkDiscrepancy(row)}>
+              Несоответствие
             </button>
           </span>
         </div>
@@ -16721,6 +16819,33 @@ function SupplyFboRemainingTable({
           <strong>Все принятые товары уже отгружены на Ozon.</strong>
         </div>
       )}
+    </div>
+  )
+}
+
+function SupplyFboDiscrepanciesTable({
+  rows,
+  onRemove,
+}: {
+  rows: SupplyFboDiscrepancy[]
+  onRemove: (row: SupplyFboDiscrepancy) => void
+}) {
+  return (
+    <div className="data-table supply-fbo-discrepancies-table">
+      <div className="table-row supply-fbo-discrepancy-row table-head">
+        <span>Товар</span><span>Артикул</span><span>Несоответствие</span><span>Комментарий</span><span>Отмечено</span><span>Действия</span>
+      </div>
+      {rows.map((row) => (
+        <div className="table-row supply-fbo-discrepancy-row" key={row.id}>
+          <span data-label="Товар"><strong>{row.productName}</strong></span>
+          <span data-label="Артикул"><OfferIdCell offerId={row.offerId} /></span>
+          <span data-label="Несоответствие"><strong>{row.quantity}</strong></span>
+          <span data-label="Комментарий">{row.comment}</span>
+          <span data-label="Отмечено">{formatDateTime(row.createdAt)}</span>
+          <span data-label="Действия"><button type="button" className="secondary" onClick={() => onRemove(row)}>Вернуть</button></span>
+        </div>
+      ))}
+      {rows.length === 0 && <div className="empty-state"><strong>Несоответствия пока не отмечены.</strong></div>}
     </div>
   )
 }

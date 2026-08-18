@@ -38,6 +38,19 @@ public class SupplyFboDefect
     public AppUser CreatedByUser { get; set; } = null!;
 }
 
+public class SupplyFboDiscrepancy
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string ProductKey { get; set; } = string.Empty;
+    public string OfferId { get; set; } = string.Empty;
+    public string ProductName { get; set; } = string.Empty;
+    public int Quantity { get; set; }
+    public string Comment { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Guid CreatedByUserId { get; set; }
+    public AppUser CreatedByUser { get; set; } = null!;
+}
+
 public class SupplyExpense
 {
     public Guid Id { get; set; } = Guid.NewGuid();

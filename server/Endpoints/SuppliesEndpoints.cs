@@ -831,6 +831,124 @@ public static class SuppliesEndpoints
         })
             .RequireAuthorization();
 
+        app.MapGet("/api/supplies/fbo-discrepancies", async (AppDbContext db, ClaimsPrincipal principal) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var discrepancies = await db.SupplyFboDiscrepancies
+                .AsNoTracking()
+                .OrderByDescending(item => item.CreatedAt)
+                .Select(item => new SupplyFboDiscrepancyItem(
+                    item.Id,
+                    item.ProductKey,
+                    item.OfferId,
+                    item.ProductName,
+                    item.Quantity,
+                    item.Comment,
+                    item.CreatedAt))
+                .ToListAsync();
+
+            return Results.Ok(discrepancies);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/supplies/fbo-discrepancies", async (
+            SupplyFboDiscrepancyRequest request,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var productKey = request.ProductKey.Trim();
+            var comment = request.Comment.Trim();
+            if (string.IsNullOrWhiteSpace(productKey))
+            {
+                return Results.BadRequest("Не удалось определить товар для отметки несоответствия.");
+            }
+
+            if (request.Quantity <= 0)
+            {
+                return Results.BadRequest("Количество несоответствия должно быть больше нуля.");
+            }
+
+            if (string.IsNullOrWhiteSpace(comment))
+            {
+                return Results.BadRequest("Добавьте комментарий к несоответствию.");
+            }
+
+            if (comment.Length > 1000)
+            {
+                return Results.BadRequest("Комментарий не должен превышать 1000 символов.");
+            }
+
+            var currentUserId = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(currentUserId, out var userId))
+            {
+                return Results.Forbid();
+            }
+
+            var existing = await db.SupplyFboDiscrepancies.FirstOrDefaultAsync(
+                item => item.ProductKey == productKey);
+            if (existing is not null)
+            {
+                existing.OfferId = request.OfferId.Trim();
+                existing.ProductName = request.ProductName.Trim();
+                existing.Quantity = request.Quantity;
+                existing.Comment = comment;
+                existing.CreatedAt = DateTimeOffset.UtcNow;
+                existing.CreatedByUserId = userId;
+            }
+            else
+            {
+                db.SupplyFboDiscrepancies.Add(new SupplyFboDiscrepancy
+                {
+                    ProductKey = productKey,
+                    OfferId = request.OfferId.Trim(),
+                    ProductName = request.ProductName.Trim(),
+                    Quantity = request.Quantity,
+                    Comment = comment,
+                    CreatedByUserId = userId
+                });
+            }
+
+            AuditLogWriter.Add(db, principal, "Отмечено несоответствие поставки", "SupplyFboDiscrepancy", productKey, $"{request.ProductName}: {comment}");
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+            return Results.NoContent();
+        }).RequireAuthorization();
+
+        app.MapDelete("/api/supplies/fbo-discrepancies/{productKey}", async (
+            string productKey,
+            AppDbContext db,
+            ClaimsPrincipal principal,
+            IHubContext<AppHub> hub) =>
+        {
+            if (!await FeatureAccess.HasAnyAsync(db, principal, FeatureAccess.Supplies))
+            {
+                return Results.Forbid();
+            }
+
+            var normalizedProductKey = Uri.UnescapeDataString(productKey).Trim();
+            var discrepancy = await db.SupplyFboDiscrepancies.FirstOrDefaultAsync(
+                item => item.ProductKey == normalizedProductKey);
+            if (discrepancy is null)
+            {
+                return Results.NotFound();
+            }
+
+            db.SupplyFboDiscrepancies.Remove(discrepancy);
+            AuditLogWriter.Add(db, principal, "Несоответствие возвращено в остаток отгрузки", "SupplyFboDiscrepancy", discrepancy.ProductKey, discrepancy.ProductName);
+            await db.SaveChangesAsync();
+            await hub.Clients.All.SendAsync("SuppliesChanged");
+            return Results.NoContent();
+        }).RequireAuthorization();
+
         app.MapGet("/api/supplies/analytics/export", async (AppDbContext db) =>
         {
             var items = await db.SupplyItems

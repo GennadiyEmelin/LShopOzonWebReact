@@ -14,6 +14,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Supply> Supplies => Set<Supply>();
     public DbSet<SupplyItem> SupplyItems => Set<SupplyItem>();
     public DbSet<SupplyFboDefect> SupplyFboDefects => Set<SupplyFboDefect>();
+    public DbSet<SupplyFboDiscrepancy> SupplyFboDiscrepancies => Set<SupplyFboDiscrepancy>();
     public DbSet<SupplyExpense> SupplyExpenses => Set<SupplyExpense>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<ChatGroup> ChatGroups => Set<ChatGroup>();
@@ -200,6 +201,19 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(defect => defect.CreatedByUser)
                 .WithMany()
                 .HasForeignKey(defect => defect.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SupplyFboDiscrepancy>(entity =>
+        {
+            entity.HasIndex(discrepancy => discrepancy.ProductKey).IsUnique();
+            entity.Property(discrepancy => discrepancy.ProductKey).HasMaxLength(160);
+            entity.Property(discrepancy => discrepancy.OfferId).HasMaxLength(120);
+            entity.Property(discrepancy => discrepancy.ProductName).HasMaxLength(240);
+            entity.Property(discrepancy => discrepancy.Comment).HasMaxLength(1000);
+            entity.HasOne(discrepancy => discrepancy.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(discrepancy => discrepancy.CreatedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

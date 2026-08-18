@@ -8,6 +8,8 @@ record UpdateSupplyDatesRequest(DateTimeOffset? SentAt, DateTimeOffset? Accepted
 record ReplaceReserveSupplyItemRequest(long OzonProductId, string OfferId, string ProductName);
 record SupplyFboDefectRequest(string ProductKey, string OfferId, string ProductName, int Quantity);
 record SupplyFboDefectItem(Guid Id, string ProductKey, string OfferId, string ProductName, int Quantity, DateTimeOffset CreatedAt);
+record SupplyFboDiscrepancyRequest(string ProductKey, string OfferId, string ProductName, int Quantity, string Comment);
+record SupplyFboDiscrepancyItem(Guid Id, string ProductKey, string OfferId, string ProductName, int Quantity, string Comment, DateTimeOffset CreatedAt);
 record CreateSupplyExpenseRequest(string Name, decimal Amount, DateTimeOffset PurchasedAt);
 record UpdateSupplyExpenseRequest(decimal Amount, DateTimeOffset PurchasedAt);
 record SupplyExpenseItem(

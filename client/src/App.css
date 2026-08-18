@@ -3296,6 +3296,16 @@ small .offer-id-cell {
   grid-template-columns: minmax(280px, 2fr) minmax(150px, 0.8fr) minmax(110px, 0.55fr) minmax(160px, 0.85fr) minmax(110px, 0.55fr);
 }
 
+.supply-fbo-discrepancy-row {
+  grid-template-columns: minmax(240px, 1.5fr) minmax(140px, 0.7fr) minmax(130px, 0.65fr) minmax(240px, 1.3fr) minmax(150px, 0.75fr) minmax(100px, 0.5fr);
+}
+
+.supply-fbo-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .supply-expense-row {
   grid-template-columns: minmax(260px, 1.5fr) minmax(150px, 0.7fr) minmax(170px, 0.8fr) minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(190px, 0.9fr);
 }
@@ -9128,6 +9138,7 @@ small .offer-id-cell {
   .supply-analytics-row,
   .supply-fbo-remaining-row,
   .supply-fbo-defect-row,
+  .supply-fbo-discrepancy-row,
   .supply-expense-row,
   .all-supply-item-row {
     display: grid;
@@ -9145,6 +9156,10 @@ small .offer-id-cell {
   }
 
   .supply-fbo-defects-table {
+    margin: 0 12px 12px;
+  }
+
+  .supply-fbo-discrepancies-table {
     margin: 0 12px 12px;
   }
 
@@ -9180,7 +9195,8 @@ small .offer-id-cell {
     display: none;
   }
 
-  .supply-fbo-defect-row > span[data-label] {
+  .supply-fbo-defect-row > span[data-label],
+  .supply-fbo-discrepancy-row > span[data-label] {
     display: grid;
     grid-template-columns: 1fr;
     justify-items: start;
@@ -9188,7 +9204,8 @@ small .offer-id-cell {
     width: 100%;
   }
 
-  .supply-fbo-defect-row > span[data-label]::before {
+  .supply-fbo-defect-row > span[data-label]::before,
+  .supply-fbo-discrepancy-row > span[data-label]::before {
     content: attr(data-label);
     color: #677083;
     font-size: 12px;
@@ -9196,7 +9213,8 @@ small .offer-id-cell {
     text-transform: uppercase;
   }
 
-  .supply-fbo-defect-row > span[data-label='Товар']::before {
+  .supply-fbo-defect-row > span[data-label='Товар']::before,
+  .supply-fbo-discrepancy-row > span[data-label='Товар']::before {
     display: none;
   }
 
