@@ -1132,15 +1132,7 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
 
         foreach (var orderId in orderIds)
         {
-            List<OzonSupplyBundleItemQuantity> orderItems;
-            try
-            {
-                orderItems = await GetSupplyOrderItemQuantitiesAsync(orderId, cancellationToken);
-            }
-            catch (HttpRequestException)
-            {
-                continue;
-            }
+            var orderItems = await GetSupplyOrderItemQuantitiesAsync(orderId, cancellationToken);
 
             foreach (var item in orderItems)
             {
@@ -1165,6 +1157,10 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
                     (current?.Quantity ?? 0) + item.Quantity,
                     !string.IsNullOrWhiteSpace(item.ProductName) ? item.ProductName.Trim() : current?.ProductName ?? string.Empty);
             }
+
+            // Состав каждой поставки требует ещё одного запроса к bundle API.
+            // Небольшая пауза не даёт серии завершённых поставок упереться в лимит Ozon.
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
         }
 
         return quantities.Values.ToList();
@@ -1373,18 +1369,6 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
         long orderId,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var directItems = await GetSupplyOrderItemsEndpointQuantitiesAsync(orderId, cancellationToken);
-            if (directItems.Count > 0)
-            {
-                return directItems;
-            }
-        }
-        catch (HttpRequestException)
-        {
-        }
-
         var items = new List<OzonSupplyBundleItemQuantity>();
         var content = await PostOzonJsonAsync(
             "/v3/supply-order/get",
@@ -2053,7 +2037,8 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
     {
         EnsureConfigured();
 
-        for (var attempt = 0; attempt < 4; attempt++)
+        const int maxAttempts = 6;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, path);
             request.Headers.Add("Client-Id", _credentials.ClientId);
@@ -2063,9 +2048,11 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
             using var response = await httpClient.SendAsync(request, cancellationToken);
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
-            if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < 3)
+            var isRateLimited = response.StatusCode == HttpStatusCode.TooManyRequests ||
+                                IsOzonRateLimitResponse(content);
+            if (isRateLimited && attempt < maxAttempts - 1)
             {
-                await Task.Delay(TimeSpan.FromSeconds(2 + attempt * 2), cancellationToken);
+                await Task.Delay(TimeSpan.FromSeconds(attempt + 1), cancellationToken);
                 continue;
             }
 
@@ -2081,6 +2068,26 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
         }
 
         throw new HttpRequestException("Ozon API request failed after retries.");
+    }
+
+    private static bool IsOzonRateLimitResponse(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            return document.RootElement.TryGetProperty("code", out var code) &&
+                   ((code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var number) && number == 8) ||
+                    (code.ValueKind == JsonValueKind.String && code.GetString() == "8"));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool IsCollectingStatus(string status)
