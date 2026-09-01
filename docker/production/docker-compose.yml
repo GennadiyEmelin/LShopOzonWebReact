@@ -13,6 +13,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   app:
     build:
@@ -45,6 +50,13 @@ services:
       Admin__PublicAdminerUrl: ${ADMINER_PUBLIC_URL:-}
       Admin__PostgresUser: ${POSTGRES_USER}
       Admin__PostgresDatabase: ${POSTGRES_DB}
+      Logging__LogLevel__System.Net.Http.HttpClient: Warning
+      Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: Warning
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   adminer:
     image: adminer:latest
@@ -54,6 +66,11 @@ services:
         condition: service_healthy
     ports:
       - "${ADMINER_BIND:-127.0.0.1}:${ADMINER_PORT:-8082}:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   postgres-backup:
     image: postgres:16-alpine
@@ -71,6 +88,11 @@ services:
       - ../../backups:/backups
       - ../backup/postgres-backup.sh:/usr/local/bin/postgres-backup.sh:ro
     command: ["sh", "/usr/local/bin/postgres-backup.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
 volumes:
   postgres_data:

@@ -102,7 +102,7 @@ public class TelegramBotMenuService(
 
         var builder = new StringBuilder();
         builder.AppendLine(title);
-        builder.AppendLine($"Заказано товаров: {(int)analytics.SalesTotalCount}");
+        builder.AppendLine($"Заказано товаров: {(int)analytics.OrderedUnitsTotal}");
         builder.AppendLine($"Заказано на сумму: {FormatMoney(analytics.SalesAmountTotal, currency)}");
         builder.AppendLine($"Выкуплено товаров: {(int)analytics.DeliveredProductCount}");
         builder.AppendLine($"Выкуплено на сумму: {FormatMoney(analytics.DeliveredAmount, currency)}");

@@ -283,7 +283,6 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
         var servicesTotal = Math.Abs(financeOperations
             .Where(operation => operation.Type.Equals("services", StringComparison.OrdinalIgnoreCase))
             .Sum(operation => operation.Amount));
-        var orderedUnitsTotal = productRows.Count(row => row.Revenue > 0);
         var productsForStatus = await GetProductSummariesAsync(1000, cancellationToken);
         var productStatusSummary = GetProductStatusSummary(productsForStatus);
         decimal? accountBalance = null;
@@ -309,6 +308,9 @@ public partial class OzonApiClient(HttpClient httpClient, OzonRuntimeCredentials
         var rangePostings = nonCancelledPostings
             .Where(posting => IsPostingInLocalDateRange(posting, dateFrom, dateTo, timeZone))
             .ToList();
+        var orderedUnitsTotal = rangePostings
+            .SelectMany(posting => posting.Products)
+            .Sum(product => product.Quantity);
         var salesTotalCount = rangePostings
             .Select(posting => posting.PostingNumber)
             .Where(number => !string.IsNullOrWhiteSpace(number))

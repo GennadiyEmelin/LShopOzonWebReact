@@ -17400,7 +17400,7 @@ function AnalyticsPipelineBoard({
         <div className="analytics-pipeline-grid analytics-pipeline-grid--metrics">
         <div className="analytics-pipeline-card analytics-pipeline-cell analytics-pipeline-cell--r1c1">
           <span>Заказано товаров</span>
-          <strong>{analytics?.salesTotalCount ?? '—'}</strong>
+          <strong>{analytics?.orderedUnitsTotal ?? '—'}</strong>
         </div>
         <div className="analytics-pipeline-card analytics-pipeline-card--text-progress analytics-pipeline-cell analytics-pipeline-cell--r1c2">
           <span>В сборке</span>

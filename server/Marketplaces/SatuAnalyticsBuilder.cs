@@ -229,7 +229,9 @@ internal static class SatuAnalyticsBuilder
             orderRows,
             topProducts,
             [],
-            orderRows.Count(row => row.Revenue > 0 && row.Status != "cancelled"),
+            orderRows
+                .Where(row => row.Revenue > 0 && row.Status != "cancelled")
+                .Sum(row => row.Quantity),
             revenueTotal,
             commissionTotal,
             payoutTotal,
